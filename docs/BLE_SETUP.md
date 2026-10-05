@@ -6,23 +6,23 @@ Mở Menu → Bluetooth: tự mở kết nối 5 phút và hiện QR. Quét QR �
 
 QR mặc định trỏ tới `https://iamhisu.github.io/HisuOS/ble/`. Địa chỉ này **chỉ hoạt động sau khi xuất bản thành công**, chưa được xuất bản bởi Codex.
 
-1. Trong repository GitHub `IamHisu/HisuOS`, mở **Settings → Pages → Build and deployment → Source → GitHub Actions**.
-2. Push `.github/workflows/ble-pages.yml` và `tools/ble-companion/` lên nhánh `main`.
-3. Chờ workflow **Publish BLE companion** thành công. Có thể chạy lại từ **Actions → Publish BLE companion → Run workflow**.
+1. Trong repository GitHub `IamHisu/HisuOS`, mở **Settings → Pages → Build and deployment → Source → Deploy from a branch**, chọn **main → /docs → Save**.
+2. Push `docs/ble/`, `docs/index.html`, `docs/.nojekyll` và workflow đã sửa lên nhánh `main`. Chỉ đổi setting mà chưa push các file này thì `/ble/` vẫn 404.
+3. Chờ workflow tự động của GitHub **pages build and deployment** thành công.
 4. Mở link trên Chrome Android và kiểm tra trang trước khi thử quét QR trên board.
 
-Workflow chỉ xuất bản `index.html` và `app.js` trong thư mục `/ble/`, không đưa firmware hoặc NVS lên site. Nếu đổi nơi host, chỉnh **idf.py menuconfig → HisuOS UI → HTTPS URL of the BLE companion page**, rồi build/flash lại. QR không bỏ qua bước bấm kết nối và xác nhận ghép nối của trình duyệt.
+Nguồn `/docs` xuất bản trang BLE cùng các tài liệu trong `docs`, không đưa firmware hoặc NVS lên site. Workflow riêng **Publish BLE companion** chỉ còn chạy thủ công nếu chọn Source **GitHub Actions**, để tránh hai cách deploy tự động cùng chạy. Nếu đổi nơi host, chỉnh **idf.py menuconfig → HisuOS UI → HTTPS URL of the BLE companion page**, rồi build/flash lại. QR không bỏ qua bước bấm kết nối và xác nhận ghép nối của trình duyệt.
 
 ## Trang điều khiển
 
-Trang `tools/ble-companion/index.html` + `app.js` cho phép kết nối, nhập Wi-Fi, gửi giờ/múi giờ. Nhấn **Kết nối HisuOS**, ghép bằng mã, rồi nhập Wi-Fi. Để trống mật khẩu với mạng mở. Wi-Fi tự bật nếu đang tắt; chỉ lưu mạng sau nhận IP thành công. Giờ được gửi ngay khi kết nối và có nút đồng bộ lại.
+Trang `docs/ble/index.html` + `app.js` cho phép kết nối, nhập Wi-Fi, gửi giờ/múi giờ. Nhấn **Kết nối HisuOS**, ghép bằng mã, rồi nhập Wi-Fi. Để trống mật khẩu với mạng mở. Wi-Fi tự bật nếu đang tắt; chỉ lưu mạng sau nhận IP thành công. Giờ được gửi ngay khi kết nối và có nút đồng bộ lại.
 
 Web Bluetooth cần HTTPS hoặc localhost. [Chrome hỗ trợ trên Android/máy tính, không hỗ trợ kết nối website/Bluetooth trên iPhone/iPad](https://support.google.com/chrome/answer/6362090?co=GENIE.Platform%3DAndroid&hl=en-GB). [Tài liệu Chrome](https://developer.chrome.com/docs/capabilities/bluetooth/).
 
 Trên máy tính có Bluetooth, chạy từ project rồi mở `http://localhost:8765` bằng Chrome/Edge:
 
 ```powershell
-python -m http.server 8765 --bind 127.0.0.1 --directory tools/ble-companion
+python -m http.server 8765 --bind 127.0.0.1 --directory docs/ble
 ```
 
 Trên Android, dùng host HTTPS cho hai file hoặc chuyển tiếp cổng localhost qua USB. Địa chỉ HTTP máy tính trong LAN không đáp ứng secure context. Chưa xuất bản trang lên Internet. Client BLE hỗ trợ GATT cũng dùng được giao thức dưới đây; app ESP BLE Provisioning không tương thích giao thức riêng này.

@@ -4,5 +4,5 @@ menu "HisuOS UI"
         default "https://iamhisu.github.io/HisuOS/ble/"
         help
             Publish the companion website before using the QR code.
-            The GitHub Pages workflow deploys tools/ble-companion to /ble/.
+            Publish main /docs with GitHub Pages to serve docs/ble at /ble/.
 endmenu

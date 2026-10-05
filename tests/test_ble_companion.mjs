@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {encodeWifi, encodeTime, characteristic} from '../tools/ble-companion/app.js';
+import {encodeWifi, encodeTime, characteristic} from '../docs/ble/app.js';
 assert.equal(characteristic(4), 'e3a10004-7d4b-4ee0-b417-6d9f67485501');
 assert.equal(encodeWifi('Home', 'abcdefgh')[1].length, 8);
 assert.equal(encodeWifi('Open', '')[1].length, 0);

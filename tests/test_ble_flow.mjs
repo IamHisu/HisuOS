@@ -20,7 +20,7 @@ globalThis.location = {hash:'#name=HisuOS-A1B2'};
 Object.defineProperty(globalThis,'navigator',{configurable:true,value:{bluetooth:{requestDevice:async options=>{requested=options;return device;}}}});
 globalThis.setInterval = fn => {poll=fn;return 1;};
 globalThis.clearInterval = () => {poll=null;};
-await import('../tools/ble-companion/app.js');
+await import('../docs/ble/app.js');
 await elements.get('connect').onclick();
 assert.equal(requested.filters[0].name,'HisuOS-A1B2');
 assert.equal(writes[0][0], 4); // Automatic clock sync precedes Wi-Fi.

@@ -1,10 +1,5 @@
 name: Publish BLE companion
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'tools/ble-companion/**'
-      - '.github/workflows/ble-pages.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -25,7 +20,8 @@ jobs:
       - name: Prepare static files
         run: |
           mkdir -p _site/ble
-          cp tools/ble-companion/index.html tools/ble-companion/app.js _site/ble/
+          cp docs/ble/index.html docs/ble/app.js _site/ble/
+          cp docs/index.html _site/
           touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with:

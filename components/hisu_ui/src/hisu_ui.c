@@ -65,6 +65,7 @@ static hisu_power_status_t s_power;
 static lv_obj_t *s_battery_body, *s_battery_bars[5], *s_battery_tip, *s_battery_charge;
 typedef struct { lv_obj_t *root, *arcs[3], *dot; } wifi_icon_t;
 static wifi_icon_t s_idle_wifi;
+static lv_obj_t *s_idle_ble;
 static int s_wifi_selected, s_wifi_first;
 static bool s_wifi_select_after_scan;
 static char s_join_ssid[33], s_password[65];
@@ -250,6 +251,12 @@ static void update_idle_status(void)
     else lv_obj_add_flag(s_battery_charge, LV_OBJ_FLAG_HIDDEN);
     update_wifi_icon(&s_idle_wifi, s_network.connected ? wifi_signal_bars(s_network.rssi) : 0,
                      s_network.enabled);
+    if (s_idle_ble) {
+        hisu_ble_status_t ble; hisu_ble_get(&ble);
+        if (ble.enabled) lv_obj_remove_flag(s_idle_ble,LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_idle_ble,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_opa(s_idle_ble,ble.connected ? LV_OPA_COVER : LV_OPA_40,0);
+    }
 }
 
 static void render_idle_status(lv_obj_t *root)
@@ -259,17 +266,25 @@ static void render_idle_status(lv_obj_t *root)
     lv_obj_set_style_text_font(s_idle_clock, &lv_font_montserrat_14, 0);
     lv_obj_t *panel = lv_obj_create(root);
     lv_obj_remove_style_all(panel);
-    lv_obj_set_pos(panel, 174, 6);
-    lv_obj_set_size(panel, 60, 22);
+    lv_obj_set_pos(panel, 156, 6);
+    lv_obj_set_size(panel, 78, 22);
     lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(panel, lv_color_hex(theme_color(0x000000)), 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(panel, 4, 0);
     /* Visible Wi-Fi pixels span 12 px; center them on the 14 px battery. */
-    s_idle_wifi = create_wifi_icon(panel, 3, 6, 0);
+    static const lv_point_precise_t bluetooth[] = {{0,2},{8,9},{4,13},{4,0},{8,4},{0,11}};
+    s_idle_ble = lv_line_create(panel);
+    lv_obj_remove_style_all(s_idle_ble);
+    lv_line_set_points(s_idle_ble,bluetooth,6);
+    lv_obj_set_pos(s_idle_ble,3,5);
+    lv_obj_set_style_line_width(s_idle_ble,1,0);
+    lv_obj_set_style_line_rounded(s_idle_ble,true,0);
+    lv_obj_set_style_line_color(s_idle_ble,lv_color_hex(theme_color(0x86dbaf)),0);
+    s_idle_wifi = create_wifi_icon(panel, 21, 6, 0);
     s_battery_body = lv_obj_create(panel);
     lv_obj_remove_style_all(s_battery_body);
-    lv_obj_set_pos(s_battery_body, 27, 5);
+    lv_obj_set_pos(s_battery_body, 45, 5);
     lv_obj_set_size(s_battery_body, 24, 14);
     lv_obj_set_style_border_width(s_battery_body, 2, 0);
     lv_obj_set_style_radius(s_battery_body, 3, 0);
@@ -277,21 +292,21 @@ static void render_idle_status(lv_obj_t *root)
     for (int i = 0; i < 5; ++i) {
         s_battery_bars[i] = lv_obj_create(panel);
         lv_obj_remove_style_all(s_battery_bars[i]);
-        lv_obj_set_pos(s_battery_bars[i], 32 + i * 3, 9);
+        lv_obj_set_pos(s_battery_bars[i], 50 + i * 3, 9);
         lv_obj_set_size(s_battery_bars[i], 2, 6);
         lv_obj_set_style_radius(s_battery_bars[i], 1, 0);
         lv_obj_set_style_bg_opa(s_battery_bars[i], LV_OPA_COVER, 0);
     }
     s_battery_tip = lv_obj_create(panel);
     lv_obj_remove_style_all(s_battery_tip);
-    lv_obj_set_pos(s_battery_tip, 51, 10);
+    lv_obj_set_pos(s_battery_tip, 69, 10);
     lv_obj_set_size(s_battery_tip, 2, 4);
     lv_obj_set_style_bg_opa(s_battery_tip, LV_OPA_COVER, 0);
     static const lv_point_precise_t bolt[] = {{3, 0}, {1, 4}, {5, 4}, {3, 8}};
     s_battery_charge = lv_line_create(panel);
     lv_obj_remove_style_all(s_battery_charge);
     lv_line_set_points(s_battery_charge, bolt, 4);
-    lv_obj_set_pos(s_battery_charge, 36, 8);
+    lv_obj_set_pos(s_battery_charge, 54, 8);
     lv_obj_set_style_line_width(s_battery_charge, 2, 0);
     lv_obj_set_style_line_rounded(s_battery_charge, true, 0);
     update_idle_status();
@@ -728,6 +743,7 @@ static void render(void)
     lv_obj_clean(root);
     s_idle_gif = NULL;
     s_idle_clock = NULL;
+    s_idle_ble = NULL;
     s_subtitle_body = NULL;
     s_battery_body = s_battery_tip = s_battery_charge = NULL;
     lv_obj_remove_style_all(root);
