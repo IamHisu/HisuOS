@@ -1,0 +1,82 @@
+#include "hisu_ui_model.h"
+
+int hisu_ui_adjust(int setting, int value, int direction)
+{
+    if (direction != -1 && direction != 1) return value;
+    if (setting == UI_SPEAKER) return !value;
+    if (setting == UI_TIMEOUT) {
+        const int presets[] = {0, 30, 60, 120, 300, 600};
+        if (direction > 0) {
+            for (int i = 0; i < 6; ++i) if (presets[i] > value) return presets[i];
+            return 600;
+        }
+        for (int i = 5; i >= 0; --i) if (presets[i] < value) return presets[i];
+        return 0;
+    }
+    if (setting != UI_BRIGHTNESS && setting != UI_VOLUME) return value;
+    int min = setting == UI_BRIGHTNESS ? 10 : 0;
+    value += direction * 5;
+    return value < min ? min : value > 100 ? 100 : value;
+}
+
+void hisu_ui_model_key(hisu_ui_model_t *m, int key)
+{
+    if (key < UI_KEY_BOOT || key > UI_KEY_BACK) return;
+    if (key == UI_KEY_BACK) {
+        m->page = m->page == UI_MENU ? UI_IDLE : UI_MENU;
+        return;
+    }
+    switch (m->page) {
+    case UI_IDLE:
+        if (key == UI_KEY_BOOT) m->page = UI_MENU;
+        break;
+    case UI_MENU:
+        if (key == UI_KEY_UP) m->selected = (m->selected + UI_ITEM_COUNT - 1) % UI_ITEM_COUNT;
+        if (key == UI_KEY_DOWN) m->selected = (m->selected + 1) % UI_ITEM_COUNT;
+        if (key == UI_KEY_BOOT) {
+            if (m->selected <= UI_TIMEOUT) m->page = UI_EDIT;
+            else if (m->selected == UI_SUBTITLES) { m->page = UI_PREVIEW; m->preview = 0; }
+            else if (m->selected == UI_CLOSE) m->page = UI_IDLE;
+            else m->page = UI_INFO;
+        }
+        break;
+    case UI_EDIT:
+        if (key == UI_KEY_BOOT) m->page = UI_MENU;
+        else m->value = hisu_ui_adjust(m->selected, m->value, key == UI_KEY_UP ? 1 : -1);
+        break;
+    case UI_INFO:
+        if (key == UI_KEY_BOOT) m->page = UI_MENU;
+        break;
+    case UI_PREVIEW:
+        if (key == UI_KEY_BOOT || key == UI_KEY_DOWN) {
+            if (++m->preview == 3) m->page = UI_MENU;
+        } else if (key == UI_KEY_UP && m->preview > 0) --m->preview;
+        break;
+    }
+}
+
+int hisu_ui_valid_utf8(const char *text, unsigned max_bytes)
+{
+    if (!text) return 0;
+    unsigned pos = 0;
+    while (text[pos]) {
+        if (pos >= max_bytes) return 0;
+        unsigned char c = (unsigned char)text[pos++];
+        if (c < 0x80) continue;
+        int remaining;
+        unsigned code;
+        unsigned minimum;
+        if (c >= 0xc2 && c <= 0xdf) {remaining = 1; code = c & 0x1f; minimum = 0x80;}
+        else if (c >= 0xe0 && c <= 0xef) {remaining = 2; code = c & 0x0f; minimum = 0x800;}
+        else if (c >= 0xf0 && c <= 0xf4) {remaining = 3; code = c & 7; minimum = 0x10000;}
+        else return 0;
+        while (remaining--) {
+            if (pos >= max_bytes) return 0;
+            unsigned char next = (unsigned char)text[pos++];
+            if ((next & 0xc0) != 0x80) return 0;
+            code = (code << 6) | (next & 0x3f);
+        }
+        if (code < minimum || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return 0;
+    }
+    return 1;
+}
