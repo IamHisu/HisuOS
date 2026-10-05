@@ -1,3 +1,0 @@
-dependencies:
-  espressif/button: "4.2.1"
-  lvgl/lvgl: "9.4.0"

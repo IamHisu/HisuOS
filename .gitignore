@@ -1,9 +1,20 @@
+# Local editor configuration
+/.vscode/
+/.clangd
+
+# ESP-IDF generated files
 /build/
-/build-idf*/
+/build-*/
 /managed_components/
 /sdkconfig
 /sdkconfig.old
-/sdkconfig.idf*
-/web/src/node_modules/
+
+# Local tools, caches and credentials
 /.cache/
+/.venv/
+/venv/
+node_modules/
+.env
+.env.*
+!.env.example
 *.log

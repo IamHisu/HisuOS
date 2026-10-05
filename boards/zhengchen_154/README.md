@@ -1,34 +1,34 @@
-# Zhengchen 1.54 TFT Wi-Fi
+# ZHENGCHEN 1.54 Board Profile
 
-ESP32-S3, 16 MB flash, 8 MB octal PSRAM, 240x240 ST7789 display.
+Profile phần cứng đầu tiên của HisuOS: ESP32-S3 N16R8, màn hình ST7789 240x240, không cảm ứng.
 
-| Peripheral | GPIO |
-| --- | --- |
-| LCD MOSI / SCLK / CS / DC / RESET / backlight | 41 / 42 / 21 / 40 / 45 / 20 |
-| Microphone WS / SCK / DATA | 4 / 5 / 6 |
-| Speaker DATA / BCLK / WS | 7 / 15 / 16 |
+Hiện chỉ có `board_config.h`, chưa có driver, build configuration hoặc firmware chạy được. Dung lượng flash/PSRAM trong header là thông tin profile, không tự cấu hình ESP-IDF.
+
+## Pin Map
+
+| Chức năng | GPIO |
+|---|---|
+| LCD MOSI / SCLK | 41 / 42 |
+| LCD CS / DC / RST / backlight | 21 / 40 / 45 / 20 |
+| Mic WS / SCK / data | 4 / 5 / 6 |
+| Speaker data / BCLK / LRCK | 7 / 15 / 16 |
 | BOOT / volume up / volume down | 0 / 10 / 39 |
-| Battery ADC / charge status | 8 (ADC1 channel 7) / 9 |
+| Battery ADC | 8 (ADC1 channel 7) |
+| Charge status, tham khảo Muse | 9, cần xác minh |
 
-Display settings retain FriendOS: SPI mode 3, 80 MHz, inverted colors and
-RGB565 byte swap. The display buffer is internal DMA memory. GPIO20 conflicts
-with native USB Serial/JTAG, so console defaults use UART0 and disable that
-runtime peripheral. ROM download/recovery is separate from runtime console.
+Nguồn đối chiếu trong workspace:
 
-The microphone captures 32-bit left-channel samples at 16 kHz. The speaker
-uses I2S1, stereo PCM16 at 16 kHz. Power uses Muse's raw-ADC calibration and
-three-reading smoothing; charge status is an estimate, not a calibrated fuel gauge.
+- `FriendOS/main/board/board_config.h`: pin map LCD, mic, loa, nút và battery.
+- `muse-gadget-sdk/esp32/components/muse/boards/board_zhengchen_154.c`: pin map tương ứng, nút active-low, profile không cảm ứng và charge status GPIO9.
 
-## Hardware acceptance
+Không sao chép implementation driver của Muse. Không mang UI, AI, resource manager hoặc calibration pin sang bản mới.
 
-1. Confirm flash/PSRAM size and boot without allocation failures.
-2. Confirm backlight, orientation, colors, face animation and GIF playback.
-3. Check all buttons and five-second setup action.
-4. Configure Wi-Fi and verify saved-network reconnect after reboot.
-5. Upload still/GIF assets and verify restoration after reboot.
-6. Configure a test AI key through Web Settings and check Vietnamese subtitles.
-7. Read mic PCM, play known quiet PCM16 stereo, and verify speaker wiring.
-8. Compare battery readings and GPIO9 behavior against actual power states.
+## Cần Xác Minh Khi Bring-up
 
-Do not enable unattended power actions based on the battery estimate before
-completing calibration on the physical unit.
+- SPI mode/clock, inversion, color order và orientation: không chốt chỉ từ pin map.
+- I2S sample format, channel selection và sample rate.
+- Battery divider/calibration và polarity GPIO9; chưa coi charge status là phép đo USB riêng.
+- GPIO20 đang dùng cho backlight: kiểm tra ảnh hưởng nếu sử dụng native USB trên ESP32-S3.
+- Init peripheral phải có một owner, không khởi tạo đồng thời từ nhiều service.
+
+Việc kiểm thử trên firmware trước không thay thế kiểm thử driver của bản làm lại.
