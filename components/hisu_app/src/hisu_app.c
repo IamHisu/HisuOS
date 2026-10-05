@@ -3,6 +3,8 @@
 #include "hisu_ui.h"
 #include "hisu_network.h"
 #include "hisu_power.h"
+#include "hisu_clock.h"
+#include "hisu_ble.h"
 #include "esp_log.h"
 
 void hisu_app_start(void)
@@ -11,6 +13,12 @@ void hisu_app_start(void)
     if (err == ESP_OK) {
         esp_err_t service_err = hisu_network_start();
         if (service_err != ESP_OK) ESP_LOGE("APP", "Network startup: %s", esp_err_to_name(service_err));
+        service_err = hisu_clock_start();
+        if (service_err != ESP_OK) ESP_LOGW("APP", "Clock startup: %s", esp_err_to_name(service_err));
+        hisu_network_status_t network; hisu_network_get(&network);
+        if (network.connected) hisu_clock_network_connected();
+        service_err = hisu_ble_start();
+        if (service_err != ESP_OK) ESP_LOGE("APP", "BLE startup: %s", esp_err_to_name(service_err));
         service_err = hisu_power_start();
         if (service_err != ESP_OK) ESP_LOGE("APP", "Power startup: %s", esp_err_to_name(service_err));
     }

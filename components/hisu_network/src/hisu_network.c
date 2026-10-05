@@ -1,5 +1,6 @@
 #include "hisu_network.h"
 #include "hisu_settings.h"
+#include "hisu_clock.h"
 #include "hisu_wifi_input.h"
 #include <stdio.h>
 #include <string.h>
@@ -200,6 +201,14 @@ static void worker(void *arg)
                 xSemaphoreTake(s_lock, portMAX_DELAY);
                 bool enabled = s_status.enabled;
                 xSemaphoreGive(s_lock);
+                if (!enabled && command.enabled) {
+                    esp_err_t err = hisu_settings_set(HISU_SETTING_WIFI_ENABLED, 1);
+                    if (err != ESP_OK) { failed(err); memset(&command, 0, sizeof(command)); continue; }
+                    xSemaphoreTake(s_lock, portMAX_DELAY);
+                    s_status.enabled = true;
+                    xSemaphoreGive(s_lock);
+                    enabled = true;
+                }
                 if (!enabled) {
                     memset(&command, 0, sizeof(command));
                     failed(ESP_ERR_INVALID_STATE); continue;
@@ -264,6 +273,7 @@ static void worker(void *arg)
             ++s_status.revision;
             xSemaphoreGive(s_lock);
             s_retries = 0; s_deadline = 0; s_retry_at = 0;
+            hisu_clock_network_connected();
             events &= ~EVENT_DISCONNECTED;
         }
         if ((events & EVENT_DISCONNECTED) && s_want_connection) {
@@ -379,23 +389,26 @@ esp_err_t hisu_network_scan(void)
     return err;
 }
 
-esp_err_t hisu_network_join(const char *ssid, const char *password)
+static esp_err_t submit_join(const char *ssid, const char *password, bool provision)
 {
     if (!ssid || !ssid[0] || strlen(ssid) > 32 || !hisu_network_valid_password(password)) return ESP_ERR_INVALID_ARG;
     if (!s_lock) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (!s_status.ready || !s_status.enabled || s_status.scanning || s_status.joining) {
+    if (!s_status.ready || (!s_status.enabled && !provision) || s_status.scanning || (s_status.joining && !provision)) {
         xSemaphoreGive(s_lock); return ESP_ERR_INVALID_STATE;
     }
     s_status.joining = true; ++s_status.revision;
     xSemaphoreGive(s_lock);
-    command_t command = {.type = CMD_JOIN};
+    command_t command = {.type = CMD_JOIN, .enabled = provision};
     memcpy(command.ssid, ssid, strlen(ssid)); memcpy(command.password, password, strlen(password));
     esp_err_t err = send_command(&command);
     memset(&command, 0, sizeof(command));
     if (err != ESP_OK) failed(err);
     return err;
 }
+
+esp_err_t hisu_network_join(const char *ssid, const char *password) { return submit_join(ssid, password, false); }
+esp_err_t hisu_network_provision(const char *ssid, const char *password) { return submit_join(ssid, password, true); }
 
 esp_err_t hisu_network_enable(bool enabled)
 {

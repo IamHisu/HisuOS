@@ -22,6 +22,7 @@ typedef struct {
     bool held;
     int64_t changed_ms;
     int64_t pressed_ms;
+    int64_t repeat_ms;
 } button_t;
 
 static button_t s_buttons[] = {
@@ -145,8 +146,13 @@ hisu_key_t hisu_board_poll_key(void)
         if ((b->key == HISU_KEY_BOOT || s_volume_hold) && b->pressed && b->raw && !b->held &&
             now - b->pressed_ms >= hold_ms && result == HISU_KEY_NONE) {
             b->held = true;
+            b->repeat_ms = now;
             result = b->key == HISU_KEY_BOOT ? HISU_KEY_BACK :
                      b->key == HISU_KEY_UP ? HISU_KEY_UP_HELD : HISU_KEY_DOWN_HELD;
+        } else if (s_volume_hold && b->key != HISU_KEY_BOOT && b->pressed && b->raw && b->held &&
+                   now - b->repeat_ms >= 180 && result == HISU_KEY_NONE) {
+            b->repeat_ms = now;
+            result = b->key == HISU_KEY_UP ? HISU_KEY_UP_HELD : HISU_KEY_DOWN_HELD;
         }
     }
     return result;

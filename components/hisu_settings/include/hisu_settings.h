@@ -10,6 +10,7 @@ typedef enum {
     HISU_SETTING_TIMEOUT,
     HISU_SETTING_THEME, /* 0: dark, 1: light */
     HISU_SETTING_WIFI_ENABLED,
+    HISU_SETTING_TIMEZONE, /* Minutes east of UTC; default UTC+7. */
     HISU_SETTING_COUNT,
 } hisu_setting_t;
 

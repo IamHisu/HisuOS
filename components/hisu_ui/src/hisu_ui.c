@@ -4,6 +4,9 @@
 #include "hisu_settings.h"
 #include "hisu_network.h"
 #include "hisu_power.h"
+#include "hisu_clock.h"
+#include "hisu_calendar.h"
+#include "hisu_ble.h"
 
 #include <stdio.h>
 #include <inttypes.h>
@@ -27,6 +30,7 @@ extern const uint8_t idle_cat_light_start[] asm("_binary_idle_cat_light_gif_star
 extern const uint8_t idle_cat_light_end[] asm("_binary_idle_cat_light_gif_end");
 static lv_image_dsc_t s_idle_cat[2];
 static lv_obj_t *s_idle_gif;
+static lv_obj_t *s_idle_clock;
 static bool s_light_theme;
 
 static uint32_t theme_color(uint32_t dark)
@@ -65,6 +69,11 @@ static int s_wifi_selected, s_wifi_first;
 static bool s_wifi_select_after_scan;
 static char s_join_ssid[33], s_password[65];
 static int s_pass_length, s_pass_mode, s_pass_choice;
+static int s_calendar_day; /* Zero follows today; otherwise a selected Julian day. */
+static bool s_flashlight_enabled;
+static unsigned s_flashlight_mode; /* Steady, blink, SOS. */
+static int64_t s_flashlight_start_ms;
+static hisu_ble_status_t s_rendered_ble;
 /* 8x5 keypad flow adapted from Muse's button menu (Apache-2.0).
  * Copyright (c) Meta Platforms, Inc. and affiliates. See licenses/NOTICE.md.
  */
@@ -76,7 +85,7 @@ static const char *const s_keysets[] = {
 static void render(void);
 static const char *const s_items[] = {
     "Độ sáng", "Âm lượng", "Loa", "Thời gian chờ", "Theme", "Wi-Fi", "Bluetooth",
-    "Pin", "Tắt màn hình", "Đóng menu",
+    "Pin", "Lịch", "Đèn pin", "Tắt màn hình", "Đóng menu",
 };
 static const char *const s_states[] = {"", "Đang nghe", "Đang suy nghĩ", "Đang nói", "Lỗi"};
 static const char *const s_demo[] = {
@@ -222,6 +231,7 @@ static void create_theme_icon(lv_obj_t *parent, bool light, bool selected)
 static void update_idle_status(void)
 {
     if (!s_battery_body) return;
+    if (s_idle_clock) { char clock[6]; hisu_clock_read(clock); lv_label_set_text(s_idle_clock, clock); }
     hisu_power_get(&s_power);
     hisu_network_get(&s_network);
     int percent = s_power.percent < 0 ? 0 : s_power.percent > 100 ? 100 : s_power.percent;
@@ -244,6 +254,9 @@ static void update_idle_status(void)
 
 static void render_idle_status(lv_obj_t *root)
 {
+    char clock[6]; hisu_clock_read(clock);
+    s_idle_clock = label(root, clock, 8, 10, 64, 0x86dbaf);
+    lv_obj_set_style_text_font(s_idle_clock, &lv_font_montserrat_14, 0);
     lv_obj_t *panel = lv_obj_create(root);
     lv_obj_remove_style_all(panel);
     lv_obj_set_pos(panel, 174, 6);
@@ -397,11 +410,15 @@ static void render_menu(void)
         char value[16] = "";
         if (item <= UI_THEME) value_text(item, hisu_settings_get((hisu_setting_t)item), value, sizeof(value));
         else if (item == UI_BATTERY && s_power.valid) snprintf(value, sizeof(value), "~%d%%", s_power.percent);
+        else if (item == UI_BLE) {
+            hisu_ble_status_t ble; hisu_ble_get(&ble);
+            snprintf(value, sizeof(value), "%s", ble.enabled ? LV_SYMBOL_BLUETOOTH : "--");
+        }
         else if (item <= UI_BATTERY) snprintf(value, sizeof(value), "--");
         else snprintf(value, sizeof(value), "%s", LV_SYMBOL_RIGHT);
         lv_obj_t *v = label(obj, value, item == UI_TIMEOUT ? 142 : 164, 3,
                             item == UI_TIMEOUT ? 76 : 54, 0x86dbaf);
-        if (item > UI_BATTERY) lv_obj_set_style_text_font(v, &lv_font_montserrat_14, 0);
+        if (item > UI_BATTERY || item == UI_BLE) lv_obj_set_style_text_font(v, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
     }
     char position[24];
@@ -410,6 +427,76 @@ static void render_menu(void)
     lv_obj_set_style_text_align(count, LV_TEXT_ALIGN_RIGHT, 0);
     footer("v", "Chọn", "^");
     if (s_error) label(lv_screen_active(), s_error, 12, 195, 216, 0xf0a0a0);
+}
+
+static int flashlight_brightness(int64_t now)
+{
+    if (!s_flashlight_enabled) return 0;
+    int64_t elapsed = now-s_flashlight_start_ms;
+    if (s_flashlight_mode == 0) return 100;
+    if (s_flashlight_mode == 1) return elapsed % 1000 < 500 ? 100 : 0;
+    /* ... --- ... : intra-letter gap 1, letter gap 3, repeat gap 7 units. */
+    static const unsigned durations[] = {1,1,1,1,1,3,3,1,3,1,3,3,1,1,1,1,1,7};
+    unsigned phase = (unsigned)(elapsed/200 % 34);
+    for (unsigned i = 0; i < sizeof(durations)/sizeof(durations[0]); ++i) {
+        if (phase < durations[i]) return i % 2 == 0 ? 100 : 0;
+        phase -= durations[i];
+    }
+    return 0;
+}
+
+static void render_calendar(void)
+{
+    int today_d, today_m, today_y;
+    if (!hisu_clock_vietnam_date(&today_d, &today_m, &today_y)) {
+        header("Lịch");
+        label(lv_screen_active(), "Chưa đồng bộ giờ", 12, 75, 216, 0x86dbaf);
+        label(lv_screen_active(), "Kết nối Wi-Fi hoặc BLE", 12, 108, 216, 0x8c9690);
+        footer("", "", "");
+        return;
+    }
+    int today = hisu_calendar_jdn(today_d,today_m,today_y);
+    int selected = s_calendar_day ? s_calendar_day : today, day,month,year;
+    hisu_calendar_date(selected,&day,&month,&year);
+    char text[64];
+    snprintf(text,sizeof(text),"Lịch %02d/%d",month,year); header(text);
+    static const char *const weekdays[] = {"Chủ nhật","Thứ hai","Thứ ba","Thứ tư","Thứ năm","Thứ sáu","Thứ bảy"};
+    snprintf(text,sizeof(text),"%s, %02d/%02d",weekdays[(selected+1)%7],day,month);
+    lv_obj_t *title = label(lv_screen_active(),text,8,43,224,0xeeeeee);
+    lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    hisu_lunar_date_t lunar;
+    if (hisu_calendar_lunar(day,month,year,&lunar)) {
+        snprintf(text,sizeof(text),"Âm: %02d/%02d/%d%s",lunar.day,lunar.month,lunar.year,lunar.leap ? " nhuận" : "");
+        title = label(lv_screen_active(),text,4,66,232,0x86dbaf);
+        lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    }
+    static const char *const short_days[] = {"CN","T2","T3","T4","T5","T6","T7"};
+    for (int col = 0; col < 7; ++col) {
+        title = label(lv_screen_active(),short_days[col],8+col*32,91,32,col ? 0x8c9690 : 0xf0a0a0);
+        lv_obj_set_style_text_font(title,&lv_font_montserrat_14,0);
+        lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    }
+    int first = hisu_calendar_jdn(1,month,year), offset = (first+1)%7;
+    int end = hisu_calendar_jdn(1,month == 12 ? 1 : month+1,year+(month == 12));
+    for (int jd = first; jd < end; ++jd) {
+        int slot = offset+jd-first, col = slot%7;
+        lv_obj_t *cell = lv_obj_create(lv_screen_active()); lv_obj_remove_style_all(cell);
+        lv_obj_set_pos(cell,8+col*32,111+slot/7*16); lv_obj_set_size(cell,32,16);
+        lv_obj_set_style_radius(cell,3,0);
+        if (jd == selected) {
+            lv_obj_set_style_bg_color(cell,lv_color_hex(theme_color(0x224b3d)),0);
+            lv_obj_set_style_bg_opa(cell,LV_OPA_COVER,0);
+        }
+        if (jd == today) {
+            lv_obj_set_style_border_width(cell,1,0);
+            lv_obj_set_style_border_color(cell,lv_color_hex(theme_color(0x86dbaf)),0);
+        }
+        snprintf(text,sizeof(text),"%d",jd-first+1);
+        title = label(cell,text,0,0,32,jd == selected ? 0x86dbaf : col ? 0xeeeeee : 0xf0a0a0);
+        lv_obj_set_style_text_font(title,&lv_font_montserrat_14,0);
+        lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    }
+    footer("<","Hôm nay",">");
 }
 
 static void render_edit(void)
@@ -559,7 +646,7 @@ static void render_password(void)
     }
     const char *action = s_pass_choice < 36 ? "Thêm" : s_pass_choice == 36 ? "Đổi" :
         s_pass_choice == 37 ? "Xóa" : s_pass_choice == 38 ? "Nối" : "Hủy";
-    footer("<", action, ">");
+    footer(">", action, "v");
 }
 
 static bool handle_wifi_key(hisu_key_t key)
@@ -607,10 +694,10 @@ static bool handle_wifi_key(hisu_key_t key)
         }
         if (s_model.page != UI_WIFI_PAGE) s_wifi_select_after_scan = false;
     } else {
-        if (key == HISU_KEY_DOWN) s_pass_choice = (s_pass_choice / 8) * 8 + (s_pass_choice + 7) % 8;
-        if (key == HISU_KEY_UP) s_pass_choice = (s_pass_choice / 8) * 8 + (s_pass_choice + 1) % 8;
-        if (key == HISU_KEY_DOWN_HELD) s_pass_choice = ((s_pass_choice / 8 + 1) % 5) * 8 + s_pass_choice % 8;
-        if (key == HISU_KEY_UP_HELD) s_pass_choice = ((s_pass_choice / 8 + 4) % 5) * 8 + s_pass_choice % 8;
+        if (key == HISU_KEY_DOWN || key == HISU_KEY_DOWN_HELD)
+            s_pass_choice = (s_pass_choice / 8) * 8 + (s_pass_choice + 1) % 8;
+        if (key == HISU_KEY_UP || key == HISU_KEY_UP_HELD)
+            s_pass_choice = ((s_pass_choice / 8 + 1) % 5) * 8 + s_pass_choice % 8;
         if (key == HISU_KEY_BOOT) {
             if (s_pass_choice < 36 && s_pass_length < 64) {
                 s_password[s_pass_length++] = s_keysets[s_pass_mode][s_pass_choice];
@@ -640,6 +727,7 @@ static void render(void)
         ? s_model.value != 0 : hisu_settings_get(HISU_SETTING_THEME) == 1;
     lv_obj_clean(root);
     s_idle_gif = NULL;
+    s_idle_clock = NULL;
     s_subtitle_body = NULL;
     s_battery_body = s_battery_tip = s_battery_charge = NULL;
     lv_obj_remove_style_all(root);
@@ -649,6 +737,12 @@ static void render(void)
     switch (s_model.page) {
     case UI_MENU: render_menu(); break;
     case UI_EDIT: render_edit(); break;
+    case UI_CALENDAR_PAGE: render_calendar(); break;
+    case UI_FLASHLIGHT_PAGE:
+        lv_obj_set_style_bg_color(root,lv_color_hex(0xffffff),0);
+        footer(s_flashlight_enabled ? "filled-circle" : "circle",
+               s_flashlight_mode == 0 ? "Sáng" : s_flashlight_mode == 1 ? "Chớp" : "SOS", "Trở lại");
+        break;
     case UI_INFO:
         header(s_items[s_model.selected]);
         if (s_model.selected == UI_BATTERY && s_power.valid) {
@@ -671,8 +765,48 @@ static void render(void)
             label(root, text, 12, 163, 216, 0xeeeeee);
             usage_text(text, sizeof(text), "Sleep", s_power.screen_sleep_seconds);
             label(root, text, 12, 186, 216, 0xeeeeee);
+        } else if (s_model.selected == UI_BLE) {
+            hisu_ble_status_t ble; hisu_ble_get(&ble);
+            s_rendered_ble = ble;
+            if (ble.show_pin) {
+                label(root, "Đang ghép nối",12,53,216,0x86dbaf);
+                label(root, ble.name, 12, 82, 216, 0xeeeeee);
+                char pin[24]; snprintf(pin, sizeof(pin), "Mã: %06" PRIu32, ble.pin);
+                label(root, pin, 12, 116, 216, 0x86dbaf);
+                label(root, "Nhập mã ở điện thoại", 12, 146, 216, 0x8c9690);
+            } else if (ble.authenticated || !ble.ready) {
+                label(root,ble.authenticated ? "Đã ghép điện thoại" : "Bluetooth chưa sẵn",12,53,216,0x86dbaf);
+                label(root,ble.name,12,82,216,0xeeeeee);
+                label(root,"Setup Wi-Fi / gửi giờ",12,116,216,0xeeeeee);
+                label(root,"Tự tắt sau 5 phút",12,146,216,0x8c9690);
+            } else {
+                lv_obj_t *name = label(root,ble.error ? "Ghép nối bị lỗi" : ble.name,8,43,224,
+                                      ble.enabled ? 0x86dbaf : 0x8c9690);
+                lv_obj_set_style_text_align(name,LV_TEXT_ALIGN_CENTER,0);
+                char url[176];
+                int length = snprintf(url,sizeof(url),"%s#name=%s",CONFIG_HISU_BLE_COMPANION_URL,ble.name);
+                /* Extra white border preserves the four-module quiet zone on a small display. */
+                lv_obj_t *qr_frame = lv_obj_create(root);
+                lv_obj_remove_style_all(qr_frame);
+                lv_obj_set_pos(qr_frame,48,64);
+                lv_obj_set_size(qr_frame,144,144);
+                lv_obj_set_style_bg_color(qr_frame,lv_color_hex(0xffffff),0);
+                lv_obj_set_style_bg_opa(qr_frame,LV_OPA_COVER,0);
+                lv_obj_t *qr = lv_qrcode_create(qr_frame);
+                lv_qrcode_set_size(qr,132);
+                lv_qrcode_set_dark_color(qr,lv_color_hex(0x000000));
+                lv_qrcode_set_light_color(qr,lv_color_hex(0xffffff));
+                lv_qrcode_set_quiet_zone(qr,true);
+                lv_obj_set_pos(qr,6,6);
+                if (strncmp(CONFIG_HISU_BLE_COMPANION_URL,"https://",8) || length < 0 || length >= sizeof(url) ||
+                    lv_qrcode_update(qr,url,(uint32_t)length) != LV_RESULT_OK) {
+                    lv_obj_delete(qr_frame);
+                    label(root,"Kiểm tra link BLE",12,116,216,0xf0a0a0);
+                }
+            }
+            footer(ble.enabled ? "filled-circle" : "circle", "Mở 5 phút", "Trở lại");
         } else label(root, "Không khả dụng", 12, 83, 216, 0xa1a9a5);
-        footer("Trở lại", "", "");
+        if (s_model.selected != UI_BLE) footer("Trở lại", "", "");
         break;
     case UI_WIFI_PAGE: render_wifi(); break;
     case UI_WIFI_PASSWORD: render_password(); break;
@@ -697,7 +831,40 @@ static void handle_key(hisu_key_t key)
     if (!key) return;
     s_activity_ms = esp_timer_get_time() / 1000;
     if (s_asleep) { s_asleep = false; return; }
+    if (s_model.page == UI_FLASHLIGHT_PAGE) {
+        if (key == HISU_KEY_UP || key == HISU_KEY_BACK) {
+            s_flashlight_enabled = false;
+            s_model.page = UI_MENU;
+        } else if (key == HISU_KEY_DOWN) {
+            s_flashlight_enabled = !s_flashlight_enabled;
+            s_flashlight_start_ms = esp_timer_get_time()/1000;
+        } else if (key == HISU_KEY_BOOT) {
+            s_flashlight_mode = (s_flashlight_mode+1)%3;
+            s_flashlight_enabled = true;
+            s_flashlight_start_ms = esp_timer_get_time()/1000;
+        }
+        render(); return;
+    }
+    if (s_model.page == UI_INFO && s_model.selected == UI_BLE) {
+        hisu_ble_status_t ble; hisu_ble_get(&ble);
+        if (key == HISU_KEY_DOWN) hisu_ble_enable(!ble.enabled);
+        if (key == HISU_KEY_BOOT) hisu_ble_enable(true);
+        if (key == HISU_KEY_UP || key == HISU_KEY_BACK) s_model.page = UI_MENU;
+        render(); return;
+    }
     if (handle_wifi_key(key)) return;
+    if (s_model.page == UI_CALENDAR_PAGE) {
+        int d,m,y;
+        if (key == HISU_KEY_BACK) s_model.page = UI_MENU;
+        else if (key == HISU_KEY_BOOT) s_calendar_day = 0;
+        else if (hisu_clock_vietnam_date(&d,&m,&y)) {
+            int jd = s_calendar_day ? s_calendar_day : hisu_calendar_jdn(d,m,y);
+            if (key == HISU_KEY_DOWN || key == HISU_KEY_DOWN_HELD) --jd;
+            if (key == HISU_KEY_UP || key == HISU_KEY_UP_HELD) ++jd;
+            if (jd >= hisu_calendar_jdn(1,1,2024) && jd <= hisu_calendar_jdn(31,12,2099)) s_calendar_day = jd;
+        }
+        render(); return;
+    }
     if (s_model.page == UI_IDLE && s_status.status != HISU_UI_IDLE && s_subtitle_body &&
         (key == HISU_KEY_UP || key == HISU_KEY_DOWN)) {
         lv_obj_scroll_by(s_subtitle_body, 0, key == HISU_KEY_UP ? 44 : -44, LV_ANIM_OFF);
@@ -717,6 +884,14 @@ static void handle_key(hisu_key_t key)
         }
     }
     hisu_ui_model_key(&s_model, key);
+    if (previous == UI_MENU && s_model.page == UI_CALENDAR_PAGE) s_calendar_day = 0;
+    if (previous == UI_MENU && s_model.page == UI_INFO && s_model.selected == UI_BLE)
+        hisu_ble_enable(true);
+    if (previous == UI_MENU && s_model.page == UI_FLASHLIGHT_PAGE) {
+        s_flashlight_enabled = true;
+        s_flashlight_mode = 0;
+        s_flashlight_start_ms = esp_timer_get_time()/1000;
+    }
     if (previous == UI_MENU && s_model.selected == UI_SCREEN_OFF && key == HISU_KEY_BOOT)
         s_asleep = true;
     if (previous == UI_MENU && s_model.page == UI_WIFI_PAGE) {
@@ -777,7 +952,7 @@ static void ui_task(void *arg)
     ESP_LOGI("UI", "Ready: animated idle, menu and subtitles");
     int64_t s_last_service_refresh = 0;
     for (;;) {
-        hisu_board_enable_volume_hold(s_model.page == UI_WIFI_PASSWORD && !s_asleep);
+        hisu_board_enable_volume_hold((s_model.page == UI_WIFI_PASSWORD || s_model.page == UI_CALENDAR_PAGE) && !s_asleep);
         handle_key(hisu_board_poll_key());
         status_event_t event;
         bool changed = false;
@@ -795,15 +970,23 @@ static void ui_task(void *arg)
         int64_t now = esp_timer_get_time() / 1000;
         if (now - s_last_service_refresh >= 1000) {
             s_last_service_refresh = now;
-            if (s_model.page == UI_MENU || s_model.page == UI_WIFI_PAGE ||
+            if (s_model.page == UI_MENU || s_model.page == UI_WIFI_PAGE || s_model.page == UI_CALENDAR_PAGE ||
                 (s_model.page == UI_INFO && s_model.selected == UI_BATTERY)) render();
+            else if (s_model.page == UI_INFO && s_model.selected == UI_BLE) {
+                hisu_ble_status_t ble; hisu_ble_get(&ble);
+                if (ble.ready != s_rendered_ble.ready || ble.enabled != s_rendered_ble.enabled ||
+                    ble.connected != s_rendered_ble.connected || ble.authenticated != s_rendered_ble.authenticated ||
+                    ble.show_pin != s_rendered_ble.show_pin || ble.pin != s_rendered_ble.pin ||
+                    ble.error != s_rendered_ble.error || strcmp(ble.name,s_rendered_ble.name)) render();
+            }
             else if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE) update_idle_status();
         }
         // Never turn the screen off during settings or active conversation.
         if (timeout && s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && now - s_activity_ms >= timeout * 1000LL) {
             s_asleep = true;
         }
-        int brightness = s_asleep ? 0 : s_model.page == UI_EDIT && s_model.selected == UI_BRIGHTNESS
+        int brightness = s_model.page == UI_FLASHLIGHT_PAGE ? flashlight_brightness(now) :
+            s_asleep ? 0 : s_model.page == UI_EDIT && s_model.selected == UI_BRIGHTNESS
             ? s_model.value : hisu_settings_get(HISU_SETTING_BRIGHTNESS);
         if (brightness != s_applied_brightness) {
             err = hisu_board_set_brightness(brightness);

@@ -13,7 +13,7 @@
 
 Bản thêm Wi-Fi/pin đã build và link thành công trên ESP-IDF 5.5.5, tạo `HisuOS.bin` kích thước `0x116d50`, còn 73% app slot trống. Bàn phím kiểm tra đủ 95 ký tự ASCII in được, mask và nhãn phím vừa 240×240. Đây chưa phải kết quả kết nối/ADC trên board; host tests mới chưa chạy do thiếu MSVC.
 
-Firmware dùng ESP-IDF 5.5.5 và LVGL 9.4.0. Đã thêm service Wi-Fi và battery ADC theo profile Muse ZHENGCHEN; chưa kiểm chứng chúng trên board thật. Chưa tích hợp BLE, microphone, speaker hoặc AI. Menu chỉ lưu volume/speaker preferences, không phát âm thanh.
+Firmware dùng ESP-IDF 5.5.5 và LVGL 9.4.0. Đã thêm service Wi-Fi và battery ADC theo profile Muse ZHENGCHEN; chưa kiểm chứng chúng trên board thật. Đã tích hợp BLE setup Wi-Fi và gửi giờ, chưa kiểm chứng ghép nối trên board. Chưa tích hợp microphone, speaker hoặc AI. Menu chỉ lưu volume/speaker preferences, không phát âm thanh.
 
 Board driver không include LVGL; UI sở hữu display buffer, render và input loop. LCD DMA callback chỉ báo `lv_display_flush_ready`, không thay đổi LVGL objects. Render buffer internal DMA 40 dòng, RGB565. SPI mode 3/80MHz, RGB/inversion theo cấu hình FriendOS trước; cần kiểm tra lại trên board cho bản driver mới.
 
@@ -43,21 +43,21 @@ Không flash trong build helper. Flash cần được thực hiện riêng sau k
 - Không có chữ bị cắt/đè trong header, row, value hoặc footer 240x240.
 - Font UI là Hisu Semibold 16px (Source Code Pro Semibold), đủ dấu tiếng Việt. Kiểm tra nét chữ ở cả theme sáng/tối.
 - Từ mục đầu đi xuống: sau năm dòng, cửa sổ danh sách dịch từng dòng; đi lên và quay lại từ editor/info giữ vị trí. Chỉ wrap khi đi qua đầu/cuối danh sách.
-- Footer khớp thứ tự vật lý Vol− / BOOT / Vol+: menu v / Chọn / ^; editor − / Lưu / +; màn hình Bluetooth/pin: Vol− ứng với Trở lại bên trái, BOOT không trở lại. Wi-Fi có danh sách riêng, giữ BOOT về menu.
+- Footer khớp thứ tự vật lý Vol− / BOOT / Vol+: menu v / Chọn / ^; editor − / Lưu / +; trang Pin: Vol− trở lại; Bluetooth: Vol− bật/tắt, BOOT mở/gia hạn 5 phút, Vol+ trở lại. Wi-Fi có danh sách riêng, giữ BOOT về menu.
 - Brightness 10–100%, preview đúng, giữ BOOT hủy và trả về giá trị đã lưu.
 - BOOT xác nhận brightness/volume/speaker/timeout; reboot giữ giá trị.
 - Timeout chỉ tắt backlight khi idle, không khi editor/preview hoặc active subtitle.
 - Nút đầu tiên khi backlight tắt chỉ wake, nút tiếp theo mới thao tác.
 - Preview phụ đề có đủ dấu tiếng Việt, text dài đọc được, thoát về menu.
 - Phụ đề từ API wrap theo chiều rộng, up/down cuộn dọc nếu dài; không chạy chữ ngang.
-- Bluetooth chưa có service và hiển thị Không khả dụng. Wi-Fi/pin có snapshot thật; lỗi khởi tạo phải hiển thị không khả dụng thay vì số đo giả.
+- Bluetooth dùng service GATT riêng với mã ghép nối 6 số; kiểm tra theo docs/BLE_SETUP.md. Wi-Fi/pin có snapshot thật; lỗi khởi tạo phải hiển thị không khả dụng thay vì số đo giả.
 - Giữ BOOT không phát thêm click khi nhả; debounce không nhảy hai mục.
 - Theo dõi LCD transfer errors, heap, stack và watchdog qua nhiều vòng điều hướng.
 
 ## Kiểm Thử Wi-Fi Và Pin
 
 - Quét mạng khi chưa có credential; khi có mạng đã lưu thì nhóm đã lưu đứng trước nhóm chưa lưu, mỗi nhóm RSSI giảm dần. Mesh không lặp SSID, danh sách có Quét lại/Bật-tắt Wi-Fi/Trở lại. Scan không làm treo nút.
-- Mạng mở: BOOT kết nối trực tiếp. WPA2/WPA3 Personal: bàn phím 8×5, nhấn Vol− trái/Vol+ phải, giữ 1 giây Vol− xuống/Vol+ lên, BOOT thêm ký tự/chọn chức năng. Kiểm tra nhả sau giữ không đi thêm cột, quấn mép bàn phím, giữ nhiều giây chỉ đi một hàng và điều khiển ở menu khác không đổi. Thử chữ hoa, số, ký hiệu và SP (space); chỉ thấy mật khẩu dạng sao, không xuất hiện trong log.
+- Mạng mở: BOOT kết nối trực tiếp. WPA2/WPA3 Personal: bàn phím 8×5, nhấn Vol− sang phải/Vol+ xuống, giữ 1 giây lặp cùng hướng mỗi 180ms, BOOT thêm ký tự/chọn chức năng. Kiểm tra nhả sau giữ không đi thêm cột, quấn mép bàn phím, giữ nhiều giây lặp liên tục và vòng lại và điều khiển ở menu khác không đổi. Thử chữ hoa, số, ký hiệu và SP (space); chỉ thấy mật khẩu dạng sao, không xuất hiện trong log.
 - Nhập sai mật khẩu rồi nhập đúng; lỗi auth dừng retry. Mất AP tạm thời: reconnect có backoff, tối đa sáu lần; lỗi/timeouts không crash UI. Tắt Wi-Fi phải dừng radio và retry, dù có scan/join chờ.
 - Kết nối rồi tắt modem: bấm Quét lại trong lúc reconnect, phải quét được mạng khác và đưa con trỏ về mạng mạnh nhất. Quét tạm hủy lần kết nối đang chạy; retry tiếp sau 10 giây. Thử quét lặp, quét khi vẫn có kết nối và bật lại modem; không mất credential đã lưu. Kiểm tra icon Wi-Fi ở cả hai theme: các vòng có nét 1 px, tách nhau và tách chấm giữa. Các trường hợp này cần chạy trên board thật.
 - Sau nhận IP: hiển thị IP/RSSI; reboot tự nối cùng mạng nếu radio bật. Chọn mạng mới nhưng kết nối lỗi không ghi đè mạng đã lưu. Kiểm tra trạng thái radio giữ qua reboot.

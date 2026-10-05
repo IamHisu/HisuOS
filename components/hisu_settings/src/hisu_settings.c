@@ -8,10 +8,10 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on"};
-static const int s_min[] = {10, 0, 0, 0, 0, 0};
-static const int s_max[] = {100, 100, 1, 600, 1, 1};
-static int s_values[] = {75, 55, 1, 0, 0, 1};
+static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on", "tz_minutes"};
+static const int s_min[] = {10, 0, 0, 0, 0, 0, -720};
+static const int s_max[] = {100, 100, 1, 600, 1, 1, 840};
+static int s_values[] = {75, 55, 1, 0, 0, 1, 420};
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
 

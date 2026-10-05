@@ -65,23 +65,23 @@ class UiModelTests(unittest.TestCase):
         self.key(m, 1)
         self.assertEqual(m.page, 1)
         self.key(m, 2)
-        self.assertEqual(m.selected, 9)
+        self.assertEqual(m.selected, 11)
         self.key(m, 3)
         self.assertEqual(m.selected, 0)
         self.key(m, 4)
         self.assertEqual(m.page, 0)
 
     def test_every_menu_destination(self):
-        for item in range(10):
+        for item in range(12):
             m = Model(1, item, 75, 0)
             self.key(m, 1)
-            expected = 2 if item < 5 else 5 if item == 5 else 0 if item in (8, 9) else 3
+            expected = 2 if item < 5 else 5 if item == 5 else 7 if item == 8 else 8 if item == 9 else 0 if item in (10, 11) else 3
             self.assertEqual(m.page, expected, item)
 
     def test_edit_and_cancel(self):
         m = Model(2, 0, 75, 0)
         self.key(m, 2)
-        self.assertEqual(m.value, 80)
+        self.assertEqual(m.value, 85)
         self.key(m, 3)
         self.assertEqual(m.value, 75)
         self.key(m, 4)
@@ -89,17 +89,17 @@ class UiModelTests(unittest.TestCase):
 
     def test_menu_scrolls_one_row_and_retains_position(self):
         m = Model(1, 0, 0, 0, 0)
-        for selected in range(1, 10):
+        for selected in range(1, 12):
             self.key(m, 3)
             self.assertEqual(m.selected, selected)
             self.assertEqual(m.first_visible, max(0, selected - 4))
         self.key(m, 3)
         self.assertEqual((m.selected, m.first_visible), (0, 0))
         self.key(m, 2)
-        self.assertEqual((m.selected, m.first_visible), (9, 5))
-        for selected in range(8, -1, -1):
+        self.assertEqual((m.selected, m.first_visible), (11, 7))
+        for selected in range(10, -1, -1):
             self.key(m, 2)
-            self.assertEqual(m.first_visible, min(5, selected))
+            self.assertEqual(m.first_visible, min(7, selected))
 
     def test_info_back_is_physical_left_button(self):
         for item in (6, 7):

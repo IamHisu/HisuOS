@@ -15,3 +15,5 @@ UI hiện dùng `font_vi_semibold_16.c`, raster hóa từ Source Code Pro Semibo
 License font được lưu tại `DejaVuSans-LICENSE.txt`. Không sao chép driver/UI implementation của Muse vào bước này.
 
 LVGL 9.4.0 được tải bằng ESP-IDF Component Manager, cùng license do upstream cung cấp trong managed component.
+
+`hisu_calendar.c` viết lại bằng C các phương trình thiên văn và quy tắc lịch âm Việt Nam do Hồ Ngọc Đức công bố tại https://www.xemamlich.uhm.vn/calrules.html (18/08/2008). Dùng kinh tuyến UTC+7; không sao chép bảng lịch hoặc thư viện JavaScript. Thuật toán thiên văn giản lược, giới hạn giao diện 2024–2099.

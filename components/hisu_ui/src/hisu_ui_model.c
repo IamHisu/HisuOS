@@ -15,7 +15,7 @@ int hisu_ui_adjust(int setting, int value, int direction)
     }
     if (setting != UI_BRIGHTNESS && setting != UI_VOLUME) return value;
     int min = setting == UI_BRIGHTNESS ? 10 : 0;
-    value += direction * 5;
+    value += direction * 10;
     return value < min ? min : value > 100 ? 100 : value;
 }
 
@@ -38,6 +38,8 @@ void hisu_ui_model_key(hisu_ui_model_t *m, int key)
         if (key == UI_KEY_BOOT) {
             if (m->selected <= UI_THEME) m->page = UI_EDIT;
             else if (m->selected == UI_WIFI) m->page = UI_WIFI_PAGE;
+            else if (m->selected == UI_CALENDAR) m->page = UI_CALENDAR_PAGE;
+            else if (m->selected == UI_FLASHLIGHT) m->page = UI_FLASHLIGHT_PAGE;
             else if (m->selected == UI_SCREEN_OFF || m->selected == UI_CLOSE) m->page = UI_IDLE;
             else m->page = UI_INFO;
         }

@@ -17,5 +17,6 @@ esp_err_t hisu_network_start(void);
 void hisu_network_get(hisu_network_status_t *out);
 esp_err_t hisu_network_scan(void);
 esp_err_t hisu_network_join(const char *ssid, const char *password);
+esp_err_t hisu_network_provision(const char *ssid, const char *password);
 esp_err_t hisu_network_enable(bool enabled);
 bool hisu_network_valid_password(const char *password);
