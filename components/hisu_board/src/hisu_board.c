@@ -12,6 +12,7 @@ static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static hisu_display_done_fn s_done;
 static void *s_context;
+static bool s_volume_hold;
 
 typedef struct {
     int pin;
@@ -118,6 +119,8 @@ esp_err_t hisu_board_set_brightness(int percent)
     return err;
 }
 
+void hisu_board_enable_volume_hold(bool enabled) { s_volume_hold = enabled; }
+
 hisu_key_t hisu_board_poll_key(void)
 {
     int64_t now = esp_timer_get_time() / 1000;
@@ -138,9 +141,12 @@ hisu_key_t hisu_board_poll_key(void)
                 result = b->key;
             }
         }
-        if (b->key == HISU_KEY_BOOT && b->pressed && !b->held && now - b->pressed_ms >= 800) {
+        int hold_ms = b->key == HISU_KEY_BOOT ? 800 : 1000;
+        if ((b->key == HISU_KEY_BOOT || s_volume_hold) && b->pressed && b->raw && !b->held &&
+            now - b->pressed_ms >= hold_ms && result == HISU_KEY_NONE) {
             b->held = true;
-            if (result == HISU_KEY_NONE) result = HISU_KEY_BACK;
+            result = b->key == HISU_KEY_BOOT ? HISU_KEY_BACK :
+                     b->key == HISU_KEY_UP ? HISU_KEY_UP_HELD : HISU_KEY_DOWN_HELD;
         }
     }
     return result;

@@ -35,8 +35,9 @@
 #define BTN_VOL_DOWN           39
 #define BTN_ACTIVE_LEVEL       0
 
-// GPIO8 maps to ADC1 channel 7; battery calibration is not defined here.
+// Raw-ADC profile from Muse Zhengchen / Xiaozhi reference; validate on hardware.
 #define BAT_ADC                8
+#define BAT_ADC_CHANNEL        ADC_CHANNEL_7
 
 // Muse reference only: verify GPIO9 wiring and polarity before using it.
 #define CHARGE_STATUS_GPIO     9

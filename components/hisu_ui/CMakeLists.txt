@@ -1,3 +1,4 @@
-idf_component_register(SRCS "src/hisu_ui.c" "src/hisu_ui_model.c" "fonts/font_vietnamese_16.c"
+idf_component_register(SRCS "src/hisu_ui.c" "src/hisu_ui_model.c" "fonts/font_vi_semibold_16.c"
+    EMBED_FILES "assets/idle_cat_dark.gif" "assets/idle_cat_light.gif"
     INCLUDE_DIRS "include" REQUIRES esp_common
-    PRIV_REQUIRES lvgl hisu_board hisu_settings esp_timer freertos)
+    PRIV_REQUIRES lvgl hisu_board hisu_settings hisu_network hisu_power esp_timer freertos)

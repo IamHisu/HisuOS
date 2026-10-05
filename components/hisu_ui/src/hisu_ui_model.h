@@ -1,15 +1,16 @@
 #pragma once
 
-enum {UI_IDLE, UI_MENU, UI_EDIT, UI_INFO, UI_PREVIEW};
+enum {UI_IDLE, UI_MENU, UI_EDIT, UI_INFO, UI_PREVIEW, UI_WIFI_PAGE, UI_WIFI_PASSWORD};
 enum {UI_KEY_BOOT = 1, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_BACK};
-enum {UI_BRIGHTNESS, UI_VOLUME, UI_SPEAKER, UI_TIMEOUT, UI_WIFI, UI_BLE,
-      UI_BATTERY, UI_SUBTITLES, UI_CLOSE, UI_ITEM_COUNT};
+enum {UI_BRIGHTNESS, UI_VOLUME, UI_SPEAKER, UI_TIMEOUT, UI_THEME, UI_WIFI, UI_BLE,
+      UI_BATTERY, UI_SCREEN_OFF, UI_CLOSE, UI_ITEM_COUNT};
 
 typedef struct {
     int page;
     int selected;
     int value;
     int preview;
+    int first_visible;
 } hisu_ui_model_t;
 
 void hisu_ui_model_key(hisu_ui_model_t *model, int key);

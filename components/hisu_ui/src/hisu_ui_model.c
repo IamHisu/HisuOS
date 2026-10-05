@@ -3,7 +3,7 @@
 int hisu_ui_adjust(int setting, int value, int direction)
 {
     if (direction != -1 && direction != 1) return value;
-    if (setting == UI_SPEAKER) return !value;
+    if (setting == UI_SPEAKER || setting == UI_THEME) return direction > 0;
     if (setting == UI_TIMEOUT) {
         const int presets[] = {0, 30, 60, 120, 300, 600};
         if (direction > 0) {
@@ -33,19 +33,25 @@ void hisu_ui_model_key(hisu_ui_model_t *m, int key)
     case UI_MENU:
         if (key == UI_KEY_UP) m->selected = (m->selected + UI_ITEM_COUNT - 1) % UI_ITEM_COUNT;
         if (key == UI_KEY_DOWN) m->selected = (m->selected + 1) % UI_ITEM_COUNT;
+        if (m->selected < m->first_visible) m->first_visible = m->selected;
+        if (m->selected >= m->first_visible + 5) m->first_visible = m->selected - 4;
         if (key == UI_KEY_BOOT) {
-            if (m->selected <= UI_TIMEOUT) m->page = UI_EDIT;
-            else if (m->selected == UI_SUBTITLES) { m->page = UI_PREVIEW; m->preview = 0; }
-            else if (m->selected == UI_CLOSE) m->page = UI_IDLE;
+            if (m->selected <= UI_THEME) m->page = UI_EDIT;
+            else if (m->selected == UI_WIFI) m->page = UI_WIFI_PAGE;
+            else if (m->selected == UI_SCREEN_OFF || m->selected == UI_CLOSE) m->page = UI_IDLE;
             else m->page = UI_INFO;
         }
         break;
     case UI_EDIT:
         if (key == UI_KEY_BOOT) m->page = UI_MENU;
+        else if (m->selected == UI_SPEAKER || m->selected == UI_THEME) {
+            if (key == UI_KEY_DOWN) m->value = !m->value;
+            else if (key == UI_KEY_UP) m->page = UI_MENU;
+        }
         else m->value = hisu_ui_adjust(m->selected, m->value, key == UI_KEY_UP ? 1 : -1);
         break;
     case UI_INFO:
-        if (key == UI_KEY_BOOT) m->page = UI_MENU;
+        if (key == UI_KEY_DOWN) m->page = UI_MENU; /* physical left button: Vol- */
         break;
     case UI_PREVIEW:
         if (key == UI_KEY_BOOT || key == UI_KEY_DOWN) {

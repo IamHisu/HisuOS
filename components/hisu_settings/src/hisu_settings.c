@@ -1,14 +1,17 @@
 #include "hisu_settings.h"
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
-static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout"};
-static const int s_min[] = {10, 0, 0, 0};
-static const int s_max[] = {100, 100, 1, 600};
-static int s_values[] = {75, 55, 1, 0};
+static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on"};
+static const int s_min[] = {10, 0, 0, 0, 0, 0};
+static const int s_max[] = {100, 100, 1, 600, 1, 1};
+static int s_values[] = {75, 55, 1, 0, 0, 1};
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
 
@@ -61,5 +64,126 @@ esp_err_t hisu_settings_set(hisu_setting_t key, int value)
         if (err == ESP_OK) s_values[key] = value;
     }
     xSemaphoreGive(s_lock);
+    return err;
+}
+
+typedef struct { char ssid[33]; char password[65]; } wifi_credentials_t;
+
+esp_err_t hisu_settings_load_power_usage(hisu_power_usage_record_t *out)
+{
+    if (!s_lock || !out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    size_t length = sizeof(*out);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = nvs_get_blob(s_nvs, "power_usage", out, &length);
+    xSemaphoreGive(s_lock);
+    if (err == ESP_OK && (length != sizeof(*out) || out->version != 1 || out->flags > 7 ||
+        out->baseline_percent > 100 || out->last_percent > 100 || out->baseline_battery_us > out->battery_us ||
+        out->screen_on_us > out->battery_us || out->screen_sleep_us > out->battery_us)) err = ESP_ERR_INVALID_SIZE;
+    if (err != ESP_OK) memset(out, 0, sizeof(*out));
+    return err == ESP_ERR_NVS_NOT_FOUND ? ESP_ERR_NOT_FOUND : err;
+}
+
+esp_err_t hisu_settings_save_power_usage(const hisu_power_usage_record_t *record)
+{
+    if (!s_lock || !record || record->version != 1) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = nvs_set_blob(s_nvs, "power_usage", record, sizeof(*record));
+    if (err == ESP_OK) err = nvs_commit(s_nvs);
+    xSemaphoreGive(s_lock);
+    return err;
+}
+typedef struct { uint32_t version, count; wifi_credentials_t entries[HISU_WIFI_SAVED_MAX]; } wifi_store_t;
+
+static bool valid_credentials(const wifi_credentials_t *entry)
+{
+    return entry->ssid[0] && memchr(entry->ssid, 0, sizeof(entry->ssid)) &&
+           memchr(entry->password, 0, sizeof(entry->password));
+}
+
+/* Caller holds s_lock. Preserve the old one-network format on upgrade. */
+static esp_err_t read_wifi_store(wifi_store_t *store)
+{
+    memset(store, 0, sizeof(*store));
+    size_t length = sizeof(*store);
+    esp_err_t err = nvs_get_blob(s_nvs, "wifi_list", store, &length);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        wifi_credentials_t old = {0};
+        length = sizeof(old);
+        err = nvs_get_blob(s_nvs, "wifi_creds", &old, &length);
+        if (err == ESP_OK && (length != sizeof(old) || !valid_credentials(&old))) err = ESP_ERR_INVALID_SIZE;
+        if (err == ESP_OK) { store->entries[0] = old; store->count = 1; }
+        memset(&old, 0, sizeof(old));
+        store->version = 1;
+        return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+    }
+    if (err != ESP_OK) return err;
+    if (length != sizeof(*store) || store->version != 1 || store->count > HISU_WIFI_SAVED_MAX)
+        return ESP_ERR_INVALID_SIZE;
+    for (uint32_t i = 0; i < store->count; ++i) {
+        if (!valid_credentials(&store->entries[i])) return ESP_ERR_INVALID_SIZE;
+        for (uint32_t j = 0; j < i; ++j)
+            if (!strcmp(store->entries[i].ssid, store->entries[j].ssid)) return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}
+
+esp_err_t hisu_settings_get_wifi(char ssid[33], char password[65])
+{
+    if (!s_lock || !ssid || !password) return ESP_ERR_INVALID_ARG;
+    wifi_store_t store;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = read_wifi_store(&store);
+    xSemaphoreGive(s_lock);
+    if (err == ESP_OK && !store.count) err = ESP_ERR_NVS_NOT_FOUND;
+    if (err == ESP_OK) {
+        memcpy(ssid, store.entries[0].ssid, 33);
+        memcpy(password, store.entries[0].password, 65);
+    } else { ssid[0] = 0; password[0] = 0; }
+    memset(&store, 0, sizeof(store));
+    return err;
+}
+
+esp_err_t hisu_settings_find_wifi(const char *ssid, char password[65])
+{
+    if (!s_lock || !ssid || !password) return ESP_ERR_INVALID_ARG;
+    password[0] = 0;
+    wifi_store_t store;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = read_wifi_store(&store);
+    xSemaphoreGive(s_lock);
+    if (err == ESP_OK) {
+        err = ESP_ERR_NVS_NOT_FOUND;
+        for (uint32_t i = 0; i < store.count; ++i) {
+            if (strcmp(ssid, store.entries[i].ssid)) continue;
+            memcpy(password, store.entries[i].password, 65);
+            err = ESP_OK; break;
+        }
+    }
+    memset(&store, 0, sizeof(store));
+    return err;
+}
+
+esp_err_t hisu_settings_save_wifi(const char *ssid, const char *password)
+{
+    if (!s_lock || !ssid || !password || !ssid[0] || strlen(ssid) > 32 || strlen(password) > 64)
+        return ESP_ERR_INVALID_ARG;
+    wifi_store_t store;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = read_wifi_store(&store);
+    if (err == ESP_OK) {
+        uint32_t index = 0;
+        while (index < store.count && strcmp(store.entries[index].ssid, ssid)) ++index;
+        if (index == store.count && store.count < HISU_WIFI_SAVED_MAX) ++store.count;
+        if (index >= HISU_WIFI_SAVED_MAX) index = HISU_WIFI_SAVED_MAX - 1;
+        for (uint32_t i = index; i > 0; --i) store.entries[i] = store.entries[i - 1];
+        memset(&store.entries[0], 0, sizeof(store.entries[0]));
+        memcpy(store.entries[0].ssid, ssid, strlen(ssid));
+        memcpy(store.entries[0].password, password, strlen(password));
+        err = nvs_set_blob(s_nvs, "wifi_list", &store, sizeof(store));
+    }
+    if (err == ESP_OK) err = nvs_commit(s_nvs);
+    xSemaphoreGive(s_lock);
+    memset(&store, 0, sizeof(store));
     return err;
 }
