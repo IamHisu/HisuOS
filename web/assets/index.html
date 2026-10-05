@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hisu Setup</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <main class="card">
+        <h1>Hisu Setup</h1>
+        <p id="subtitle" class="subtitle">Chọn Wi-Fi cho Hisu</p>
+
+        <div id="status">Đang quét Wi-Fi...</div>
+        <div id="homeHandoff" class="handoff hidden">
+            <p>Hisu đã vào Wi-Fi nhà. Điện thoại cần kết nối lại cùng mạng đó để mở Home.</p>
+            <a id="homeLink" href="#">Mở Hisu Home</a>
+            <span id="homeAddress"></span>
+        </div>
+        <div id="networks"></div>
+        <div id="passwordPanel" class="password-panel hidden">
+            <div class="selected-label">Wi-Fi đã chọn</div>
+            <div id="selectedSsid" class="selected-ssid"></div>
+                
+            <label for="wifiPassword">Mật khẩu</label>
+                
+            <div class="password-row">
+                <input id="wifiPassword" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Nhập mật khẩu Wi-Fi">
+                <button id="togglePassword" class="toggle-password" type="button">Hiện</button>
+            </div>
+        
+            <button id="connectButton" class="connect" type="button">Kết nối</button>
+        </div>
+
+        <button id="refreshButton" class="refresh" type="button">Quét lại</button>
+    </main>
+
+    <script src="/app.js"></script>
+</body>
+</html>

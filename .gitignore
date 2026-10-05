@@ -1,0 +1,9 @@
+/build/
+/build-idf*/
+/managed_components/
+/sdkconfig
+/sdkconfig.old
+/sdkconfig.idf*
+/web/src/node_modules/
+/.cache/
+*.log

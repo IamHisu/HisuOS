@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hisu Home</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <main class="home">
+        <header>
+            <h1>Hisu Home</h1>
+            <span id="connection">Đang kết nối...</span>
+        </header>
+        <section>
+            <div class="stage">
+                <div class="device">
+                    <div class="screen">
+                        <img id="preview" class="preview hidden" alt="Ảnh đã chọn">
+                        <div id="screenEmpty" class="screen-empty">Đang đọc màn hình...</div>
+                    </div>
+                </div>
+            </div>
+            <h2>Màn hình TFT</h2>
+            <p id="displayState">Đang đọc trạng thái...</p>
+            <div class="actions">
+                <label class="file-picker" for="imageFile">Chọn ảnh<input id="imageFile" type="file" accept="image/jpeg,image/png,image/gif,.jpg,.jpeg,.png,.gif"></label>
+                <button id="showFace" type="button">Hiện mặt Hisu</button>
+            </div>
+            <p id="uploadStatus" role="status"></p>
+            <p id="gifNotice" class="muted"></p>
+            <p class="muted">Ảnh và GIF tự thu vừa màn 240×240. GIF gốc tối đa 8 MB, file gửi tới Hisu tối đa 1 MB.</p>
+        </section>
+        <section class="chat-section">
+            <h2 id="chatTitle">Trò chuyện với Hisu</h2>
+            <fieldset class="provider-switch">
+                <legend>Dịch vụ AI</legend>
+                <label><input type="radio" name="aiProvider" value="gemini" checked><span>Gemini</span></label>
+                <label><input type="radio" name="aiProvider" value="openai"><span>OpenAI</span></label>
+            </fieldset>
+            <p id="aiState" role="status">Đang đọc trạng thái AI...</p>
+            <button id="testSubtitle" type="button">Thử phụ đề trên Hisu</button>
+            <form id="askForm">
+                <label for="question">Hỏi Hisu</label>
+                <div class="chat-row">
+                    <textarea id="question" maxlength="600" rows="2" placeholder="Bạn muốn hỏi gì?"></textarea>
+                    <button id="askButton" type="submit">Gửi</button>
+                </div>
+            </form>
+            <details id="profileSettings">
+                <summary>Tên và tính cách</summary>
+                <form id="profileForm" class="profile-form">
+                    <label for="profileName">Tên</label>
+                    <input id="profileName" type="text" maxlength="96" autocomplete="off" required>
+                    <label for="profilePersonality">Tính cách và cách nói</label>
+                    <textarea id="profilePersonality" maxlength="512" rows="3" required></textarea>
+                    <button id="saveProfile" type="submit">Lưu</button>
+                </form>
+                <p id="profileStatus" role="status"></p>
+            </details>
+            <details id="aiSettings">
+                <summary id="keySummary">Gemini API key</summary>
+                <form id="keyForm">
+                    <label for="apiKey">API key</label>
+                    <div class="chat-row">
+                        <input id="apiKey" type="password" autocomplete="off" spellcheck="false" maxlength="512" placeholder="Gemini API key">
+                        <button type="submit">Lưu</button>
+                        <button id="clearKey" type="button">Xóa</button>
+                    </div>
+                </form>
+                <p id="keyStatus" role="status"></p>
+                <p class="muted">Key lưu trên Hisu, trang này dùng HTTP nội bộ. Chỉ dùng trên Wi-Fi tin cậy.</p>
+            </details>
+        </section>
+    </main>
+    <script src="/gif-resize.js"></script>
+    <script src="/home.js"></script>
+</body>
+</html>
