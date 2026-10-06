@@ -296,10 +296,13 @@ done:
 static void worker(void *arg)
 {
     (void)arg;
+    const int64_t auto_scan_interval_us = 30000000;
+    int64_t next_auto_scan = 0;
     if (s_status.enabled) {
         esp_err_t err = radio_start();
         if (err != ESP_OK) failed(err);
         else scan();
+        next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
     }
     for (;;) {
         command_t command;
@@ -318,6 +321,7 @@ static void worker(void *arg)
                     xSemaphoreGive(s_lock);
                 }
                 scan();
+                next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
             }
             else if (command.type == CMD_JOIN) {
                 xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -363,7 +367,10 @@ static void worker(void *arg)
                         ++s_status.revision;
                         xSemaphoreGive(s_lock);
                     } else hisu_settings_set(HISU_SETTING_WIFI_ENABLED, previous_enabled);
-                    if (command.enabled && err == ESP_OK) scan();
+                    if (command.enabled && err == ESP_OK) {
+                        scan();
+                        next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
+                    }
                 }
                 if (err != ESP_OK) failed(err);
             }
@@ -432,6 +439,16 @@ static void worker(void *arg)
                 s_want_connection = false; s_deadline = 0; s_retry_at = 0;
                 esp_wifi_disconnect(); failed(ESP_ERR_TIMEOUT);
             } else begin_join();
+        }
+        /* A saved AP may come online after boot or after reconnect attempts end.
+         * Scan only while idle; a manual join or live connection takes priority. */
+        if (now >= next_auto_scan && !s_want_connection) {
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            bool should_scan = s_status.enabled && !s_status.connected &&
+                !s_status.joining && !s_status.scanning;
+            xSemaphoreGive(s_lock);
+            next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
+            if (should_scan) scan();
         }
     }
 }
