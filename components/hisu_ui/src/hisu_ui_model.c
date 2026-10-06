@@ -39,7 +39,6 @@ void hisu_ui_model_key(hisu_ui_model_t *m, int key)
             if (m->selected <= UI_THEME) m->page = UI_EDIT;
             else if (m->selected == UI_WIFI) m->page = UI_WIFI_PAGE;
             else if (m->selected == UI_CALENDAR) m->page = UI_CALENDAR_PAGE;
-            else if (m->selected == UI_FLASHLIGHT) m->page = UI_FLASHLIGHT_PAGE;
             else if (m->selected == UI_SETUP) m->page = UI_SETUP_PAGE;
             else if (m->selected == UI_SCREEN_OFF || m->selected == UI_CLOSE) m->page = UI_IDLE;
             else m->page = UI_INFO;
@@ -56,10 +55,7 @@ void hisu_ui_model_key(hisu_ui_model_t *m, int key)
     case UI_SETUP_PAGE:
         if (key == UI_KEY_UP) m->page = UI_MENU;
         else if (key == UI_KEY_DOWN) m->preview = (m->preview + 1) % UI_SETUP_VIEW_COUNT;
-        else if (key == UI_KEY_BOOT) {
-            if (m->preview == UI_SETUP_STOP) m->page = UI_MENU;
-            else m->preview = m->preview == UI_SETUP_QR ? UI_SETUP_INFO : UI_SETUP_QR;
-        }
+        else if (key == UI_KEY_BOOT) m->preview = UI_SETUP_QR;
         break;
     case UI_INFO:
         if (key == UI_KEY_DOWN) m->page = UI_MENU; /* physical left button: Vol- */

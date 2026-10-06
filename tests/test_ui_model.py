@@ -132,7 +132,7 @@ class UiModelTests(unittest.TestCase):
         self.key(m, 1)
         self.assertEqual(m.page, 1)
         self.key(m, 2)
-        self.assertEqual(m.selected, 11)
+        self.assertEqual(m.selected, 10)
         self.key(m, 3)
         self.assertEqual(m.selected, 0)
         self.key(m, 4)
@@ -146,10 +146,10 @@ class UiModelTests(unittest.TestCase):
         self.assertEqual((m.page, m.selected, m.first_visible), (1, 8, 4))
 
     def test_every_menu_destination(self):
-        for item in range(12):
+        for item in range(11):
             m = Model(1, item, 75, 0)
             self.key(m, 1)
-            expected = 2 if item < 5 else 5 if item == 5 else 7 if item == 7 else 8 if item == 8 else 9 if item == 9 else 0 if item in (10, 11) else 3
+            expected = 2 if item < 5 else 5 if item == 5 else 7 if item == 7 else 9 if item == 8 else 0 if item in (9, 10) else 3
             self.assertEqual(m.page, expected, item)
 
     def test_edit_and_cancel(self):
@@ -162,38 +162,35 @@ class UiModelTests(unittest.TestCase):
         self.assertEqual(m.page, 1)
 
     def test_setup_back_preserves_view_without_confirming_stop(self):
-        for view in range(4):
+        for view in range(3):
             for key in (2, 4):
-                m = Model(9, 9, 0, view, 5)
+                m = Model(9, 8, 0, view, 5)
                 self.key(m, key)
-                self.assertEqual((m.page, m.preview, m.selected), (1, view, 9))
+                self.assertEqual((m.page, m.preview, m.selected), (1, view, 8))
 
     def test_setup_options_and_stop_confirmation(self):
-        m = Model(9, 9, 0, 0, 5)
-        for view in (1, 2, 3, 0):
+        m = Model(9, 8, 0, 0, 5)
+        for view in (1, 2, 0):
             self.key(m, 3)
             self.assertEqual((m.page, m.preview), (9, view))
-        for view, expected in ((0, 1), (1, 0), (2, 0)):
-            m = Model(9, 9, 0, view, 5)
+        for view, expected in ((0, 0), (1, 0), (2, 0)):
+            m = Model(9, 8, 0, view, 5)
             self.key(m, 1)
             self.assertEqual((m.page, m.preview), (9, expected))
-        m = Model(9, 9, 0, 3, 5)
-        self.key(m, 1)
-        self.assertEqual((m.page, m.preview), (1, 3))
 
     def test_menu_scrolls_one_row_and_retains_position(self):
         m = Model(1, 0, 0, 0, 0)
-        for selected in range(1, 12):
+        for selected in range(1, 11):
             self.key(m, 3)
             self.assertEqual(m.selected, selected)
             self.assertEqual(m.first_visible, max(0, selected - 4))
         self.key(m, 3)
         self.assertEqual((m.selected, m.first_visible), (0, 0))
         self.key(m, 2)
-        self.assertEqual((m.selected, m.first_visible), (11, 7))
-        for selected in range(10, -1, -1):
+        self.assertEqual((m.selected, m.first_visible), (10, 6))
+        for selected in range(9, -1, -1):
             self.key(m, 2)
-            self.assertEqual(m.first_visible, min(7, selected))
+            self.assertEqual(m.first_visible, min(6, selected))
 
     def test_info_back_is_physical_left_button(self):
         for item in (6,):

@@ -17,3 +17,9 @@ License font được lưu tại `DejaVuSans-LICENSE.txt`. Không sao chép driv
 LVGL 9.4.0 được tải bằng ESP-IDF Component Manager, cùng license do upstream cung cấp trong managed component.
 
 `hisu_calendar.c` viết lại bằng C các phương trình thiên văn và quy tắc lịch âm Việt Nam do Hồ Ngọc Đức công bố tại https://www.xemamlich.uhm.vn/calrules.html (18/08/2008). Dùng kinh tuyến UTC+7; không sao chép bảng lịch hoặc thư viện JavaScript. Thuật toán thiên văn giản lược, giới hạn giao diện 2024–2099.
+
+Bộ resize GIF trong trang Setting được chuyển từ `FriendOS/main/web-src/gif-resize.js`, commit `71654b47462d4723e1dd4f1b6e2108a4d54cbe85`, theo yêu cầu của chủ repository:
+
+- Nguồn: https://github.com/IamHisu/FriendOS/tree/71654b47462d4723e1dd4f1b6e2108a4d54cbe85/main/web-src
+- Dùng `gifuct-js` 2.1.2 để parse/giải mã frame và `gifenc` 1.0.3 để lượng tử màu/mã hóa lại. Hai package dùng giấy phép MIT; thông tin phiên bản, license và integrity được giữ trong `components/hisu_media/web-src/package-lock.json`.
+- Bundle được nhúng trực tiếp vào firmware, không tải mã hoặc tài nguyên từ Internet khi dùng hotspot.

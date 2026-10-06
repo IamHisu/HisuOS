@@ -7,9 +7,13 @@
 #define HISU_MEDIA_WIDTH 240
 #define HISU_MEDIA_HEIGHT 240
 #define HISU_MEDIA_BYTES (HISU_MEDIA_WIDTH * HISU_MEDIA_HEIGHT * 2)
+#define HISU_MEDIA_GIF_MAX_BYTES (1024 * 1024)
+#define HISU_MEDIA_BUFFER_BYTES HISU_MEDIA_GIF_MAX_BYTES
 
 typedef struct {
     bool ready, enabled, opening, receiving, pending, saving, has_image;
+    bool gif;
+    uint32_t image_bytes;
     uint32_t revision;
     esp_err_t error;
 } hisu_media_status_t;
@@ -20,4 +24,4 @@ void hisu_media_close(void);
 esp_err_t hisu_media_restore_default(void);
 void hisu_media_get(hisu_media_status_t *out);
 /* Copy into caller-owned storage: no LVGL objects or shared pixel pointers. */
-bool hisu_media_copy_image(void *pixels, size_t size, uint32_t *revision);
+bool hisu_media_copy_image(void *pixels, size_t size, hisu_media_status_t *status);

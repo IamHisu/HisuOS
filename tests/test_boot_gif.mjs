@@ -19,6 +19,8 @@ assert.ok(prepare.indexOf('gpio_config(&backlight)') < prepare.indexOf('gpio_hol
   'Reconfigure the backlight low before releasing its restart hold');
 assert.ok(prepare.indexOf('gpio_hold_dis(LCD_BL)') < prepare.indexOf('gpio_hold_en(LCD_BL)'),
   'Keep boot backlight held low until the first frame');
+assert.match(prepare,/display_reset_hold\(\)/,
+  'Keep the LCD reset asserted while services start');
 const brightness = board.split('esp_err_t hisu_board_set_brightness(int percent)')[1].split('void hisu_board_enable_volume_hold')[0];
 assert.match(brightness,/if \(percent == 0\) return backlight_off\(\)/);
 assert.ok(brightness.indexOf('ledc_set_pin(') < brightness.indexOf('gpio_hold_dis(LCD_BL)'));
@@ -29,8 +31,20 @@ assert.ok(app.indexOf('hisu_board_prepare_boot()') >= 0);
 assert.ok(app.indexOf('hisu_board_prepare_boot()') < app.indexOf('hisu_settings_init()'),
   'Backlight must be held off before services start');
 const init = board.split('esp_err_t hisu_board_init(')[1].split('esp_err_t hisu_board_display_write(')[0];
+assert.ok(init.indexOf('gpio_hold_dis(LCD_RST)') < init.indexOf('esp_lcd_new_panel_st7789'),
+  'Release the retained reset only when the panel driver is ready');
 assert.match(init,/esp_lcd_panel_disp_on_off\(s_panel, false\)/);
 assert.doesNotMatch(init,/esp_lcd_panel_disp_on_off\(s_panel, true\)/);
+const hook = await readFile(new URL('../bootloader_components/hisu_boot_hooks/hooks.c',import.meta.url),'utf8');
+assert.match(hook,/gpio_ll_set_level\(&GPIO, 20, 0\)/);
+assert.match(hook,/gpio_ll_hold_en\(&GPIO, 20\)/);
+assert.match(hook,/gpio_ll_set_level\(&GPIO, 45, 0\)/);
+const beforeHook = hook.split('void bootloader_before_init(void)')[1].split('void bootloader_after_init(void)')[0];
+assert.ok(beforeHook.indexOf('keep_backlight_dark();') < beforeHook.indexOf('esp_rom_delay_us(20000);'));
+assert.ok(beforeHook.indexOf('esp_rom_delay_us(20000);') < beforeHook.indexOf('keep_panel_reset();'),
+  'Allow the backlight to discharge before the LCD reset turns the retained frame black');
+const afterHook = hook.split('void bootloader_after_init(void)')[1];
+assert.ok(afterHook.indexOf('keep_backlight_dark();') < afterHook.indexOf('keep_panel_reset();'));
 const sequence = ['render_boot_splash();','lv_refr_now(display);','hisu_board_display_show();',
   'hisu_board_set_brightness(boot_brightness);','bool boot_splash = true;'];
 let previous = -1;

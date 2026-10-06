@@ -285,7 +285,7 @@ Trang chỉ phục vụ IP AP, không IP station. Host/Origin/token/subnet/socke
 được kiểm tra; JSON bị giới hạn body/nesting/schema. Hotspot sống độc lập với
 kết nối Wi-Fi nhà, đóng khi phiên kết thúc; không NAT/bridge.
 QR Wi-Fi chứa SSID và mật khẩu; QR URL HTTP tự hiện khi điện thoại kết nối, ngắt kết nối trả về QR Wi-Fi.
-BOOT ở màn QR mở thông tin. Web dùng danh sách ổn định/icon sóng, mạng đã lưu kết nối ngay; mạng mới mở dialog mật khẩu.
+BOOT ở QR/thông tin bật/tắt hotspot Setting. Web dùng danh sách ổn định/icon sóng, mạng đã lưu kết nối ngay; mạng mới mở dialog mật khẩu.
 Không có deadline 5 phút. Ngắt hotspot có grace 10 giây; pagehide có grace 8 giây và mã trang chống unload cũ;
 request xác thực giữ lease 90 giây để đóng dự phòng khi không nhận được pagehide. Tải lại trang nhanh giữ phiên.
 `hisu_setup_portal` dùng DNS AP và redirect trên cùng HTTP server Setting cổng 80;

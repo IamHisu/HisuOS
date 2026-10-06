@@ -6,10 +6,11 @@
   <meta name="theme-color" content="#060914">
   <title>HisuOS · Setting</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/gif-resize.js"></script>
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header><strong>HisuOS</strong><span>Setting</span><span id="connection">Đang kết nối…</span></header>
+  <header><strong>HisuOS</strong><span>Setting</span><button id="connection" type="button" title="Ngắt kết nối và kết thúc phiên" disabled>Đang kết nối…</button></header>
   <main>
     <section id="login-section">
       <h1>Setting</h1>
@@ -24,6 +25,7 @@
       <section id="panel-wifi" role="tabpanel" aria-labelledby="tab-wifi">
         <div class="wifi-heading"><h1>Wi-Fi</h1><label class="toggle"><input id="wifi-enabled" type="checkbox">Bật Wi-Fi</label><button id="wifi-scan" type="button" title="Quét Wi-Fi" aria-label="Quét Wi-Fi">↻</button></div>
         <p id="wifi-status" role="status"></p>
+        <p class="msg" role="status" aria-live="polite"></p>
         <div id="wifi-networks" class="wifi-networks" aria-label="Mạng Wi-Fi"></div>
         <p id="wifi-empty" hidden>Không tìm thấy mạng</p>
         <button id="wifi-hidden" class="secondary" type="button">Thêm mạng</button>
@@ -58,10 +60,11 @@
       <section id="panel-wallpaper" role="tabpanel" aria-labelledby="tab-wallpaper" hidden>
       <div class="workspace">
         <div class="preview">
-          <input id="file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-          <div class="frame" data-empty="true"><canvas id="preview" width="240" height="240" tabindex="0" aria-label="Ảnh nền 240 × 240. Nhấn Enter để chọn ảnh." aria-describedby="preview-hint"></canvas><div class="drop" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 5h6"/><path d="M19 2v6"/><path d="M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/><circle cx="9" cy="9" r="2"/></svg><b>Chạm để chọn ảnh</b><small>PNG, JPEG hoặc WebP, tối đa 8 MB</small></div></div>
+          <input id="file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+          <div class="frame" data-empty="true"><canvas id="preview" width="240" height="240" tabindex="0" aria-label="Ảnh nền 240 × 240. Nhấn Enter để chọn ảnh."></canvas><img id="gif-preview" alt="" draggable="false" hidden><div class="drop" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 5h6"/><path d="M19 2v6"/><path d="M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V5a2 2 0 0 1 2-2h7.5"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/><circle cx="9" cy="9" r="2"/></svg><b>Chạm để chọn ảnh</b><small>PNG/JPEG/WebP/GIF ≤8 MB</small></div>
+            <div id="loading" class="loading" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><b id="loading-text"></b><span class="bar" id="loading-bar" aria-hidden="true"><i id="loading-fill"></i></span></div></div>
           <div class="zoom"><label for="zoom">Thu phóng <output id="zoom-value">100%</output></label><input id="zoom" type="range" min="100" max="400" step="1" value="100" disabled></div>
-          <span>240 × 240</span><p id="preview-hint" class="hint">Chạm vào ảnh để chọn ảnh khác. Kéo để chỉnh vị trí, chụm hai ngón hoặc cuộn chuột để phóng to.</p></div>
+          <p id="message" class="msg" role="status" aria-live="polite"></p></div>
         <form id="upload">
           <h1>Hình nền</h1>
           <label for="fit">Bố cục</label><select id="fit"><option value="cover">Lấp đầy</option><option value="contain">Giữ toàn bộ</option></select>
@@ -72,6 +75,7 @@
       </section>
       <section id="panel-device" role="tabpanel" aria-labelledby="tab-device" hidden>
         <h1>Thiết bị</h1>
+        <p class="msg" role="status" aria-live="polite"></p>
         <label for="brightness">Độ sáng <output id="brightness-value"></output></label><input id="brightness" type="range" min="10" max="100" step="1" data-setting="brightness">
         <label for="volume">Âm lượng <output id="volume-value"></output></label><input id="volume" type="range" min="0" max="100" step="1" data-setting="volume">
         <label class="toggle"><input id="speaker" type="checkbox" data-setting="speaker">Loa</label>
@@ -80,9 +84,7 @@
         <label for="timezone">Múi giờ UTC (phút)</label><input id="timezone" type="number" min="-720" max="840" step="1" data-setting="timezone">
         <button id="time-sync" type="button">Đồng bộ giờ điện thoại</button>
       </section>
-      <div class="session"><span id="expires"></span><button id="logout" type="button">Kết thúc phiên</button></div>
     </section>
-    <p id="message" role="status" aria-live="polite"></p>
   </main>
 </body>
 </html>

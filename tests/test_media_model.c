@@ -61,7 +61,7 @@ int main(void)
     bad = record; bad.length--; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
     bad = record; bad.width=241; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
     bad = record; bad.version=2; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
-    bad = record; bad.flags=2; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
+    bad = record; bad.flags=3; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
     bad = record; bad.sequence=0; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
     bad = record; bad.reserved[0]=1; assert(!hisu_media_record_header_valid(&bad));
     bad = record; bad.magic=UINT32_MAX; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
@@ -69,6 +69,17 @@ int main(void)
     assert(hisu_media_record_valid(&record,NULL));
     record.crc=1; checksum(&record); assert(!hisu_media_record_header_valid(&record));
     assert(!hisu_media_record_header_valid(NULL));
+    uint8_t gif[] = {'G','I','F','8','9','a',240,0,240,0,0x80,0,0,
+        0,0,0,255,255,255,0x2c,0,0,0,0,1,0,1,0,0,2,2,0x44,1,0,0x3b};
+    assert(hisu_media_gif_valid(gif,sizeof(gif)));
+    for (size_t n=0;n<sizeof(gif);++n) assert(!hisu_media_gif_valid(gif,n));
+    gif[6]=241; assert(!hisu_media_gif_valid(gif,sizeof(gif))); gif[6]=240;
+    gif[6]=120; assert(hisu_media_gif_valid(gif,sizeof(gif))); gif[6]=240;
+    gif[23]=241; assert(!hisu_media_gif_valid(gif,sizeof(gif))); gif[23]=1;
+    record.flags=2; record.length=sizeof(gif); record.crc=hisu_media_crc(gif,sizeof(gif)); checksum(&record);
+    assert(hisu_media_record_valid(&record,gif));
+    gif[sizeof(gif)-1]=0; assert(!hisu_media_record_valid(&record,gif));
+
     puts("Media model tests passed (IPv4-mapped IPv6, Host/Origin, CRC, torn header, image bounds, tombstone, secret comparison).");
     return 0;
 }

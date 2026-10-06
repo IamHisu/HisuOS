@@ -18,6 +18,7 @@ typedef enum {
     HISU_KEY_BACK,
     HISU_KEY_UP_HELD,
     HISU_KEY_DOWN_HELD,
+    HISU_KEY_FLASHLIGHT,
 } hisu_key_t;
 
 // Completion runs in the LCD ISR; the callback must be ISR-safe.
@@ -31,5 +32,6 @@ esp_err_t hisu_board_set_brightness(int percent);
 hisu_key_t hisu_board_poll_key(void);
 void hisu_board_enable_volume_hold(bool enabled);
 void hisu_board_enable_menu_close_hold(bool enabled);
+void hisu_board_enable_idle_boot_hold(bool enabled);
 esp_err_t hisu_board_power_init(void);
 esp_err_t hisu_board_power_read(int *raw_adc, bool *external_power);

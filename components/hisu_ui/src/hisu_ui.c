@@ -98,7 +98,7 @@ static const char *const s_keysets[] = {
 static void render(void);
 static const char *const s_items[] = {
     "Độ sáng", "Âm lượng", "Loa", "Thời gian chờ", "Theme", "Wi-Fi",
-    "Pin", "Lịch", "Đèn pin", "Setting", "Tắt màn hình", "Đóng menu",
+    "Pin", "Lịch", "Setting", "Tắt màn hình", "Đóng menu",
 };
 static const char *const s_states[] = {"", "Đang nghe", "Đang suy nghĩ", "Đang nói", "Lỗi"};
 _Static_assert(sizeof(s_items)/sizeof(s_items[0]) == UI_ITEM_COUNT, "Menu labels must match model");
@@ -124,12 +124,19 @@ static void refresh_wallpaper(void)
     hisu_media_status_t media; hisu_media_get(&media);
     if (media.revision == s_wallpaper_revision && media.has_image == s_wallpaper_available) return;
     if (media.has_image && !s_wallpaper_pixels)
-        s_wallpaper_pixels = heap_caps_malloc(HISU_MEDIA_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_wallpaper_pixels = heap_caps_malloc(HISU_MEDIA_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (media.has_image && !s_wallpaper_pixels) return;
     lv_image_cache_drop(&s_wallpaper_image);
     if (media.has_image) {
-        s_wallpaper_available = hisu_media_copy_image(s_wallpaper_pixels, HISU_MEDIA_BYTES, &s_wallpaper_revision);
-        if (s_wallpaper_available) wallpaper_descriptor(&s_wallpaper_image, s_wallpaper_pixels);
+        s_wallpaper_available = hisu_media_copy_image(s_wallpaper_pixels, HISU_MEDIA_BUFFER_BYTES, &media);
+        s_wallpaper_revision = media.revision;
+        if (s_wallpaper_available) {
+            wallpaper_descriptor(&s_wallpaper_image, s_wallpaper_pixels);
+            if (media.gif) {
+                s_wallpaper_image.header.cf = LV_COLOR_FORMAT_RAW;
+                s_wallpaper_image.data_size = media.image_bytes;
+            }
+        }
     } else {
         s_wallpaper_available = false;
         s_wallpaper_revision = media.revision;
@@ -298,7 +305,7 @@ static void create_theme_icon(lv_obj_t *parent, bool light, bool selected)
 static lv_color_t overlay_color(unsigned index, int x, int y, int w, int h)
 {
     const lv_image_dsc_t *image = s_wallpaper_available ? &s_wallpaper_image : NULL;
-    if (!image && s_idle_gif && lv_gif_is_loaded(s_idle_gif)) image = lv_image_get_src(s_idle_gif);
+    if (s_idle_gif && lv_gif_is_loaded(s_idle_gif)) image = lv_image_get_src(s_idle_gif);
     if (image && image->header.cf == LV_COLOR_FORMAT_RGB565) {
         int left = (HISU_DISPLAY_WIDTH - (int)image->header.w) / 2;
         int top = (HISU_DISPLAY_HEIGHT - (int)image->header.h) / 2;
@@ -587,17 +594,12 @@ static void render_setup(void)
         setup_line(root,line,88,0xeeeeee);
         setup_line(root,"http://",124,0xeeeeee);
         setup_line(root,network.setup_ip,152,0xeeeeee);
-        footer(LV_SYMBOL_LIST,"back",LV_SYMBOL_CLOSE); return;
+        footer(LV_SYMBOL_LIST,media.enabled ? LV_SYMBOL_POWER : LV_SYMBOL_OK,LV_SYMBOL_CLOSE); return;
     }
     if (s_model.preview == UI_SETUP_RESET) {
         label(root,"Khôi phục nền mặc định?",12,76,216,0xeeeeee);
         label(root,"Ảnh đã lưu sẽ được bỏ",12,114,216,0x8c9690);
         footer("back",LV_SYMBOL_OK,LV_SYMBOL_CLOSE); return;
-    }
-    if (s_model.preview == UI_SETUP_STOP) {
-        label(root,"Dừng chế độ Setting?",12,76,216,0xeeeeee);
-        label(root,"Hotspot và web sẽ đóng",12,114,216,0x8c9690);
-        footer(LV_SYMBOL_LIST,LV_SYMBOL_STOP,"back"); return;
     }
     char text[112];
     if (media.enabled && network.setup_enabled) {
@@ -628,7 +630,7 @@ static void render_setup(void)
             setup_line(root,text,108,0xf0a0a0);
         }
     }
-    footer(LV_SYMBOL_LIST,media.enabled ? LV_SYMBOL_SETTINGS : media.opening ? "" : LV_SYMBOL_POWER,LV_SYMBOL_CLOSE);
+    footer(LV_SYMBOL_LIST,media.opening ? "" : LV_SYMBOL_POWER,LV_SYMBOL_CLOSE);
 }
 
 static int flashlight_brightness(int64_t now)
@@ -979,8 +981,21 @@ static void render(void)
         if (s_status.status != HISU_UI_IDLE) render_subtitle(s_status.status, s_status.text);
         else {
             if (s_wallpaper_available) {
-                lv_obj_t *image = lv_image_create(root);
-                lv_image_set_src(image,&s_wallpaper_image); lv_obj_center(image);
+                if (s_wallpaper_image.header.cf == LV_COLOR_FORMAT_RAW) {
+                    s_idle_gif = lv_gif_create(root);
+                    lv_gif_set_color_format(s_idle_gif,LV_COLOR_FORMAT_RGB565);
+                    lv_gif_set_src(s_idle_gif,&s_wallpaper_image);
+                    lv_obj_center(s_idle_gif);
+                    if (lv_gif_is_loaded(s_idle_gif)) lv_gif_set_loop_count(s_idle_gif,-1);
+                    else {
+                        ESP_LOGE("UI","Uploaded GIF could not be decoded; using default");
+                        lv_gif_set_src(s_idle_gif,&s_idle_cat[s_light_theme ? 1 : 0]);
+                        if (lv_gif_is_loaded(s_idle_gif)) lv_gif_set_loop_count(s_idle_gif,-1);
+                    }
+                } else {
+                    lv_obj_t *image = lv_image_create(root);
+                    lv_image_set_src(image,&s_wallpaper_image); lv_obj_center(image);
+                }
             } else {
                 s_idle_gif = lv_gif_create(root);
                 lv_gif_set_color_format(s_idle_gif, LV_COLOR_FORMAT_RGB565);
@@ -1000,15 +1015,20 @@ static void handle_key(hisu_key_t key)
     if (!key) return;
     s_activity_ms = esp_timer_get_time() / 1000;
     if (s_asleep) { s_asleep = false; return; }
+    if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && key == HISU_KEY_FLASHLIGHT) {
+        s_model.page = UI_FLASHLIGHT_PAGE;
+        s_flashlight_enabled = true; s_flashlight_mode = 0;
+        s_flashlight_start_ms = esp_timer_get_time()/1000;
+        render(); return;
+    }
     if (s_model.page == UI_SETUP_PAGE) {
         hisu_media_status_t media; hisu_media_get(&media);
         int view = s_model.preview;
         hisu_ui_model_key(&s_model, key);
         if (key == HISU_KEY_BOOT) {
-            if (view == UI_SETUP_STOP) hisu_media_close();
-            else if (view == UI_SETUP_RESET) hisu_media_restore_default();
-            else if (view == UI_SETUP_QR && !media.enabled) {
-                s_model.preview = UI_SETUP_QR;
+            if (view == UI_SETUP_RESET) hisu_media_restore_default();
+            else if (media.enabled || media.opening) hisu_media_close();
+            else {
                 s_setup_url = false;
                 hisu_media_open();
             }
@@ -1018,7 +1038,7 @@ static void handle_key(hisu_key_t key)
     if (s_model.page == UI_FLASHLIGHT_PAGE) {
         if (key == HISU_KEY_UP || key == HISU_KEY_BACK) {
             s_flashlight_enabled = false;
-            s_model.page = UI_MENU;
+            s_model.page = UI_IDLE;
         } else if (key == HISU_KEY_DOWN) {
             s_flashlight_enabled = !s_flashlight_enabled;
             s_flashlight_start_ms = esp_timer_get_time()/1000;
@@ -1067,11 +1087,6 @@ static void handle_key(hisu_key_t key)
         hisu_media_open();
     }
     if (previous == UI_MENU && s_model.page == UI_CALENDAR_PAGE) s_calendar_day = 0;
-    if (previous == UI_MENU && s_model.page == UI_FLASHLIGHT_PAGE) {
-        s_flashlight_enabled = true;
-        s_flashlight_mode = 0;
-        s_flashlight_start_ms = esp_timer_get_time()/1000;
-    }
     if (previous == UI_MENU && s_model.selected == UI_SCREEN_OFF && key == HISU_KEY_BOOT)
         s_asleep = true;
     if (previous == UI_MENU && s_model.page == UI_WIFI_PAGE) {
@@ -1191,6 +1206,7 @@ static void ui_task(void *arg)
         }
         hisu_board_enable_volume_hold((s_model.page == UI_WIFI_PASSWORD || s_model.page == UI_CALENDAR_PAGE) && !s_asleep);
         hisu_board_enable_menu_close_hold(s_model.page == UI_MENU && !s_asleep);
+        hisu_board_enable_idle_boot_hold(s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && !s_asleep);
         handle_key(hisu_board_poll_key());
         status_event_t event;
         bool changed = false;

@@ -25,6 +25,8 @@ extern const uint8_t media_html_start[] asm("_binary_index_html_start");
 extern const uint8_t media_html_end[] asm("_binary_index_html_end");
 extern const uint8_t media_js_start[] asm("_binary_app_js_start");
 extern const uint8_t media_js_end[] asm("_binary_app_js_end");
+extern const uint8_t media_gif_js_start[] asm("_binary_gif_resize_js_start");
+extern const uint8_t media_gif_js_end[] asm("_binary_gif_resize_js_end");
 extern const uint8_t media_css_start[] asm("_binary_style_css_start");
 extern const uint8_t media_css_end[] asm("_binary_style_css_end");
 
@@ -36,6 +38,8 @@ static const esp_partition_t *s_partition;
 static httpd_handle_t s_server;
 static hisu_media_status_t s_status;
 static uint8_t *s_active, *s_pending;
+static size_t s_pending_size;
+static bool s_pending_gif;
 static uint32_t s_sequence, s_generation;
 static int s_slot = -1;
 static int64_t s_web_deadline, s_leave_deadline, s_disconnected_at;
@@ -75,13 +79,13 @@ void hisu_media_get(hisu_media_status_t *out)
     unlock();
 }
 
-bool hisu_media_copy_image(void *pixels, size_t size, uint32_t *revision)
+bool hisu_media_copy_image(void *pixels, size_t size, hisu_media_status_t *status)
 {
-    if (!s_lock || !pixels || size != HISU_MEDIA_BYTES || !revision) return false;
+    if (!s_lock || !pixels || size != HISU_MEDIA_BUFFER_BYTES || !status) return false;
     lock();
     bool available = s_active != NULL;
-    if (available) memcpy(pixels, s_active, size);
-    *revision = s_status.revision;
+    if (available) { memset(pixels,0,size); memcpy(pixels, s_active, s_status.image_bytes); }
+    *status = s_status;
     unlock();
     return available;
 }
@@ -180,6 +184,7 @@ static esp_err_t asset(httpd_req_t *req)
     const uint8_t *start = media_html_start, *end = media_html_end;
     const char *type = "text/html; charset=utf-8";
     if (!strcmp(req->uri, "/app.js")) { start = media_js_start; end = media_js_end; type = "text/javascript; charset=utf-8"; }
+    if (!strcmp(req->uri, "/gif-resize.js")) { start = media_gif_js_start; end = media_gif_js_end; type = "text/javascript; charset=utf-8"; }
     if (!strcmp(req->uri, "/style.css")) { start = media_css_start; end = media_css_end; type = "text/css; charset=utf-8"; }
     httpd_resp_set_type(req, type);
     return httpd_resp_send(req, (const char *)start, end - start);
@@ -219,35 +224,41 @@ static esp_err_t upload(httpd_req_t *req)
 {
     if (!request_allowed(req) || !authorized(req)) return fail(req, "403 Forbidden", "Session invalid or expired.");
     char type[48];
-    if (req->content_len != HISU_MEDIA_BYTES ||
-        httpd_req_get_hdr_value_str(req, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        strcmp(type, "application/octet-stream")) return fail(req, "400 Bad Request", "Expected 240x240 RGB565, exactly 115200 bytes.");
+    if (httpd_req_get_hdr_value_str(req,"Content-Type",type,sizeof(type)) != ESP_OK)
+        return fail(req,"400 Bad Request","Missing image type.");
+    bool gif = !strcmp(type,"image/gif");
+    size_t length = req->content_len;
+    if ((gif && (length < 14 || length > HISU_MEDIA_GIF_MAX_BYTES)) ||
+        (!gif && (length != HISU_MEDIA_BYTES || strcmp(type,"application/octet-stream"))))
+        return fail(req,"400 Bad Request","Expected RGB565 or GIF up to 1 MB and at most 240x240.");
     lock();
     bool busy = s_status.pending || s_status.receiving || s_status.saving;
     uint32_t generation = s_generation;
     if (!busy) s_status.receiving = true;
     unlock();
     if (busy) return fail(req, "409 Conflict", "Image storage is busy.");
-    uint8_t *pixels = heap_caps_malloc(HISU_MEDIA_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *pixels = heap_caps_malloc(HISU_MEDIA_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     size_t received = 0;
     int64_t timeout = esp_timer_get_time() + 30000000;
-    while (pixels && received < HISU_MEDIA_BYTES && esp_timer_get_time() < timeout) {
+    while (pixels && received < length && esp_timer_get_time() < timeout) {
         lock(); bool valid = window_valid() && generation == s_generation; unlock();
         if (!valid) break;
-        size_t chunk = HISU_MEDIA_BYTES - received;
+        size_t chunk = length - received;
         if (chunk > 2048) chunk = 2048;
         int count = httpd_req_recv(req, (char *)pixels + received, chunk);
         if (count <= 0) break;
         received += count;
     }
+    bool valid_gif = !gif || (pixels && received == length && hisu_media_gif_valid(pixels,length));
     lock();
-    bool accepted = pixels && received == HISU_MEDIA_BYTES && window_valid() && generation == s_generation;
+    bool accepted = pixels && received == length && valid_gif && window_valid() && generation == s_generation;
     s_status.receiving = false;
-    if (accepted) { s_pending = pixels; s_status.pending = true; s_status.error = ESP_OK; }
+    if (accepted) { s_pending = pixels; s_pending_size = length; s_pending_gif = gif; s_status.pending = true; s_status.error = ESP_OK; }
     unlock();
     if (!accepted) {
         free(pixels);
-        return fail(req, "408 Request Timeout", "Upload incomplete, unavailable memory, or session expired.");
+        return fail(req,valid_gif ? "408 Request Timeout" : "400 Bad Request",
+                    valid_gif ? "Upload incomplete, unavailable memory, or session expired." : "Invalid GIF; expected at most 240x240, complete blocks, at most 256 frames.");
     }
     response_headers(req); httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"saving\":true}");
@@ -304,6 +315,7 @@ static esp_err_t server_start(void)
     const httpd_uri_t routes[] = {
         {.uri="/", .method=HTTP_GET, .handler=asset},
         {.uri="/app.js", .method=HTTP_GET, .handler=asset},
+        {.uri="/gif-resize.js", .method=HTTP_GET, .handler=asset},
         {.uri="/style.css", .method=HTTP_GET, .handler=asset},
         {.uri="/session", .method=HTTP_POST, .handler=login},
         {.uri="/image", .method=HTTP_POST, .handler=upload},
@@ -322,24 +334,24 @@ static esp_err_t server_start(void)
 }
 
 /* Write payload first and CRC-checked header last in the inactive slot. */
-static esp_err_t persist(uint8_t *pixels)
+static esp_err_t persist(uint8_t *pixels, size_t length, bool gif)
 {
     if (s_sequence == UINT32_MAX) return ESP_ERR_INVALID_STATE;
     int slot = s_slot == 0 ? 1 : 0;
     size_t offset = slot * HISU_MEDIA_SLOT_BYTES;
     hisu_media_record_t record = {
         .magic = HISU_MEDIA_MAGIC, .version = 1, .sequence = s_sequence + 1,
-        .width = 240, .height = 240, .length = pixels ? HISU_MEDIA_BYTES : 0,
-        .crc = pixels ? hisu_media_crc(pixels, HISU_MEDIA_BYTES) : 0, .flags = pixels ? 1 : 0,
+        .width = 240, .height = 240, .length = pixels ? length : 0,
+        .crc = pixels ? hisu_media_crc(pixels, length) : 0, .flags = pixels ? (gif ? 2 : 1) : 0,
     };
     record.header_crc = hisu_media_crc(&record, offsetof(hisu_media_record_t, header_crc));
     esp_err_t err = esp_partition_erase_range(s_partition, offset, HISU_MEDIA_SLOT_BYTES);
-    if (err == ESP_OK && pixels) err = esp_partition_write(s_partition, offset + HISU_MEDIA_DATA_OFFSET, pixels, HISU_MEDIA_BYTES);
+    if (err == ESP_OK && pixels) err = esp_partition_write(s_partition, offset + HISU_MEDIA_DATA_OFFSET, pixels, length);
     if (err == ESP_OK && pixels) {
         uint8_t chunk[1024];
         uint32_t crc = 0;
-        for (size_t pos = 0; pos < HISU_MEDIA_BYTES && err == ESP_OK; pos += sizeof(chunk)) {
-            size_t size = HISU_MEDIA_BYTES - pos;
+        for (size_t pos = 0; pos < length && err == ESP_OK; pos += sizeof(chunk)) {
+            size_t size = length - pos;
             if (size > sizeof(chunk)) size = sizeof(chunk);
             err = esp_partition_read(s_partition,offset+HISU_MEDIA_DATA_OFFSET+pos,chunk,size);
             if (err == ESP_OK) crc = hisu_media_crc_update(crc,chunk,size);
@@ -358,22 +370,28 @@ static esp_err_t persist(uint8_t *pixels)
 
 static esp_err_t load_image(void)
 {
-    for (int slot = 0; slot < 2; ++slot) {
+    /* Also inspect the former second slot so an upgrade keeps the latest
+     * 115200-byte wallpaper. The first new write goes to the enlarged slot 1,
+     * leaving both legacy records intact until the new header is committed. */
+    const size_t offsets[] = {0, HISU_MEDIA_LEGACY_SLOT_BYTES, HISU_MEDIA_SLOT_BYTES};
+    const int slots[] = {0, 0, 1};
+    for (unsigned index = 0; index < sizeof(offsets)/sizeof(offsets[0]); ++index) {
         hisu_media_record_t record;
-        size_t offset = slot * HISU_MEDIA_SLOT_BYTES;
+        size_t offset = offsets[index];
         esp_err_t err = esp_partition_read(s_partition, offset, &record, sizeof(record));
         if (err != ESP_OK) return err;
         if (!hisu_media_record_header_valid(&record) || record.sequence <= s_sequence) continue;
         uint8_t *pixels = NULL;
         if (record.flags) {
-            pixels = heap_caps_malloc(HISU_MEDIA_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            pixels = heap_caps_malloc(HISU_MEDIA_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (!pixels) return ESP_ERR_NO_MEM;
-            err = esp_partition_read(s_partition, offset + HISU_MEDIA_DATA_OFFSET, pixels, HISU_MEDIA_BYTES);
+            err = esp_partition_read(s_partition, offset + HISU_MEDIA_DATA_OFFSET, pixels, record.length);
             if (err != ESP_OK) { free(pixels); return err; }
             if (!hisu_media_record_valid(&record, pixels)) { free(pixels); continue; }
         }
         free(s_active); s_active = pixels;
-        s_slot = slot; s_sequence = record.sequence;
+        s_status.image_bytes = record.length; s_status.gif = record.flags == 2;
+        s_slot = slots[index]; s_sequence = record.sequence;
     }
     s_status.has_image = s_active != NULL;
     s_status.revision = s_sequence;
@@ -444,19 +462,22 @@ static void media_task(void *arg)
         /* Take ownership under the lock; closing a window cannot free this buffer. */
         lock();
         uint8_t *pixels = NULL;
+        size_t image_bytes = 0; bool gif = false;
         bool save = save_default;
         if (window_valid() && s_pending && !s_status.saving && !s_status.receiving) {
             pixels = s_pending; s_pending = NULL;
+            image_bytes = s_pending_size; gif = s_pending_gif;
             s_status.pending = false; s_status.saving = true;
             save = true;
         }
         unlock();
         if (save) {
-            esp_err_t err = persist(pixels);
+            esp_err_t err = persist(pixels,image_bytes,gif);
             lock();
             s_status.error = err; s_status.saving = false;
             if (err == ESP_OK) {
                 free(s_active); s_active = pixels; pixels = NULL;
+                s_status.image_bytes = image_bytes; s_status.gif = gif;
                 s_status.has_image = s_active != NULL; s_status.revision = s_sequence;
             }
             unlock();

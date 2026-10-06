@@ -15,19 +15,19 @@ Không cần từng lưu hoặc kết nối Wi-Fi nhà để mở Setting; mục
    Hệ điều hành có thể tự mở trang; không bảo đảm trên mọi máy, nhất là khi dùng Private DNS/VPN.
 4. Khi điện thoại nối hotspot, board tự đổi sang QR **Trang Setting**.
    Nếu không tự mở, quét QR để vào `http://192.168.4.1/`. Khi điện thoại ngắt, board trở lại QR Wi-Fi.
-   BOOT ở màn QR mở thông tin hotspot/địa chỉ; không còn bộ đếm thời gian.
+   BOOT ở màn QR hoặc thông tin bật/tắt hotspot Setting; không còn bộ đếm thời gian.
 5. HTTP không có cảnh báo chứng chỉ tự ký, nhưng trình duyệt vẫn có thể ghi Không bảo mật.
 6. Trang tự lấy token qua HTTP, không hỏi mã kết nối. Các tab là **Wi-Fi**, **Hình nền**, **Thiết bị**.
 7. Gửi ảnh hợp lệ sẽ tự lưu và áp dụng; không cần xác nhận BOOT. Thoát Setting để xem hình nền.
-8. Vol+ / X hoặc giữ BOOT chỉ quay về menu, Setting vẫn chạy. Vol− chuyển lần lượt QR → thông tin → khôi phục nền → **Dừng chế độ Setting**; BOOT ở mục Dừng đóng hotspot và web. **Kết thúc phiên** trên web vẫn đóng ngay. Không giới hạn tổng thời gian 5 phút.
+8. Vol+ / X hoặc giữ BOOT chỉ quay về menu, Setting vẫn chạy. Vol− chuyển lần lượt QR → thông tin → khôi phục nền; BOOT ở QR/thông tin bật/tắt hotspot và web. Bấm **Đã kết nối** trên web đóng toàn bộ phiên. Không giới hạn tổng thời gian 5 phút.
 9. Lưu ảnh nền mới hoặc khôi phục nền mặc định thành công sẽ tự đưa HISU về màn hình chính và đánh thức màn hình. Phiên Setting vẫn chạy; lưu lỗi không chuyển màn hình.
    Ngắt hotspot sẽ đóng sau 10 giây nếu không nối lại. Đóng trang gửi `/leave`, chờ 8 giây để tải lại trang không mất phiên.
    Nếu trình duyệt bị tắt đột ngột không gửi được tín hiệu, mất request xác thực trong 90 giây sẽ đóng phiên dự phòng.
    Muốn mở lại, thao tác trên board và quét QR mới.
 
 Vol− / biểu tượng danh sách lần lượt mở thông tin hotspot/địa chỉ, khôi phục nền mặc định, rồi trở lại QR.
-Ở thông tin hotspot, BOOT quay về QR. Khôi phục nền mặc định vẫn cần thao tác vật lý xác nhận,
-không có API mạng để xóa nền. Giữ BOOT quay lại và đóng Setting.
+Ở thông tin hotspot, BOOT bật/tắt Setting rồi quay về QR. Khôi phục nền mặc định vẫn cần thao tác vật lý xác nhận,
+không có API mạng để xóa nền. Giữ BOOT quay về menu, không đóng Setting.
 
 ## Wi-Fi Và Thiết Bị
 
@@ -57,7 +57,7 @@ không có API mạng để xóa nền. Giữ BOOT quay lại và đóng Setting
   Login mới trong 8 giây hủy đóng; tín hiệu unload đến muộn từ trang cũ không đóng trang mới.
   Không đóng khi chỉ đổi tab, mở hộp chọn ảnh hoặc chuyển app; nếu trình duyệt treo/đóng băng
   quá 90 giây, board không phân biệt được với đóng web và sẽ đóng để tránh bỏ quên hotspot.
-  Nên dùng một trang Setting. Nút Kết thúc phiên luôn đóng toàn bộ phiên.
+  Nên dùng một trang Setting. Nút Đã kết nối luôn đóng toàn bộ phiên.
 - HTTP kiểm tra Host chính xác IP AP (hoặc cổng 80), POST có Origin chính xác,
   socket đích đúng IP AP và nguồn thuộc subnet AP, đối chiếu thêm IP của client đang thực sự nối SoftAP.
   Không chỉ tin địa chỉ subnet. Không CORS hoặc tin proxy.
@@ -82,7 +82,8 @@ không có API mạng để xóa nền. Giữ BOOT quay lại và đóng Setting
 ## Ảnh Và Storage
 
 - PNG/JPEG/WebP tối đa 8 MiB, mỗi chiều tối đa 4096 px, tổng tối đa 12 megapixel.
-  Chưa hỗ trợ GIF upload. Browser giải mã, crop/letterbox và ghép transparency lên màu nền.
+  Browser giải mã ảnh tĩnh, crop/letterbox và ghép transparency lên màu nền.
+- GIF nguồn tối đa 8 MiB, 1,5 megapixel và 180 frame. Bộ xử lý tham khảo từ FriendOS ghép đúng frame trong suốt/disposal, thu cạnh dài xuống 240 px khi cần và mã hóa lại thành GIF động tối đa 1 MiB; xem trước hiển thị frame đầu. Firmware nhận canvas tối đa 240×240, kiểm tra header, palette/block và kích thước frame trước khi lưu.
 - Payload RGB565 little-endian cố định 240×240×2 = 115200 byte.
   Board không parse tên file, đường dẫn, PNG/JPEG tùy ý.
 - Nhận đủ ảnh trong phiên hợp lệ mới xếp vào hàng lưu tự động. Ảnh thiếu, upload quá 30 giây,
@@ -104,7 +105,7 @@ không có API mạng để xóa nền. Giữ BOOT quay lại và đóng Setting
 | HTTP GET/HEAD đường dẫn lạ | Phiên mở, client thật/socket AP | Chuyển về HTTP IP AP, không token |
 | HTTP GET `/`, `/app.js`, `/style.css` | Phiên mở, Host/socket AP | Trang nhúng, không CDN |
 | POST `/session` | Phiên mở, Origin/Host/socket AP | Body rỗng; token và mã trang; hủy leave cũ, không PIN |
-| POST `/image` | Token + Origin | Octet-stream đúng 115200 byte; tự lưu |
+| POST `/image` | Token + Origin | Octet-stream đúng 115200 byte hoặc image/gif ≤1 MiB, tối đa 240×240; tự lưu |
 | GET `/status` | Token | Pending/saving/revision/error, không credential; cập nhật liveness |
 | POST `/logout` | Token + Origin | Thu hồi và đóng phiên/AP |
 | POST `/leave` | Token + Origin + X-Hisu-Page | Body rỗng; đóng sau 8 giây nếu không tải lại |
@@ -136,9 +137,9 @@ Test source cấu hình kiểm tra một HTTP server, thứ tự route, QR HTTP 
 
 - Wi-Fi QR đọc được ở màn 240×240, mật khẩu đổi sau đóng/mở phiên; SSID giữ nguyên.
 - Android/iOS tự mở captive portal hoặc QR URL tự hiện sau kết nối; ngắt điện thoại trả về QR Wi-Fi.
-- BOOT ở màn QR mở thông tin; dùng web quá 5 phút không tự đóng.
+- BOOT ở QR/thông tin bật/tắt Setting; dùng web quá 5 phút không tự đóng.
 - AP mở khi station tắt; quét/join/tắt station không tắt AP; không quảng bá BLE.
-- Logout, X và giữ BOOT đóng DNS/HTTP/AP; token cũ không dùng lại.
+- Bấm Đã kết nối hoặc BOOT ở QR/thông tin đóng DNS/HTTP/AP; token cũ không dùng lại.
 - Ngắt hotspot >10 giây, đóng web >8 giây hoặc mất liveness >90 giây đều đóng; reload nhanh giữ phiên.
 - Host/Origin sai, không token, truy cập station/LAN, body thiếu/dài và ngắt upload đều bị chặn.
 - Upload tự lưu, màu RGB565 đúng, reboot giữ nền; cắt nguồn lúc commit không làm mất bản cũ hợp lệ.

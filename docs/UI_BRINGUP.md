@@ -23,7 +23,7 @@
 - Thay combobox bằng dòng mạng ổn định, icon Lucide mức sóng, nhãn Đã lưu nhỏ màu riêng. Không dựng lại DOM mỗi lần poll.
 - Chạm mạng đã lưu gửi saved join ngay, mạng mới có bảo mật mở dialog; mạng mở kết nối ngay. Hỗ trợ SSID ẩn và nhập lại mật khẩu sau lỗi.
 - Bỏ deadline 5 phút. Dừng/X đóng ngay; ngắt AP >10 giây đóng. Pagehide keepalive báo leave có token/Origin/mã trang; grace 8 giây chống reload, lease 90 giây dự phòng browser chết.
-- BOOT ở QR mở thông tin, không reset thời gian. Không đóng theo visibilitychange; browser bị đóng băng >90 giây vẫn có thể làm lease mất.
+- BOOT ở QR/thông tin bật/tắt hotspot Setting. Không đóng theo visibilitychange; browser bị đóng băng >90 giây vẫn có thể làm lease mất.
 - Các mục 5 phút/BOOT reset bên dưới là lịch sử. Cần kiểm chứng AP chuyển kênh, captive browser/pagehide/background trên điện thoại thật.
 
 ## Setting HTTP Trong Hotspot (2026-10-06)
@@ -70,7 +70,7 @@ Các mục bên dưới ghi lịch sử bring-up; mô tả mã riêng/BOOT duy�
 
 ## Setting Hotspot — 2026-10-06
 
-- Menu 12 mục; Setting thay Hình nền, bỏ Bluetooth và icon BLE; application không start BLE host.
+- Menu 11 mục; Setting thay Hình nền, bỏ Bluetooth và icon BLE; application không start BLE host.
 - Network worker quản lý AP WPA2 có mật khẩu ngẫu nhiên và AP+STA. Trang HTTPS chỉ dùng địa chỉ AP, có tab Wi-Fi/Hình nền/Thiết bị; không cần router/Internet/BLE.
 - Settings/Wi-Fi/time API có token, Host/Origin/subnet/socket destination checks, body/nesting/schema limits. Gửi ảnh vẫn cần BOOT duyệt đúng preview ID.
 - UI model 19/19, calendar và media model qua. Playwright API mô phỏng trên ba viewport qua: tabs/keyboard, scan/saved join, SSID injection safety, brightness/time và gửi ảnh/expiry. Không phải kiểm thử TLS/radio backend thật.
@@ -175,3 +175,9 @@ Worker gọi `hisu_ui_post_status(status, text)`, không gọi LVGL. Text UTF-8 
 UI nhận full text snapshot, không nhận raw token delta. Controller tương lai tích lũy token với budget riêng rồi gửi snapshot. Menu che tạm phụ đề, không xóa snapshot. Trạng thái idle hiển thị GIF theo theme.
 
 Session cancellation và chống stale events thuộc conversation controller tương lai; UI hiện không tự nhận diện session. Phụ đề preview là dữ liệu kiểm tra, không phải phản hồi AI thật.
+
+## Cập nhật điều khiển Setting và đèn pin
+
+- BOOT ở QR/thông tin bật/tắt hotspot; Vol− đổi trang, Vol+ hoặc giữ BOOT về menu. BOOT ở xác nhận khôi phục vẫn khôi phục nền.
+- Đèn pin bỏ khỏi menu; giữ BOOT 1,5 giây ở màn chờ để mở, Vol+ trở về màn chờ.
+- Bootloader kéo GPIO20 xuống thấp, chờ 20 ms cho đèn nền xả rồi mới giữ LCD reset ở GPIO45; trạng thái được áp lại sau khởi tạo bootloader. App chỉ nhả reset khi driver LCD sẵn sàng và chỉ bật đèn sau frame đầu. GPIO20 dùng chung USB D+, nên ROM có thể tạo một chớp rất ngắn trước khi bootloader chạy; loại bỏ hoàn toàn nhịp này cần pull-down phần cứng hoặc tắt USB bằng eFuse (không thực hiện vì eFuse không đảo ngược). PWM không nối lại ở mỗi lần chỉnh sáng.

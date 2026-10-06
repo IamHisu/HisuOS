@@ -18,7 +18,8 @@ export function imagePlacement(width, height, fit) {
 if (typeof document !== 'undefined') {
   const el = id => document.getElementById(id);
   const canvas = el('preview'), ctx = canvas.getContext('2d', {willReadFrequently:true});
-  let token = '', bitmap, pollTimer, pending = false, uploadBusy = false, pollBusy = false;
+  let token = '', bitmap, gifData, pollTimer, pending = false, uploadBusy = false, pollBusy = false;
+  let processing = false, procText = '', procRatio = null, gifUrl = '';
   let baseline = 0, fileGeneration = 0, closed = false;
   let pageId = 0;
   let activeTab = 'wifi', wifiState, wifiBusy = false;
@@ -26,18 +27,30 @@ if (typeof document !== 'undefined') {
   let zoom = 1, panX = 0, panY = 0, frame = 0, pinch = 0;
   const wifiRows = new Map();
   let wifiOrder = '';
-  const message = (text, error = false) => { el('message').textContent = text; el('message').dataset.error = error; };
+  const message = (text, error = false) => { document.querySelectorAll('.msg').forEach(node => { node.textContent = text; node.dataset.error = error; }); };
+  const setProc = (text = '', ratio = null) => { processing = !!text; procText = text; procRatio = ratio; controls(); };
   function controls() {
-    el('send').disabled = !token || !bitmap || pending || uploadBusy;
-    el('file').disabled = pending || uploadBusy;
-    el('fit').disabled = pending || uploadBusy;
-    el('background').disabled = pending || uploadBusy;
-    const locked = !bitmap || pending || uploadBusy;
+    el('connection').disabled = !token || closed;
+    const busy = pending || uploadBusy || processing;
+    el('send').disabled = !token || !bitmap || busy;
+    el('send').classList.toggle('is-loading', uploadBusy || pending);
+    el('send').textContent = uploadBusy ? 'Đang gửi…' : pending ? 'Đang lưu…' : 'Gửi ảnh';
+    el('file').disabled = busy;
+    el('fit').disabled = !!gifData || busy;
+    el('background').disabled = !!gifData || busy;
+    const locked = !!gifData || !bitmap || busy;
     el('zoom').disabled = locked;
     el('reset-view').disabled = locked;
     canvas.classList.toggle('editable', !locked);
-    canvas.classList.toggle('pickable', !pending && !uploadBusy);
+    canvas.classList.toggle('pickable', !busy);
     canvas.parentElement.dataset.empty = String(!bitmap);
+    const label = processing ? procText : uploadBusy ? 'Đang gửi ảnh tới Hisu…' : pending ? 'Đang lưu trên Hisu…' : '';
+    const ratio = processing ? procRatio : null;
+    el('loading').hidden = !label;
+    el('loading-text').textContent = label;
+    el('loading-bar').dataset.indeterminate = String(ratio === null);
+    el('loading-fill').style.width = ratio === null ? '' : Math.round(ratio * 100) + '%';
+    canvas.setAttribute('aria-busy', String(!!label));
   }
   function logout() {
     token = ''; closed = true; clearTimeout(pollTimer);
@@ -59,7 +72,7 @@ if (typeof document !== 'undefined') {
     return response.json();
   }
   function tab(name) {
-    activeTab = name;
+    activeTab = name; message('');
     for (const key of ['wifi','wallpaper','device']) {
       el(`panel-${key}`).hidden = key !== name;
       el(`tab-${key}`).setAttribute('aria-selected',String(key === name));
@@ -208,11 +221,19 @@ if (typeof document !== 'undefined') {
   function draw() {
     ctx.imageSmoothingQuality = 'high';
     ctx.fillStyle = el('background').value; ctx.fillRect(0,0,SIZE,SIZE);
-    if (bitmap) {
+    if (bitmap && !gifData) {
       const p = placement();
       ctx.drawImage(bitmap,p.x,p.y,p.width,p.height);
     }
     controls();
+  }
+  // GIF: để chính trình duyệt phát ảnh động (canvas chỉ vẽ được 1 frame), đặt đè lên khung xem trước.
+  function showGif() {
+    if (gifUrl) URL.revokeObjectURL(gifUrl);
+    const img = el('gif-preview');
+    gifUrl = gifData ? URL.createObjectURL(new Blob([gifData],{type:'image/gif'})) : '';
+    if (gifUrl) { img.style.objectFit = el('fit').value; img.src = gifUrl; } else img.removeAttribute('src');
+    img.hidden = !gifUrl;
   }
   function schedule() { if (!frame) frame = requestAnimationFrame(() => { frame = 0; draw(); }); }
   function setZoom(value) {
@@ -239,10 +260,8 @@ if (typeof document !== 'undefined') {
       const state = await request('/status');
       const wasPending = pending;
       pending = state.pending || state.saving;
-      el('expires').textContent = 'Phiên đang mở';
       if (state.error) message('Không lưu được ảnh. Nền cũ được giữ lại.',true);
-      else if (state.saving) message('Đang lưu trên Hisu…');
-      else if (state.pending) message('Đang lưu trên Hisu…');
+      else if (state.saving || state.pending) message('');
       else if (state.revision !== baseline) { baseline = state.revision; message('Hisu đã cập nhật hình nền.'); }
       else if (wasPending && !pending) message('Ảnh chưa được lưu.',true);
       controls();
@@ -274,25 +293,36 @@ if (typeof document !== 'undefined') {
     el('file').value = '';
     if (!file) return;
     const generation = ++fileGeneration;
+    setProc('Đang đọc ảnh…');
     try {
-      if (!['image/png','image/jpeg','image/webp'].includes(file.type) || file.size > 8 * 1024 * 1024)
-        throw new Error('Chọn PNG, JPEG hoặc WebP tối đa 8 MB.');
-      message('Đang xử lý ảnh…');
+      const gif = file.type === 'image/gif' || /\.gif$/i.test(file.name);
+      if ((!gif && !['image/png','image/jpeg','image/webp'].includes(file.type)) || file.size > 8 * 1024 * 1024)
+        throw new Error('Chọn PNG, JPEG, WebP hoặc GIF.');
+      let nextGif;
+      if (gif) {
+        if (!globalThis.FriendGifResize) throw new Error('Không tải được bộ xử lý GIF. Hãy mở lại trang.');
+        const resized=await globalThis.FriendGifResize.resizeGif(file,
+          (done,total)=>setProc(`Đang xử lý GIF ${done}/${total}`,total ? done / total : null));
+        nextGif=new Uint8Array(await resized.arrayBuffer());
+      }
+      setProc('Đang xử lý ảnh…');
       const decoded = await createImageBitmap(file,{imageOrientation:'from-image'}).catch(() => { throw new Error('Không đọc được ảnh này.'); });
       if (generation !== fileGeneration) { decoded.close(); return; }
       try { imagePlacement(decoded.width,decoded.height,el('fit').value); }
       catch (error) { decoded.close(); throw error; }
       const next = await shrink(decoded);
       if (generation !== fileGeneration) { next.close(); return; }
-      const previous = bitmap; bitmap = next; previous?.close(); resetView(); draw(); message('');
+      const previous = bitmap; bitmap = next; gifData = nextGif; previous?.close(); showGif(); resetView(); draw(); controls();
+      message(gif ? `GIF đã thu vừa màn hình (${Math.round(nextGif.length/1024)} KB); xem trước đang phát ảnh động.` : '');
     } catch (error) { message(error.message,true); }
+    finally { if (generation === fileGeneration) setProc(); }
   };
   el('fit').onchange = () => { panX = panY = 0; draw(); };
   el('background').oninput = draw;
   el('zoom').oninput = () => setZoom(Number(el('zoom').value) / 100);
   el('reset-view').onclick = () => { resetView(); draw(); };
-  const canPick = () => !pending && !uploadBusy;
-  const editable = () => bitmap && canPick();
+  const canPick = () => !pending && !uploadBusy && !processing;
+  const editable = () => bitmap && !gifData && canPick();
   const openPicker = () => { if (canPick()) el('file').click(); };
   const pinchDistance = () => { const [a,b] = [...pointers.values()]; return Math.hypot(a.x - b.x,a.y - b.y) || 1; };
   let tap = null; // chạm nhẹ không kéo = mở hộp chọn ảnh
@@ -351,13 +381,14 @@ if (typeof document !== 'undefined') {
     uploadBusy = true; clearTimeout(pollTimer); controls();
     try {
       while (pollBusy) await new Promise(resolve => setTimeout(resolve,50));
-      const pixels = encodeRgb565(ctx.getImageData(0,0,240,240).data);
-      await request('/image',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:pixels});
-      pending = true; message('Đang lưu trên Hisu…');
+      const pixels = gifData || encodeRgb565(ctx.getImageData(0,0,240,240).data);
+      await request('/image',{method:'POST',headers:{'Content-Type':gifData ? 'image/gif' : 'application/octet-stream'},body:pixels});
+      pending = true; message('Đã gửi ảnh, Hisu đang lưu…');
     } catch (error) { message(error.message,true); }
     finally { uploadBusy = false; controls(); await poll(); }
   };
-  el('logout').onclick = async () => {
+  el('connection').onclick = async () => {
+    if (!token || closed) return;
     try { await request('/logout',{method:'POST'}); message('Đã đóng Setting trên Hisu.'); }
     catch { message('Đóng Setting trên Hisu để hủy phiên thiết bị.',true); }
     finally { logout(); }
@@ -365,7 +396,7 @@ if (typeof document !== 'undefined') {
   window.addEventListener('pagehide', () => {
     if (token && !closed) void fetch('/leave',{method:'POST',keepalive:true,cache:'no-store',credentials:'omit',
       headers:{Authorization:`Bearer ${token}`,'X-Hisu-Page':String(pageId)},body:''}).catch(() => {});
-    token = ''; closed = true; clearTimeout(pollTimer); bitmap?.close(); bitmap = undefined;
+    token = ''; closed = true; clearTimeout(pollTimer); bitmap?.close(); bitmap = undefined; if (gifUrl) URL.revokeObjectURL(gifUrl);
   });
   window.addEventListener('pageshow',event => { if (event.persisted) void connect(); });
   draw();

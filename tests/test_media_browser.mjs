@@ -9,9 +9,10 @@ const root = new URL('../components/hisu_media/web/',import.meta.url);
 const output = new URL('../build/media-browser/',import.meta.url);
 await mkdir(output,{recursive:true});
 const assets = new Map();
-for (const [route,file,type] of [['/','index.html','text/html'],['/app.js','app.js','text/javascript'],['/style.css','style.css','text/css']])
+for (const [route,file,type] of [['/','index.html','text/html'],['/app.js','app.js','text/javascript'],
+  ['/gif-resize.js','gif-resize.js','text/javascript'],['/style.css','style.css','text/css']])
   assets.set(route,{body:await readFile(new URL(file,root)),type});
-let state, uploaded, wifi, device, wifiRequests, sessionRequests, leaveRequests = 0;
+let state, uploaded, uploadType, wifi, device, wifiRequests, sessionRequests, leaveRequests = 0;
 const token = 'a'.repeat(64);
 const server = createServer(async(req,res)=>{
   try {
@@ -44,8 +45,10 @@ const server = createServer(async(req,res)=>{
       send(200,{accepted:true});return;
     }
     if (req.url==='/image') {
-      assert.equal(body.length,115200);uploaded=body;state.saving=true;send(200,{saving:true});
-      setTimeout(()=>{state.saving=false;state.revision=2;},500);return;
+      uploadType=req.headers['content-type'];
+      if (uploadType==='image/gif') assert.equal(body.subarray(0,3).toString(),'GIF');
+      else assert.equal(body.length,115200);uploaded=body;state.saving=true;send(200,{saving:true});
+      setTimeout(()=>{state.saving=false;++state.revision;},500);return;
     }
     if (req.url==='/status') {send(200,state);return;}
     if (req.url==='/logout') {state.expired=true;send(200,{closed:true});return;}
@@ -141,8 +144,23 @@ try {
     assert.equal(await page.locator('#send').isDisabled(),true);
     await page.waitForFunction(()=>document.getElementById('message').textContent.includes('đã cập nhật'));
     assert.equal(await page.locator('#send').isDisabled(),false);
+    const gif=await readFile(new URL('../components/hisu_ui/assets/boot_windows_xp_source.gif',import.meta.url));
+    assert.ok(gif.readUInt16LE(6)>240 || gif.readUInt16LE(8)>240);
+    await page.locator('#file').setInputFiles({name:'animated.gif',mimeType:'image/gif',buffer:gif});
+    await page.waitForFunction(()=>document.getElementById('message').textContent.includes('đã thu vừa'));
+    assert.equal(await page.locator('#zoom').isDisabled(),true);
+    await page.locator('#send').click();
+    await page.waitForFunction(()=>document.getElementById('message').textContent.includes('đã cập nhật'));
+    assert.equal(uploadType,'image/gif');
+    assert.ok(uploaded.length<=1024*1024);
+    assert.ok(uploaded.readUInt16LE(6)<=240);assert.ok(uploaded.readUInt16LE(8)<=240);
+    await page.locator('#file').setInputFiles({name:'broken.gif',mimeType:'image/gif',buffer:Buffer.from('GIF89a')});
+    await page.waitForFunction(()=>document.getElementById('message').dataset.error==='true');
+    assert.ok((await page.locator('#message').textContent()).length>0);
+    assert.equal(await page.locator('#logout').count(),0);
+    assert.equal(await page.locator('#preview-hint').count(),0);
     assert.equal(await page.evaluate(()=>localStorage.length),0);
-    if (name==='desktop') await page.locator('#logout').click();
+    if (name==='desktop') await page.locator('#connection').click();
     else state.expired=true;
     await page.locator('#login-section').waitFor({state:'visible'});
     assert.equal(await page.locator('#connection').textContent(),'Đã ngắt kết nối');
@@ -162,7 +180,7 @@ try {
   for (let i=0;i<20 && leaveRequests===beforeClose;++i) await new Promise(resolve=>setTimeout(resolve,100));
   assert.ok(leaveRequests>beforeClose,'Closing an active page sends authenticated leave');
   await closingContext.close();
-  console.log('Setting browser tests passed: three viewports, stable Wi-Fi rows, signal icons, saved auto-join, password dialog, SSID injection safety, settings, PNG/RGB565 save, reload/close leave, logout/expiry and retry. HTTP API mocked; device captive portal/AP/flash not tested.');
+  console.log('Setting browser tests passed: three viewports, Wi-Fi/settings, PNG save, animated GIF resize from >240px, reload/close leave, logout/expiry and retry. HTTP API mocked; device captive portal/AP/flash not tested.');
 } finally {
   await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
 }
