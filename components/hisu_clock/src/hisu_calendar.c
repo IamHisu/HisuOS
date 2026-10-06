@@ -67,8 +67,15 @@ bool hisu_calendar_lunar(int day, int month, int year, hisu_lunar_date_t *out)
     hisu_calendar_date(jd,&d,&m,&y);
     if (d != day || m != month || y != year) return false;
     int k = (int)floor((jd-2415021.076998695)/29.530588853);
-    int start = new_moon(k+1);
-    if (start > jd) start = new_moon(k);
+    /* The mean lunation is only an estimate. Bracket the actual month so
+     * rounding near a new moon cannot produce lunar day zero. */
+    int start = new_moon(k);
+    while (start > jd) start = new_moon(--k);
+    int next = new_moon(k+1);
+    while (next <= jd) {
+        start = next;
+        next = new_moon(++k+1);
+    }
     int a = month_eleven(year), b = a, lunar_year = year;
     if (a >= start) a = month_eleven(year-1);
     else { lunar_year++; b = month_eleven(year+1); }

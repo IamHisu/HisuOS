@@ -31,6 +31,22 @@ Yêu cầu EIM đã cài ESP-IDF **5.5.5**. Chạy từ thư mục HisuOS:
 .\tools\build.ps1
 ```
 
+Nếu vừa pull thay đổi `sdkconfig.defaults` nhưng máy còn `sdkconfig` cũ, refresh cấu hình một lần:
+
+```powershell
+.\tools\build.ps1 -RefreshConfig
+```
+
+Lệnh này lưu config cũ vào `.cache/sdkconfig-backups/`, rồi tạo lại config từ defaults. Các tùy chỉnh riêng cần được rà lại; build thường không tự reset cấu hình. Không erase NVS hoặc flash board.
+
+Chạy host tests từ PowerShell thường:
+
+```powershell
+.\tools\test-ui.ps1
+```
+
+Helper tự tìm headers/libraries của MSVC x64 và Windows SDK đã cài, chạy bộ UI/Wi-Fi/pin và test lịch 2024–2099. Không cần mở Developer PowerShell.
+
 Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và flash 16MB theo profile N16R8. Partition dành hai app slots 4MB cho OTA tương lai; vùng storage chỉ được reserve, chưa mount filesystem.
 
 ## Điều Khiển

@@ -1,5 +1,16 @@
 # UI Bring-up
 
+## Sửa Lỗi Sau Pull — 2026-10-06
+
+- Sửa chọn đầu tháng âm bằng khoảng ngày sóc thực tế, tránh ngày âm bằng 0 tại 07/05/2054 và 09/04/2062.
+- Thêm regression tests cho hai ngày đó; test lịch kiểm tra invariant và chuyển đổi ngày trong toàn bộ 2024–2099 (27.759 ngày), cùng các ngày tham chiếu có sẵn. Đây không phải đối chiếu mọi ngày với một nguồn lịch độc lập.
+- Sửa fixture menu để mục được chọn nằm trong năm dòng hiển thị; bộ UI/Wi-Fi/pin 17/17 qua.
+- Helper `test-ui.ps1` cung cấp MSVC include paths, tự tìm Windows SDK và chạy cả test lịch; chạy được từ PowerShell thường, không chỉnh môi trường toàn máy.
+- Hai test web BLE (payload và mock GATT flow) qua; chưa xác minh radio/pairing thật.
+- `build.ps1 -RefreshConfig` là tùy chọn rõ ràng để lưu config cũ vào `.cache/sdkconfig-backups/` và tạo lại từ defaults sau pull. Không reset config trong build thường và không erase dữ liệu trên board.
+- Build ESP-IDF 5.5.5 thành công sau refresh và khi chạy lại `build.ps1` thường. Binary `build/HisuOS.bin`: `0x15a9a0` bytes; app slot `0x400000`, còn 66% trống.
+- Chưa flash hoặc kiểm thử trên board; chưa commit/push các bản sửa này.
+
 ## Kết Quả Kiểm Tra UI Ban Đầu — 2026-10-05
 
 - Build ESP-IDF 5.5.5, ESP32-S3, LVGL 9.4.0: thành công.
@@ -11,7 +22,7 @@
 
 ## Phạm Vi
 
-Bản thêm Wi-Fi/pin đã build và link thành công trên ESP-IDF 5.5.5, tạo `HisuOS.bin` kích thước `0x116d50`, còn 73% app slot trống. Bàn phím kiểm tra đủ 95 ký tự ASCII in được, mask và nhãn phím vừa 240×240. Đây chưa phải kết quả kết nối/ADC trên board; host tests mới chưa chạy do thiếu MSVC.
+Bản thêm Wi-Fi/pin trước đây đã build và link thành công trên ESP-IDF 5.5.5, tạo `HisuOS.bin` kích thước `0x116d50`, còn 73% app slot trống. Đây là số liệu lịch sử, không phải binary hiện tại. Bàn phím kiểm tra đủ 95 ký tự ASCII in được, mask và nhãn phím vừa 240×240. Đây chưa phải kết quả kết nối/ADC trên board; kết quả host tests hiện tại ở phần Sửa Lỗi Sau Pull.
 
 Firmware dùng ESP-IDF 5.5.5 và LVGL 9.4.0. Đã thêm service Wi-Fi và battery ADC theo profile Muse ZHENGCHEN; chưa kiểm chứng chúng trên board thật. Đã tích hợp BLE setup Wi-Fi và gửi giờ, chưa kiểm chứng ghép nối trên board. Chưa tích hợp microphone, speaker hoặc AI. Menu chỉ lưu volume/speaker preferences, không phát âm thanh.
 
@@ -25,7 +36,7 @@ Brightness có live hardware preview; Theme có live UI preview sáng/tối. BOO
 .\tools\test-ui.ps1
 ```
 
-Helper dùng MSVC x64 đã cài trên máy để build model C thành DLL Windows không phụ thuộc CRT, rồi chạy Python EIM qua ctypes. Không cài package hoặc tool mới. Các test kiểm tra menu, editor bounds, timeout presets, preview và UTF-8 payload. Không thay thế visual/hardware tests.
+Helper dùng MSVC x64 đã cài trên máy để build model C thành DLL Windows không phụ thuộc CRT, rồi chạy Python EIM qua ctypes. Test lịch được build thành executable với static CRT và Windows SDK UCRT. Không cài package hoặc tool mới. Các test kiểm tra menu, editor bounds, timeout presets, preview, UTF-8, Wi-Fi password, power model và lịch. Không thay thế visual/hardware tests.
 
 ## Build
 
@@ -68,7 +79,7 @@ Không flash trong build helper. Flash cần được thực hiện riêng sau k
 - Tắt màn hình: chọn mục mới phải về idle, backlight về 0 và GIF pause. Vol−, BOOT hoặc Vol+ đầu tiên chỉ đánh thức; Đóng menu chỉ về idle, không tắt ngay. Thời gian chờ vẫn giữ các preset tự tắt cũ.
 - Chạy lâu khi GIF, Wi-Fi và ADC cùng hoạt động; theo dõi heap/stack/watchdog, đổi theme và menu nhiều lần. Chưa tuyên bố đã qua hardware/soak tests.
 
-Host suite bổ sung password bounds/hex PSK và bảng pin (biên, điểm hiệu chuẩn, tính đơn điệu). Chạy bằng `tools/test-ui.ps1`; môi trường Codex hiện không có MSVC ở đường dẫn helper, nên các case mới chưa được chạy tại đây.
+Host suite bổ sung password bounds/hex PSK và bảng pin (biên, điểm hiệu chuẩn, tính đơn điệu). Chạy bằng `tools/test-ui.ps1`; helper đã được sửa để chạy với MSVC/Windows SDK trên máy, kết quả hiện tại ở phần Sửa Lỗi Sau Pull.
 
 ## API Phụ Đề
 

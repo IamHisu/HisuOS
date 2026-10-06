@@ -8,19 +8,35 @@ $compiler = Get-ChildItem -Path 'C:\Program Files\Microsoft Visual Studio\*\*\VC
     Sort-Object FullName | Select-Object -Last 1
 if (!$compiler) { throw 'MSVC x64 compiler is required for host tests.' }
 $linker = Join-Path $compiler.DirectoryName 'link.exe'
+$msvc = $compiler.Directory.Parent.Parent.Parent.FullName
+$include = Join-Path $msvc 'include'
+$sdk = Get-ChildItem -Directory -LiteralPath 'C:\Program Files (x86)\Windows Kits\10\Include' |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'ucrt\math.h') } |
+    Sort-Object Name | Select-Object -Last 1
+if (!$sdk) { throw 'Windows SDK UCRT headers are required for calendar tests.' }
+$sdkLib = Join-Path 'C:\Program Files (x86)\Windows Kits\10\Lib' $sdk.Name
 $out = Join-Path $root 'build\ui-tests'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $object = Join-Path $out 'model.obj'
 $wifiObject = Join-Path $out 'wifi-input.obj'
 $powerObject = Join-Path $out 'power-model.obj'
 $dll = Join-Path $out 'model.dll'
-& $compiler.FullName /nologo /c /std:c11 /O1 /GS- /Zl /W4 /WX "/Fo$object" (Join-Path $root 'components\hisu_ui\src\hisu_ui_model.c')
+& $compiler.FullName /nologo /c /std:c11 /O1 /GS- /Zl /W4 /WX "/I$include" "/Fo$object" (Join-Path $root 'components\hisu_ui\src\hisu_ui_model.c')
 if ($LASTEXITCODE -ne 0) { throw 'Host model compilation failed.' }
-& $compiler.FullName /nologo /c /std:c11 /O1 /GS- /Zl /W4 /WX "/Fo$wifiObject" (Join-Path $root 'components\hisu_network\src\hisu_wifi_input.c')
+& $compiler.FullName /nologo /c /std:c11 /O1 /GS- /Zl /W4 /WX "/I$include" "/Fo$wifiObject" (Join-Path $root 'components\hisu_network\src\hisu_wifi_input.c')
 if ($LASTEXITCODE -ne 0) { throw 'Wi-Fi input compilation failed.' }
-& $compiler.FullName /nologo /c /std:c11 /O1 /GS- /Zl /W4 /WX "/Fo$powerObject" (Join-Path $root 'components\hisu_power\src\hisu_power_model.c')
+& $compiler.FullName /nologo /c /std:c11 /O1 /GS- /Zl /W4 /WX "/I$include" "/Fo$powerObject" (Join-Path $root 'components\hisu_power\src\hisu_power_model.c')
 if ($LASTEXITCODE -ne 0) { throw 'Power model compilation failed.' }
 & $linker /nologo /dll /noentry /nodefaultlib /machine:x64 "/out:$dll" /export:hisu_ui_model_key /export:hisu_ui_adjust /export:hisu_ui_valid_utf8 /export:hisu_wifi_password_is_valid /export:hisu_power_percent_from_adc /export:hisu_power_remaining_seconds $object $wifiObject $powerObject
 if ($LASTEXITCODE -ne 0) { throw 'Host model linking failed.' }
 & $idf.python (Join-Path $root 'tests\test_ui_model.py') $dll
 if ($LASTEXITCODE -ne 0) { throw 'UI model tests failed.' }
+$calendar = Join-Path $out 'calendar-test.exe'
+$calendarObject = Join-Path $out 'hisu_calendar.obj'
+$calendarTestObject = Join-Path $out 'test_calendar.obj'
+& $compiler.FullName /nologo /c /std:c11 /MT /GS- /W4 /WX "/I$include" "/I$($sdk.FullName)\ucrt" "/I$root\components\hisu_clock\include" "/Fo$out\" (Join-Path $root 'tests\test_calendar.c') (Join-Path $root 'components\hisu_clock\src\hisu_calendar.c')
+if ($LASTEXITCODE -ne 0) { throw 'Calendar compilation failed.' }
+& $linker /nologo /subsystem:console "/out:$calendar" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" $calendarObject $calendarTestObject
+if ($LASTEXITCODE -ne 0) { throw 'Calendar linking failed.' }
+& $calendar
+if ($LASTEXITCODE -ne 0) { throw 'Calendar tests failed.' }

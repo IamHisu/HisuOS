@@ -37,6 +37,7 @@ if (typeof document !== 'undefined') {
   let device, fields = [], polling, pending = false, pollBusy = false, ready = false;
   let selected=null, lastNetworks='';
   function controls() {
+    document.body.dataset.ready = ready;
     el('connect').disabled = pending || ready || !navigator.bluetooth || !isSecureContext;
     el('send').disabled = pending || !ready;
     el('time').disabled = pending || !ready;
@@ -47,7 +48,7 @@ if (typeof document !== 'undefined') {
     clearInterval(polling); ready = false; fields = [];
     selected=null; lastNetworks=''; el('wifi').hidden=true; el('wifi-list').replaceChildren();
     el('state').textContent = 'Chưa kết nối'; controls();
-    message('Đã ngắt Bluetooth. Trên HisuOS, BOOT đổi thời gian mở và Vol− xác nhận để kết nối lại.');
+    message('Đã ngắt kết nối.');
   }
   async function syncTime() {
     while (pollBusy) await new Promise(resolve => setTimeout(resolve, 50));
@@ -58,17 +59,20 @@ if (typeof document !== 'undefined') {
     if (signature===lastNetworks) return;
     lastNetworks=signature;
     el('wifi-list').replaceChildren();
-    el('scan-status').textContent=network.scanning ? 'Đang quét…' : !network.enabled ? 'Wi-Fi đang tắt. Bấm Quét để bật và tìm mạng.' : network.error ? 'Quét chưa thành công. Bấm Quét lại.' : !network.aps.length ? 'Chưa tìm thấy mạng. Bấm Quét lại.' : 'Chọn Wi-Fi để kết nối';
+    el('scan-status').textContent=network.scanning ? 'Đang quét…' : !network.enabled ? 'Wi-Fi đang tắt. Bấm quét để bật.' : network.error ? 'Quét thất bại.' : !network.aps.length ? 'Không thấy mạng nào.' : '';
     if (network.scanning || !network.enabled) return;
     for (const ap of network.aps) {
       const row=document.createElement('button'); row.type='button'; row.className='network'+(ap.saved ? ' saved' : '');
       const signal=ap.rssi>=-55 ? 4 : ap.rssi>=-65 ? 3 : ap.rssi>=-75 ? 2 : 1;
-      row.textContent=`${ap.ssid}  ${'▂▄▆█'.slice(0,signal)}${ap.saved ? ' · Đã lưu' : ''}${!ap.secure ? ' · Mở' : ''}`;
+      const name=document.createElement('span'); name.className='name'; name.textContent=ap.ssid; row.append(name);
+      if (ap.saved) { const tag=document.createElement('span'); tag.className='tag'; tag.textContent='Đã lưu'; row.append(tag); }
+      if (ap.secure) { row.insertAdjacentHTML('beforeend','<svg class="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>'); }
+      const bars=document.createElement('span'); bars.className='bars'; bars.dataset.level=signal; bars.innerHTML='<i></i><i></i><i></i><i></i>'; row.append(bars);
       row.disabled=!ap.supported;
       row.onclick=()=>{
         if (pending || !ready) return;
         selected=ap; el('ssid').value=ap.ssid; el('password').value='';
-        el('password-field').hidden=!ap.secure; el('wifi').hidden=false;
+        el('password-field').hidden=!ap.secure; el('wifi').hidden=false; el('password').type='password'; el('toggle').textContent='Hiện'; el('send').disabled=false;
         if (ap.secure) el('password').focus();
       };
       el('wifi-list').append(row);
@@ -82,8 +86,8 @@ if (typeof document !== 'undefined') {
       const status = JSON.parse(new TextDecoder().decode(value));
       showNetworks(decodeNetworks(await fields[7].readValue()));
       el('state').textContent = status.wifi === 'connected' ? 'Wi-Fi đã kết nối' : status.wifi === 'joining' ? 'Đang kết nối Wi-Fi' : 'Đã ghép điện thoại';
-      if (status.error) message('Wi-Fi chưa kết nối được. Kiểm tra tên mạng và mật khẩu, rồi gửi lại.');
-      else if (status.wifi === 'connected') message('Wi-Fi đã kết nối. Thiết bị đã lưu mạng và đồng bộ giờ.');
+      if (status.error) message('Không kết nối được Wi-Fi. Kiểm tra mật khẩu.');
+      else if (status.wifi === 'connected') message('Đã kết nối Wi-Fi.');
     } catch { /* A disconnect is handled by the GATT event. */ }
     finally { pollBusy = false; }
   }
@@ -95,18 +99,18 @@ if (typeof document !== 'undefined') {
       if (name && /^HisuOS-[0-9A-Fa-f]{4}$/.test(name)) filter.name = name;
       device = await navigator.bluetooth.requestDevice({filters:[filter]});
       device.addEventListener('gattserverdisconnected', disconnected);
-      message('Ghép nối: nhập mã 6 số trên màn hình HisuOS nếu được yêu cầu.');
+      message('Nhập mã 6 số trên màn hình HisuOS.');
       const server = await device.gatt.connect();
       const setup = await server.getPrimaryService(service);
       for (const i of [1,2,3,4,5,7]) fields[i] = await setup.getCharacteristic(characteristic(i));
       await syncTime(); ready = true;
-      el('state').textContent = device.name || 'HisuOS'; message('Đã đồng bộ giờ. Chọn mạng Wi-Fi bên dưới.');
+      el('state').textContent = device.name || 'HisuOS'; message('');
       try { await fields[7].writeValueWithResponse(Uint8Array.of(1)); }
-      catch { message('Đã ghép nối. Wi-Fi đang bận; có thể bấm Quét lại sau.'); }
+      catch { message('Wi-Fi đang bận. Thử quét lại sau.'); }
       polling = setInterval(refresh, 2000);
     } catch (error) {
       if (device?.gatt.connected) device.gatt.disconnect();
-      message(error.name === 'NotFoundError' ? 'Chưa chọn thiết bị.' : 'Chưa ghép nối được. Kiểm tra Bluetooth và mã trên HisuOS, rồi thử lại.');
+      message(error.name === 'NotFoundError' ? 'Chưa chọn thiết bị.' : 'Không kết nối được. Kiểm tra Bluetooth và mã ghép nối.');
     } finally { pending = false; controls(); }
     await refresh();
   };
@@ -116,14 +120,14 @@ if (typeof document !== 'undefined') {
     pending=true; controls();
     while (pollBusy) await new Promise(resolve=>setTimeout(resolve,50));
     try { await fields[7].writeValueWithResponse(Uint8Array.of(1)); }
-    catch { message('Chưa quét được Wi-Fi. Hãy thử lại.'); }
+    catch { message('Quét thất bại. Thử lại.'); }
     finally { pending=false; controls(); }
     await refresh();
   };
   el('time').onclick = async () => {
     pending = true; controls();
-    try { await syncTime(); message('Đã đồng bộ giờ và múi giờ.'); }
-    catch { message('Chưa gửi được giờ. Hãy kết nối lại.'); }
+    try { await syncTime(); message('Đã đồng bộ giờ.'); }
+    catch { message('Gửi giờ thất bại. Kết nối lại.'); }
     finally { pending = false; controls(); }
   };
   el('wifi').onsubmit = async event => {
@@ -142,10 +146,15 @@ if (typeof document !== 'undefined') {
       await fields[1].writeValueWithResponse(payload[0]);
       await fields[2].writeValueWithResponse(payload[1]);
       await fields[3].writeValueWithResponse(Uint8Array.of(1));
-      el('password').value = ''; message('Đang kết nối Wi-Fi…');
-    } catch { message('Chưa gửi được Wi-Fi. Thử lại khi thiết bị quét mạng xong hoặc kết nối lại Bluetooth.'); }
+      el('password').value = ''; el('wifi').hidden = true; message('Đang kết nối Wi-Fi…');
+    } catch { message('Gửi Wi-Fi thất bại. Thử lại.'); }
     finally { payload[1].fill(0); pending = false; controls(); }
   };
-  if (!navigator.bluetooth || !isSecureContext) message('Trình duyệt này chưa dùng được Bluetooth. Hãy mở qua HTTPS/localhost bằng Chrome hoặc Edge có hỗ trợ Bluetooth.');
+  if (!navigator.bluetooth || !isSecureContext) message('Cần Chrome hoặc Edge qua HTTPS/localhost.');
+  el('cancel').onclick = () => { el('wifi').hidden = true; selected = null; el('password').value = ''; };
+  el('toggle').onclick = () => { const show = el('password').type === 'password'; el('password').type = show ? 'text' : 'password'; el('toggle').textContent = show ? 'Ẩn' : 'Hiện'; };
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !el('wifi').hidden) el('cancel').click(); });
+  const tick = () => { const d = new Date(); el('clock').firstChild.nodeValue = d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'}); el('zone').textContent = 'GMT' + (d.getTimezoneOffset() <= 0 ? '+' : '−') + Math.abs(d.getTimezoneOffset() / 60); };
+  tick(); setInterval(tick, 10000);
   controls();
 }

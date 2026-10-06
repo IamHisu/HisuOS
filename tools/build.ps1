@@ -1,7 +1,8 @@
 param(
     [ValidateSet('build', 'reconfigure', 'menuconfig', 'size')]
     [string]$Action = 'build',
-    [string]$EimConfig = 'C:\Espressif\tools\eim_idf.json'
+    [string]$EimConfig = 'C:\Espressif\tools\eim_idf.json',
+    [switch]$RefreshConfig
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,6 +32,19 @@ try {
     }
     Push-Location $root
     try {
+        if ($RefreshConfig) {
+            $sdkconfig = Join-Path $root 'sdkconfig'
+            if (Test-Path -LiteralPath $sdkconfig) {
+                $backups = Join-Path $root '.cache\sdkconfig-backups'
+                New-Item -ItemType Directory -Force -Path $backups | Out-Null
+                $backup = Join-Path $backups ('sdkconfig-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fffffff'))
+                Move-Item -LiteralPath $sdkconfig -Destination $backup
+                Write-Host "Previous sdkconfig saved to $backup"
+            }
+            # Opt-in refresh: regenerate defaults, never silently replace custom settings.
+            & $idf.python $idfPy '-DIDF_TARGET=esp32s3' reconfigure
+            if ($LASTEXITCODE -ne 0) { throw 'SDK configuration refresh failed; the previous config is in .cache/sdkconfig-backups.' }
+        }
         & $idf.python $idfPy '-DIDF_TARGET=esp32s3' $Action
         if ($LASTEXITCODE -ne 0) { throw "ESP-IDF $Action failed ($LASTEXITCODE)." }
     } finally { Pop-Location }

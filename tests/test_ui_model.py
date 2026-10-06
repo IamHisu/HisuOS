@@ -103,7 +103,8 @@ class UiModelTests(unittest.TestCase):
 
     def test_info_back_is_physical_left_button(self):
         for item in (6, 7):
-            m = Model(1, item, 0, 0, 2)
+            first_visible = max(2, item - 4)
+            m = Model(1, item, 0, 0, first_visible)
             self.key(m, 1)
             self.assertEqual(m.page, 3)
             self.key(m, 1)
@@ -111,7 +112,7 @@ class UiModelTests(unittest.TestCase):
             self.key(m, 2)
             self.assertEqual(m.page, 3)
             self.key(m, 3)
-            self.assertEqual((m.page, m.selected, m.first_visible), (1, item, 2))
+            self.assertEqual((m.page, m.selected, m.first_visible), (1, item, first_visible))
 
     def test_bounds(self):
         for setting, low, high in ((0, 10, 100), (1, 0, 100)):
