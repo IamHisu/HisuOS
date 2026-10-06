@@ -1,5 +1,91 @@
 # UI Bring-up
 
+## Backlight GPIO20 Theo Muse (2026-10-06)
+
+- GPIO20 vừa là backlight vừa là USB D+. Tắt USB Serial/JTAG và console phụ USB trong defaults lẫn cấu hình build đang dùng; giữ log UART0. Download mode ROM vẫn dùng được để recovery.
+- Khi sáng bằng 0 hoặc reboot phần mềm, tháo LEDC khỏi GPIO20, kéo thấp bằng output và hold như Muse. Boot giữ hold đến khi truyền frame đầu xong; nối lại PWM rồi mới nhả hold.
+- Về màn chính khi revision nền thay đổi sau khi lưu thành công, kể cả khi đang ở menu hoặc màn đã ngủ; không đóng phiên Setting.
+- Chưa kiểm chứng power-cycle trên LCD thật. Nếu còn lóe trong giai đoạn ROM trước firmware, cần đo GPIO20 và xem pull-down phần cứng/bootloader.
+
+## Thoát Setting Và Reboot (2026-10-06)
+
+- Vol+ / giữ BOOT rời màn Setting mà không đóng phiên. Vol− chọn mục Dừng riêng; BOOT xác nhận mới đóng hotspot/web. Các điều kiện đóng từ web, mất AP và lease giữ nguyên.
+- Shutdown handler của `esp_restart()` dừng PWM ở mức thấp và giữ GPIO backlight. Boot cấu hình chân thấp trước khi nhả hold; vẫn chỉ bật đèn sau khi frame đầu tiên đã được truyền xong.
+- Reset vật lý, mất nguồn và watchdog không chạy shutdown handler; cần kiểm chứng trên LCD thật. Nếu lóe trước app_main, cần pull-down phần cứng hoặc xử lý bootloader.
+
+## Overlay Icon Trong Suốt (2026-10-06)
+
+- Bỏ nền đặc phía sau cụm Wi-Fi/pin và đồng hồ trên màn chờ. Container dùng LV_OPA_TRANSP; giữ nét icon và các vạch pin đặc.
+- Áp dụng cả ảnh tự tải và GIF, không đổi vị trí, màu theme, phụ đề hoặc boot splash. Test source: `node tests/test_idle_overlay.mjs`; cần kiểm tra nền nhiều màu trên LCD thật.
+
+## List Wi-Fi Và Vòng Đời Setting (2026-10-06)
+
+- Thay combobox bằng dòng mạng ổn định, icon Lucide mức sóng, nhãn Đã lưu nhỏ màu riêng. Không dựng lại DOM mỗi lần poll.
+- Chạm mạng đã lưu gửi saved join ngay, mạng mới có bảo mật mở dialog; mạng mở kết nối ngay. Hỗ trợ SSID ẩn và nhập lại mật khẩu sau lỗi.
+- Bỏ deadline 5 phút. Dừng/X đóng ngay; ngắt AP >10 giây đóng. Pagehide keepalive báo leave có token/Origin/mã trang; grace 8 giây chống reload, lease 90 giây dự phòng browser chết.
+- BOOT ở QR mở thông tin, không reset thời gian. Không đóng theo visibilitychange; browser bị đóng băng >90 giây vẫn có thể làm lease mất.
+- Các mục 5 phút/BOOT reset bên dưới là lịch sử. Cần kiểm chứng AP chuyển kênh, captive browser/pagehide/background trên điện thoại thật.
+
+## Setting HTTP Trong Hotspot (2026-10-06)
+
+- Thay triển khai HTTPS bên dưới bằng một HTTP server cổng 80; control port 32768. Portal chỉ quản lý DNS và đăng ký redirect trên server chung.
+- Giữ WPA2 ngẫu nhiên, cửa sổ vật lý 5 phút, token RAM, Host/Origin và đối chiếu client SoftAP. HTTP không có mã hóa/xác thực TLS; không mở ra LAN/Internet.
+- Khi điện thoại nối hotspot, tự hiện QR URL HTTP; ngắt kết nối trả về QR Wi-Fi. BOOT ở màn QR đặt lại bộ đếm 5 phút, không đổi mật khẩu/token. Trang thông tin thay fingerprint bằng SSID, mật khẩu và IP.
+- Captive GET/HEAD chuyển về trang HTTP; HEAD root kết thúc không vòng lặp. POST lạ trả 404 và đóng socket, không chuyển body tới API.
+- Không bảo đảm điện thoại tự mở trang. Cần flash và thử thực tế; các ghi chú HTTPS/fingerprint bên dưới là lịch sử.
+- Sửa kiểm tra socket: IDF HTTP dùng AF_INET6 khi `CONFIG_LWIP_IPV6=y`, nên không thể đọc bằng buffer `sockaddr_in` và chỉ nhận AF_INET. Dùng `sockaddr_storage`, nhận IPv4 hoặc IPv4-mapped IPv6, giữ đối chiếu IP AP/subnet/client thật. Đây là lỗi có thể gây chặn nhầm thành Setting closed.
+- Phân biệt phản hồi phiên hết hạn với client không hợp lệ, thêm log lý do và no-store. Log parser 400 riêng không đủ xác định nguồn request hoặc nguyên nhân đóng phiên.
+
+## Setting Không Cần Wi-Fi Nhà
+
+- Log lỗi `error in creating ctrl socket (112)` là `EADDRINUSE`: captive HTTP bị trùng cổng UDP control 32769 với mặc định của HTTPS IDF 5.5.5.
+- Gán rõ hai cổng control HTTP 32768 / HTTPS 32769 trong `hisu_setup_ports.h`, kèm static assertion và test source regression.
+- Đây không phải điều kiện phải nối Wi-Fi nhà: hotspot trong log đã lên IP 192.168.4.1 trước khi lỗi server. Flow vẫn là Setting → hotspot QR → cấu hình Wi-Fi nhà trên web.
+- UI hiện mã lỗi startup và log không chứa credential, giúp phân biệt lỗi radio/server. Cần thử trên board với không mạng đã lưu và station tắt.
+
+## Không Chớp Nền Trước Splash
+
+- Giữ GPIO đèn nền tắt ngay đầu application, trước settings/network/media.
+- LCD init ở trạng thái display-off. UI vẽ toàn bộ splash bằng `lv_refr_now` trước khi bật panel và đèn nền.
+- Lệnh display-on qua SPI của IDF chờ các DMA pixel đã xếp hàng hoàn tất, kể cả chunk cuối; không dùng delay cố định để đoán.
+- Nếu frame đầu hoặc bật đèn nền lỗi, giữ màn tối và báo lỗi startup. Thời gian splash 3 giây bắt đầu sau khi bật màn.
+- Host test kiểm tra thứ tự source và asset GIF; cần thử reset mềm và ngắt/cấp nguồn trên board để xác minh hết chớp.
+
+## Setting QR — 2026-10-06
+
+- Hotspot dùng mật khẩu ngẫu nhiên 16 ký tự mỗi phiên; bỏ file mật khẩu cố định. SSID ổn định theo MAC AP.
+- QR Wi-Fi là màn chính, BOOT đổi sang QR URL. Captive portal DNS/HTTP hỗ trợ mở HTTPS tự động; không bảo đảm trên mọi máy.
+- Không PIN riêng hoặc BOOT duyệt ảnh; web tự lấy token, gửi ảnh tự lưu an toàn hai slot. Giữ fingerprint, kiểm tra Host/Origin/AP và cửa sổ 5 phút.
+- Người có QR hotspot có quyền chỉnh Setting trong phiên. X/hết hạn/logout đóng DNS/HTTP/HTTPS/AP. Chưa flash hoặc thử captive portal trên điện thoại thật.
+
+Các mục bên dưới ghi lịch sử bring-up; mô tả mã riêng/BOOT duyệt ảnh/Bluetooth cũ không còn là flow hiện tại. Checklist hiện hành: [Setting](WALLPAPER_SETUP.md).
+
+## Boot GIF — 2026-10-06
+
+- Sửa nguyên nhân GIF không tải: AnimatedGIF trong LVGL giới hạn MAX_WIDTH=480 nhưng bản gốc rộng 498 px. Thu phóng widget xảy ra sau decode nên không giải quyết được giới hạn.
+- Giữ bản gốc `boot_windows_xp_source.gif`; Sharp tạo asset 240x240, giữ đủ 18 frame và delay gốc, letterbox đen. Chỉ nhúng bản chuẩn hoá vào firmware, không scale lúc chạy.
+- Splash 3 giây không có clock, icon Wi-Fi/pin, header hoặc footer. Nếu GIF lỗi, giữ nền đen đủ thời gian thay vì render idle sớm.
+- `tests/test_boot_gif.mjs` kiểm tra kích thước theo giới hạn decoder, timing, đủ frame không trống, frame khác nhau và letterbox RGB565 đen. Đây là kiểm tra tài nguyên trên host, chưa phải test LCD/decoder runtime trên board.
+- Build IDF 5.5.5 qua, binary `0x14e1f0`, app slot còn 67% trống. Chưa flash; cần nạp bản mới và reset/power-cycle để kiểm tra.
+
+## Setting Hotspot — 2026-10-06
+
+- Menu 12 mục; Setting thay Hình nền, bỏ Bluetooth và icon BLE; application không start BLE host.
+- Network worker quản lý AP WPA2 có mật khẩu ngẫu nhiên và AP+STA. Trang HTTPS chỉ dùng địa chỉ AP, có tab Wi-Fi/Hình nền/Thiết bị; không cần router/Internet/BLE.
+- Settings/Wi-Fi/time API có token, Host/Origin/subnet/socket destination checks, body/nesting/schema limits. Gửi ảnh vẫn cần BOOT duyệt đúng preview ID.
+- UI model 19/19, calendar và media model qua. Playwright API mô phỏng trên ba viewport qua: tabs/keyboard, scan/saved join, SSID injection safety, brightness/time và gửi ảnh/expiry. Không phải kiểm thử TLS/radio backend thật.
+- Chưa flash, commit hoặc push. Cần thử AP khi station tắt, join/scan đổi kênh, mật khẩu/fingerprint trên điện thoại, đóng/hết hạn và flash persistence trên board.
+- Hướng dẫn hiện hành: [Setting](WALLPAPER_SETUP.md). Các mục BLE/upload cùng LAN bên dưới là nhật ký các phiên bản trước.
+
+## Hình Nền Nội Bộ — 2026-10-06
+
+- Thêm `hisu_media`: HTTPS local, mã dùng một lần, cửa sổ 5 phút, token ngắn hạn, giới hạn attempts/body/socket và BOOT xác nhận đúng ID ảnh đã xem.
+- Ảnh tĩnh RGB565 240×240 override GIF khi idle; menu/phụ đề giữ nguyên. UI dùng pixel copy riêng; service sở hữu network/storage, hai slots CRC-checked và đọc lại flash trước publish.
+- Build ESP-IDF 5.5.5 thành công: `HisuOS.bin` `0x179710` bytes, app slot `0x400000`, còn 63% trống.
+- UI model 18/18, lịch, media CRC/header/PIN lockout/stale approval và JS encoder/crop qua. Hai test BLE giả lập cũ vẫn qua.
+- Playwright desktop/mobile/small-mobile: 1280×800, 390×844, 320×720; ảnh PNG thật, canvas pixels/màu RGB565 đúng, không overflow/overlap, mã sai, chờ xác nhận, logout/hết hạn. API mô phỏng, không phải TLS server thật.
+- Chưa flash hoặc kiểm tra TLS, certificate UX, flash power-loss, memory/stack/latency trên board. Chưa commit/push. Hướng dẫn và security limitations theo [Wallpaper Setup](WALLPAPER_SETUP.md).
+
 ## Sửa Lỗi Sau Pull — 2026-10-06
 
 - Sửa chọn đầu tháng âm bằng khoảng ngày sóc thực tế, tránh ngày âm bằng 0 tại 07/05/2054 và 09/04/2062.
@@ -48,8 +134,9 @@ Không flash trong build helper. Flash cần được thực hiện riêng sau k
 
 ## Kiểm Thử Trên Board
 
-- Boot hiển thị GIF mèo 240×240, lặp đủ tám frame; vùng trong suốt theo nền trắng/đen của theme đã lưu.
-- BOOT mở Hisu, up/down chạy đủ mười mục và wrap đúng.
+- Khi chưa có ảnh custom, boot hiển thị GIF mèo 240×240, lặp đủ tám frame; vùng trong suốt theo nền trắng/đen của theme đã lưu. Khi có ảnh custom, kiểm tra boot dùng ảnh đã lưu và khôi phục nền mặc định.
+- BOOT mở Hisu, up/down chạy đủ 13 mục và wrap đúng.
+- Trong menu chính, giữ Vol+ khoảng 1,5 giây để về màn hình chờ; nhả nút không di chuyển thêm. Nhấn nhanh vẫn di chuyển một mục; mở lại menu giữ vị trí. Kiểm tra thao tác giữ nút ở lịch và bàn phím Wi-Fi không thay đổi.
 - Theme: up/down chuyển Sáng/Tối, chữ và nền đổi ngay; giữ BOOT hủy, BOOT lưu. Reboot kiểm tra theme và nền GIF giữ đúng; mở/đóng menu nhiều lần không có bóng frame cũ.
 - Không có chữ bị cắt/đè trong header, row, value hoặc footer 240x240.
 - Font UI là Hisu Semibold 16px (Source Code Pro Semibold), đủ dấu tiếng Việt. Kiểm tra nét chữ ở cả theme sáng/tối.

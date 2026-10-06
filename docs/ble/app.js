@@ -112,6 +112,7 @@ if (typeof document !== 'undefined') {
       catch { wifiNote('Wi-Fi đang bận. Thử quét lại sau.','err'); }
       polling = setInterval(refresh, 2000);
     } catch (error) {
+      console.error('HisuOS BLE connection failed:', error);
       if (device?.gatt.connected) device.gatt.disconnect();
       message(error.name === 'NotFoundError' ? 'Chưa chọn thiết bị.' : 'Không kết nối được. Kiểm tra Bluetooth và mã ghép nối.');
     } finally { pending = false; controls(); }

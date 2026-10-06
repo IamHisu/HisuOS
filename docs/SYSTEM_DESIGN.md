@@ -1,6 +1,9 @@
 # HisuOS — System Design Specification
 
-**Phiên bản tài liệu:** 0.2  
+**Phiên bản tài liệu:** 0.6
+
+**Cập nhật:** 2026-10-06; Setting QR hotspot + captive portal, tự lấy token và tự lưu ảnh; tạm ngưng Bluetooth, giữ roadmap AI/voice
+
 **Trạng thái:** Thiết kế cho bản xây dựng lại; chưa phải mô tả firmware đã triển khai  
 **Hardware đầu tiên:** ZHENGCHEN 1.54 TFT WiFi — ESP32-S3 N16R8  
 **Framework:** ESP-IDF 5.5.5  
@@ -15,7 +18,7 @@ HisuOS là firmware trợ lý AI có thể mở rộng, với nền tảng thi�
 Ưu tiên bản đầu:
 
 - Board hoạt động ổn định: màn hình, nút, microphone, speaker, pin và Wi-Fi.
-- Setup trên thiết bị và qua BLE: Wi-Fi, âm lượng, bật/tắt loa, độ sáng và thời gian tắt màn hình.
+- Setup trên thiết bị và qua hotspot HTTP: Wi-Fi, âm lượng, bật/tắt loa, độ sáng và thời gian tắt màn hình. BLE tạm ngưng trong firmware hiện tại.
 - Màn hình chờ đen, không có avatar hoặc animation tích hợp sẵn.
 - Hội thoại có phụ đề tiếng Việt, sau đó bổ sung voice.
 - Code chia theo ownership, không trộn nhiều project thành một firmware.
@@ -94,6 +97,7 @@ HisuOS/
 │   ├── hisu_settings/            # Device config, validation, persistence
 │   ├── hisu_network/             # Wi-Fi lifecycle và provisioning
 │   ├── hisu_ble/                 # BLE provisioning transport
+│   ├── hisu_media/               # HTTP hotspot, xác thực và lưu hình nền
 │   ├── hisu_audio/               # Capture/playback, PCM queues, volume
 │   ├── hisu_power/               # Battery, backlight/power policy
 │   ├── hisu_ui/                  # LVGL, menu, subtitles, status
@@ -119,6 +123,7 @@ Mỗi component có `CMakeLists.txt`, public headers trong `include/`, implement
 | Capture và playback | Audio service | Buffer, stream lifecycle, volume, mute |
 | Wi-Fi radio và kết nối | Network service | Scan, join, reconnect, bật/tắt |
 | BLE host và bonding | BLE service | Pairing, transport, disconnect |
+| Local media upload / image records | Media service | AP-only HTTP window, authorization, bounded payload, durable storage |
 | Device settings | Settings service | Validation, cache, persistence |
 | LVGL objects | UI task | Tạo/sửa/hủy object, render menu và phụ đề |
 | Conversation lifecycle | Application controller | Start, cancel, completion, error |
@@ -169,7 +174,7 @@ Menu vẫn dùng được khi offline hoặc không có API key. BLE có thể t
 UI tối thiểu: boot, idle, listening, thinking, speaking, settings và error.
 
 - Idle là màn hình đen; không avatar hoặc animation mặc định.
-- Menu có Wi-Fi setup, Bluetooth, âm lượng, bật/tắt loa, độ sáng, timeout và pin.
+- Menu có Wi-Fi, Setting, âm lượng, bật/tắt loa, độ sáng, timeout và pin; không có Bluetooth trong bản hiện tại.
 - Mapping click/hold/navigation phải tránh xung đột giữa mở menu và push-to-talk; chốt sau khi xác minh nút.
 - Phụ đề tiếng Việt có font phù hợp, wrapping và giới hạn độ dài.
 - Có thể hiển thị transcript người dùng và câu trả lời AI; phân biệt partial với final.
@@ -262,6 +267,36 @@ Không ghi flash mỗi token. Dùng batching, schema version, migration và reco
 
 NVS thông thường không đồng nghĩa với secure storage. Production cần lựa chọn rõ flash/NVS encryption, provisioning và key handling; không bật secure boot hoặc thay eFuse tùy tiện trên board phát triển.
 
+### 13.1 Hình nền nội bộ
+
+Triển khai ảnh tĩnh local trước cloud media: service `hisu_media` phục vụ HTTP chỉ qua hotspot WPA2 mở vật lý, token theo phiên, không mã truy cập riêng hoặc BOOT duyệt ảnh. Không giới hạn tổng thời gian; đóng thủ công hoặc khi mất client/web theo grace/liveness. Browser chuyển PNG/JPEG/WebP về RGB565 240×240; board nhận đủ payload hợp lệ rồi tự lưu. Hai records luân phiên trong 240 KiB đầu `storage`, CRC và commit header sau cùng, chưa cần filesystem. HTTP không có TLS; token không thay thế mã hóa/xác thực server. Không mở service ra Internet, không ảnh hưởng ownership UI/network/settings. Contract và giới hạn kiểm chứng theo [Setting](WALLPAPER_SETUP.md).
+
+### 13.2 Setting qua hotspot
+
+Mục Hình nền đổi thành **Setting**. Network worker sở hữu vòng đời WPA2 SoftAP,
+mật khẩu ngẫu nhiên 16 ký tự mỗi phiên và AP+STA mode; HTTP handler chỉ gửi queue command.
+`hisu_media` tái sử dụng phiên bảo mật cho trang nhúng và `hisu_setup_api` tách
+API settings/Wi-Fi/time khỏi storage ảnh. Tab Wi-Fi quét/join/bật-tắt station;
+Hình nền preview trên trình duyệt rồi tự lưu khi gửi; Thiết bị dùng chung settings service và gửi UTC
+từ điện thoại. Settings được validate/persist qua API chung, không gọi LVGL/GPIO
+từ HTTP. Âm lượng/loa chưa nối audio service.
+
+Trang chỉ phục vụ IP AP, không IP station. Host/Origin/token/subnet/socket đích
+được kiểm tra; JSON bị giới hạn body/nesting/schema. Hotspot sống độc lập với
+kết nối Wi-Fi nhà, đóng khi phiên kết thúc; không NAT/bridge.
+QR Wi-Fi chứa SSID và mật khẩu; QR URL HTTP tự hiện khi điện thoại kết nối, ngắt kết nối trả về QR Wi-Fi.
+BOOT ở màn QR mở thông tin. Web dùng danh sách ổn định/icon sóng, mạng đã lưu kết nối ngay; mạng mới mở dialog mật khẩu.
+Không có deadline 5 phút. Ngắt hotspot có grace 10 giây; pagehide có grace 8 giây và mã trang chống unload cũ;
+request xác thực giữ lease 90 giây để đóng dự phòng khi không nhận được pagehide. Tải lại trang nhanh giữ phiên.
+`hisu_setup_portal` dùng DNS AP và redirect trên cùng HTTP server Setting cổng 80;
+không bảo đảm tự mở trên mọi điện thoại. POST lạ trả 404, không chuyển body tới API.
+Người có QR hotspot có quyền chỉnh Setting trong phiên; token tự cấp qua HTTP,
+vẫn cần kiểm tra Origin/Host/socket AP; web không được mở lại phiên đã đóng.
+Socket dual-stack chuẩn hóa IPv4-mapped IPv6 về IPv4 trước các kiểm tra AP/client; không cho phép IPv6 thuần.
+BLE source giữ để tham khảo nhưng không khởi động, không có option/icon Bluetooth.
+Các đoạn BLE ở roadmap bên dưới là thiết kế lưu lại, không phải feature đang bật.
+HTTP không chống AP giả/MITM bằng TLS. Chưa xác minh AP/channel switching/flash trên board thực tế.
+
 ## 14. MCP và scheduler
 
 Local tool calling không cần MCP. Sau MVP, tách hai vai trò:
@@ -309,11 +344,14 @@ TLS phải validate certificate và hostname. Development credential không comm
 | Muse | Reference/selected implementation cho setup, menu, BLE và board |
 | Xiaozhi | Reference cho voice pipeline, buffering và voice lifecycle |
 | MimiClaw | Reference cho agent loop, tools, memory và scheduling |
+| XiaoClaw | Reference cho tích hợp voice Xiaozhi với agent MimiClaw qua queue/callback; chọn từng module, không thay nền HisuOS |
 | Gemini | AI provider đầu tiên |
 
 Không phụ thuộc bắt buộc backend của Muse hoặc Xiaozhi. Không copy toàn bộ resource manager từ project khác vào cạnh service HisuOS.
 
 Mỗi phần tái sử dụng phải ghi nguồn, commit/version, license, modification và dependency. Giữ copyright/license/NOTICE theo yêu cầu. Chỉ chọn component sau khi xác minh tương thích ESP-IDF 5.5.5; tài liệu `latest` không phải bằng chứng tương thích.
+
+Đánh giá XiaoClaw và các giới hạn về LLM qua API, flash, pin và BLE nằm trong [Tài liệu tham khảo](REFERENCES.md). Học cách tách voice/agent qua message bus; application HisuOS vẫn sở hữu điều phối và vòng đời phiên. Không thêm một resource manager hoặc tầng bridge tổng quát chỉ vì project nguồn có nó. Ưu tiên text AI, voice theo lượt và bounded tools; Lua, tự tạo skills, memory dài hạn và scheduler không trở thành yêu cầu MVP.
 
 ## 18. Roadmap và tiêu chí hoàn thành
 
@@ -357,5 +395,8 @@ Những mục chưa chốt không được biến thành lời khẳng định �
 - [ESP-IoT-Solution MCP](https://docs.espressif.com/projects/esp-iot-solution/en/latest/ai/mcp.html)
 - [Gemini Live API capabilities](https://ai.google.dev/gemini-api/docs/live-api/capabilities)
 - [MimiClaw repository](https://github.com/memovai/mimiclaw)
+- [Xiaozhi repository](https://github.com/78/xiaozhi-esp32)
+- [XiaoClaw repository](https://github.com/beancookie/xiaoclaw)
+- [Đánh giá nguồn và hướng tái sử dụng](REFERENCES.md)
 
 Nguồn bên ngoài là tài liệu tham khảo, không quyết định ownership hoặc kiến trúc HisuOS.

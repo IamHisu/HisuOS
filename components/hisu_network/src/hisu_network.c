@@ -3,18 +3,21 @@
 #include "hisu_clock.h"
 #include "hisu_wifi_input.h"
 #include <stdio.h>
+#include <inttypes.h>
 #include <string.h>
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_random.h"
+#include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/event_groups.h"
 
-enum {CMD_SCAN, CMD_JOIN, CMD_ENABLE};
+enum {CMD_SCAN, CMD_JOIN, CMD_ENABLE, CMD_SETUP};
 enum {EVENT_IP = 1, EVENT_DISCONNECTED = 2};
 typedef struct { int type; bool enabled; char ssid[33], password[65]; } command_t;
 static SemaphoreHandle_t s_lock;
@@ -22,8 +25,9 @@ static QueueHandle_t s_commands;
 static EventGroupHandle_t s_events;
 static hisu_network_status_t s_status;
 static esp_netif_t *s_netif;
+static esp_netif_t *s_setup_netif;
 static esp_event_handler_instance_t s_wifi_handler, s_ip_handler;
-/* Worker-owned radio and credential lifecycle. Event callbacks only set bits. */
+/* Worker owns radio and credentials; callbacks publish connection events. */
 static bool s_started, s_want_connection, s_save_candidate;
 static char s_ssid[33], s_password[65];
 static int s_retries;
@@ -37,6 +41,13 @@ bool hisu_network_valid_password(const char *password)
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
+    if (base == WIFI_EVENT && (id == WIFI_EVENT_AP_STACONNECTED ||
+        id == WIFI_EVENT_AP_STADISCONNECTED || id == WIFI_EVENT_AP_STOP)) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        s_status.setup_client_connected = id == WIFI_EVENT_AP_STACONNECTED;
+        ++s_status.revision;
+        xSemaphoreGive(s_lock);
+    }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = data;
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -64,6 +75,70 @@ static esp_err_t radio_start(void)
     esp_err_t err = esp_wifi_start();
     if (err == ESP_OK) s_started = true;
     return err;
+}
+
+static esp_err_t radio_mode(bool station, bool setup)
+{
+    return esp_wifi_set_mode(setup ? (station ? WIFI_MODE_APSTA : WIFI_MODE_AP) : WIFI_MODE_STA);
+}
+
+static void setup_radio(bool enabled)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool station = s_status.enabled, previous = s_status.setup_enabled;
+    xSemaphoreGive(s_lock);
+    if (previous == enabled) return;
+    esp_err_t err = ESP_OK;
+    wifi_config_t config = {0};
+    if (enabled) {
+        uint8_t mac[6];
+        err = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+        if (err != ESP_OK) { failed(err); return; }
+        snprintf((char *)config.ap.ssid, sizeof(config.ap.ssid), "Hisu-Setting-%02X%02X%02X", mac[3], mac[4], mac[5]);
+        /* STA radio provides RF entropy, including when station Wi-Fi is disabled. */
+        err = radio_start();
+        if (err != ESP_OK) { failed(err); return; }
+        uint8_t random[8];
+        esp_fill_random(random, sizeof(random));
+        hisu_wifi_setup_password(random, (char *)config.ap.password);
+        memset(random, 0, sizeof(random));
+        config.ap.ssid_len = strlen((char *)config.ap.ssid);
+        config.ap.channel = 1; config.ap.max_connection = 1;
+        config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        config.ap.pmf_cfg.capable = true;
+        err = radio_mode(station, true);
+        if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_AP, &config);
+        if (err == ESP_OK) err = radio_start();
+        if (err == ESP_OK) esp_wifi_deauth_sta(0);
+    } else {
+        err = radio_mode(station, false);
+        if (err == ESP_OK && !station && s_started) {
+            err = esp_wifi_stop();
+            if (err == ESP_OK) s_started = false;
+        }
+    }
+    esp_netif_ip_info_t ip = {0};
+    if (err == ESP_OK && enabled) err = esp_netif_get_ip_info(s_setup_netif, &ip);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (err == ESP_OK) {
+        s_status.setup_enabled = enabled;
+        s_status.setup_client_connected = false;
+        memset(s_status.setup_ssid, 0, sizeof(s_status.setup_ssid));
+        memset(s_status.setup_password, 0, sizeof(s_status.setup_password));
+        s_status.setup_ip[0] = 0;
+        if (enabled) {
+            memcpy(s_status.setup_ssid, config.ap.ssid, config.ap.ssid_len);
+            memcpy(s_status.setup_password, config.ap.password, 16);
+            snprintf(s_status.setup_ip, sizeof(s_status.setup_ip), IPSTR, IP2STR(&ip.ip));
+        }
+        ++s_status.revision;
+    } else s_status.error = err;
+    xSemaphoreGive(s_lock);
+    memset(&config, 0, sizeof(config));
+    if (err != ESP_OK && enabled) {
+        radio_mode(station, false);
+        if (!station && esp_wifi_stop() == ESP_OK) s_started = false;
+    }
 }
 
 static void begin_join(void)
@@ -116,6 +191,11 @@ static void scan(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool enabled = s_status.enabled;
     bool connected = s_status.connected;
+    if (enabled) {
+        s_status.scanning = true;
+        s_status.error = ESP_OK;
+        ++s_status.revision;
+    }
     xSemaphoreGive(s_lock);
     if (!enabled) { failed(ESP_ERR_INVALID_STATE); return; }
     /* A user scan takes priority over reconnecting to an unavailable AP.
@@ -176,6 +256,34 @@ static void scan(void)
     s_status.error = ESP_OK;
     ++s_status.revision;
     xSemaphoreGive(s_lock);
+    if (!connected && !resume_connection) {
+        /* The list is ordered by signal strength within the saved group.
+         * Never replace an explicit join, roam a connected station, or use
+         * credentials from an unsuccessful provisioning attempt. */
+        for (int i = 0; i < s_status.count; ++i) {
+            hisu_wifi_ap_t candidate;
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            candidate = s_status.aps[i];
+            xSemaphoreGive(s_lock);
+            if (!candidate.saved || !candidate.supported) continue;
+            char password[65] = {0};
+            esp_err_t saved = hisu_settings_find_wifi(candidate.ssid, password);
+            /* A saved protected SSID must not auto-join an open lookalike. */
+            bool usable = hisu_wifi_can_auto_join(saved == ESP_OK, candidate.supported,
+                                                 candidate.secure, password);
+            if (usable) {
+                memcpy(s_ssid, candidate.ssid, sizeof(s_ssid));
+                memcpy(s_password, password, sizeof(s_password));
+            }
+            memset(password, 0, sizeof(password));
+            if (!usable) continue;
+            s_save_candidate = false;
+            s_retries = 0;
+            s_want_connection = true;
+            begin_join();
+            break;
+        }
+    }
 done:
     if (resume_connection) {
         /* Leave time to select a different network before the next retry. */
@@ -191,17 +299,19 @@ static void worker(void *arg)
     if (s_status.enabled) {
         esp_err_t err = radio_start();
         if (err != ESP_OK) failed(err);
-        else if (s_ssid[0]) { s_want_connection = true; begin_join(); }
+        else scan();
     }
     for (;;) {
         command_t command;
         if (xQueueReceive(s_commands, &command, pdMS_TO_TICKS(200)) == pdTRUE) {
-            if (command.type == CMD_SCAN) {
+            if (command.type == CMD_SETUP) setup_radio(command.enabled);
+            else if (command.type == CMD_SCAN) {
                 xSemaphoreTake(s_lock, portMAX_DELAY);
                 bool enabled = s_status.enabled;
                 xSemaphoreGive(s_lock);
                 if (command.enabled && !enabled) {
                     esp_err_t err = hisu_settings_set(HISU_SETTING_WIFI_ENABLED, 1);
+                    if (err == ESP_OK) err = radio_mode(true, s_status.setup_enabled);
                     if (err != ESP_OK) { failed(err); continue; }
                     xSemaphoreTake(s_lock, portMAX_DELAY);
                     s_status.enabled = true;
@@ -215,6 +325,7 @@ static void worker(void *arg)
                 xSemaphoreGive(s_lock);
                 if (!enabled && command.enabled) {
                     esp_err_t err = hisu_settings_set(HISU_SETTING_WIFI_ENABLED, 1);
+                    if (err == ESP_OK) err = radio_mode(true, s_status.setup_enabled);
                     if (err != ESP_OK) { failed(err); memset(&command, 0, sizeof(command)); continue; }
                     xSemaphoreTake(s_lock, portMAX_DELAY);
                     s_status.enabled = true;
@@ -235,13 +346,16 @@ static void worker(void *arg)
                 xSemaphoreTake(s_lock, portMAX_DELAY);
                 bool previous_enabled = s_status.enabled;
                 xSemaphoreGive(s_lock);
+                if (previous_enabled == command.enabled) continue;
                 esp_err_t err = hisu_settings_set(HISU_SETTING_WIFI_ENABLED, command.enabled);
                 if (err == ESP_OK) {
-                    s_want_connection = false; s_retry_at = 0;
-                    if (!command.enabled && s_started) {
+                    s_want_connection = false; s_deadline = s_retry_at = 0;
+                    s_save_candidate = false;
+                    err = radio_mode(command.enabled, s_status.setup_enabled);
+                    if (err == ESP_OK && !command.enabled && s_started && !s_status.setup_enabled) {
                         err = esp_wifi_stop();
                         if (err == ESP_OK) s_started = false;
-                    } else if (command.enabled) err = radio_start();
+                    } else if (err == ESP_OK && command.enabled) err = radio_start();
                     if (err == ESP_OK) {
                         xSemaphoreTake(s_lock, portMAX_DELAY);
                         s_status.enabled = command.enabled;
@@ -249,9 +363,7 @@ static void worker(void *arg)
                         ++s_status.revision;
                         xSemaphoreGive(s_lock);
                     } else hisu_settings_set(HISU_SETTING_WIFI_ENABLED, previous_enabled);
-                    if (command.enabled && err == ESP_OK && s_ssid[0]) {
-                        s_want_connection = true; s_retries = 0; begin_join();
-                    }
+                    if (command.enabled && err == ESP_OK) scan();
                 }
                 if (err != ESP_OK) failed(err);
             }
@@ -339,18 +451,33 @@ esp_err_t hisu_network_start(void)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) goto fail;
     s_netif = esp_netif_create_default_wifi_sta();
     if (!s_netif) { err = ESP_ERR_NO_MEM; goto fail; }
+    s_setup_netif = esp_netif_create_default_wifi_ap();
+    if (!s_setup_netif) { err = ESP_ERR_NO_MEM; goto fail; }
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&init);
     wifi_initialized = err == ESP_OK;
     if (err == ESP_OK) err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    if (err == ESP_OK) err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err == ESP_OK) {
+        /* Keep the dormant AP profile password-protected even during mode changes. */
+        wifi_config_t closed = {0};
+        memcpy(closed.ap.ssid, "Hisu-Setup-Closed", 17);
+        uint8_t random[16]; esp_fill_random(random, sizeof(random));
+        for (unsigned i = 0; i < sizeof(random); ++i)
+            snprintf((char *)closed.ap.password + i * 2, 3, "%02x", random[i]);
+        closed.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        closed.ap.ssid_hidden = 1; closed.ap.max_connection = 1;
+        err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_AP, &closed);
+        if (err == ESP_OK) err = esp_wifi_set_mode(WIFI_MODE_STA);
+        memset(&closed, 0, sizeof(closed)); memset(random, 0, sizeof(random));
+    }
     if (err == ESP_OK) err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, NULL, &s_wifi_handler);
     if (err == ESP_OK) err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL, &s_ip_handler);
     if (err != ESP_OK) goto fail;
     hisu_settings_get_wifi(s_ssid, s_password);
     s_status.enabled = hisu_settings_get(HISU_SETTING_WIFI_ENABLED) == 1;
     s_status.ready = true;
-    s_status.joining = s_status.enabled && s_ssid[0];
+    s_status.scanning = s_status.enabled;
     memcpy(s_status.ssid, s_ssid, sizeof(s_ssid));
     if (xTaskCreate(worker, "hisu_network", 8192, NULL, 3, NULL) != pdPASS) {
         err = ESP_ERR_NO_MEM; goto fail;
@@ -362,6 +489,8 @@ fail:
     s_wifi_handler = NULL; s_ip_handler = NULL;
     if (wifi_initialized) esp_wifi_deinit();
     if (s_netif) esp_netif_destroy_default_wifi(s_netif);
+    if (s_setup_netif) esp_netif_destroy_default_wifi(s_setup_netif);
+    s_setup_netif = NULL;
     s_netif = NULL;
     if (s_commands) vQueueDelete(s_commands);
     if (s_events) vEventGroupDelete(s_events);
@@ -427,5 +556,11 @@ esp_err_t hisu_network_provision(const char *ssid, const char *password) { retur
 esp_err_t hisu_network_enable(bool enabled)
 {
     command_t command = {.type = CMD_ENABLE, .enabled = enabled};
+    return send_command(&command);
+}
+
+esp_err_t hisu_network_setup(bool enabled)
+{
+    command_t command = {.type = CMD_SETUP, .enabled = enabled};
     return send_command(&command);
 }

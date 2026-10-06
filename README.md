@@ -2,6 +2,8 @@
 
 Firmware ESP32-S3 cho ZHENGCHEN 1.54 TFT WiFi, xây dựng lại theo [System Design](docs/SYSTEM_DESIGN.md).
 
+Nguồn và đánh giá tái sử dụng: [Tài liệu tham khảo](docs/REFERENCES.md), gồm XiaoClaw (voice Xiaozhi + agent MimiClaw), điều kiện tương thích và các giới hạn chưa kiểm chứng.
+
 ## Hiện Trạng
 
 Bước đầu là UI LVGL 9.4.0: GIF mèo 240×240 ở màn hình chờ, menu Hisu, editor cấu hình và API phụ đề tiếng Việt.
@@ -18,10 +20,11 @@ Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên edito
 - Wi-Fi: quét/chọn mạng, nhập mật khẩu bằng ba nút, RSSI/IP, bật/tắt radio; lưu mạng kết nối thành công vào NVS và tự reconnect có giới hạn.
 - Pin: phần trăm ước tính từ ADC GPIO8 theo profile Muse ZHENGCHEN; hiển thị raw ADC và tín hiệu nguồn ngoài GPIO9. Cần kiểm chứng calibration/polarity trên board thật.
 - Trang Pin có thời gian còn dùng được ước tính từ tốc độ tụt pin đo được: chờ ổn định 1 phút, cần ít nhất 10 phút và tụt 5 điểm phần trăm, nếu chưa đủ thì hiện Đang đo. Thống kê màn hình sáng, dùng pin và sleep tính trong lúc không có nguồn ngoài, theo chu kỳ từ lần rút sạc gần nhất; giữ qua reboot bằng checkpoint NVS mỗi phút và khi đổi nguồn. Rút sạc bắt đầu chu kỳ mới; cắm sạc tạm dừng bộ đếm. Reboot giữ thống kê nhưng đo lại tốc độ tụt pin. Sleep ở đây là backlight tắt, chưa phải deep sleep của ESP32. Ước tính còn lại phụ thuộc bảng ADC và mức sử dụng, chưa được kiểm chứng trên board.
-- BLE: vào trang Bluetooth tự mở kết nối 5 phút và hiện QR mở trang điều khiển HTTPS; ghép bằng mã 6 số trên màn hình. Trang ở `docs/ble/`, xuất bản GitHub Pages bằng main → /docs; hướng dẫn: `docs/BLE_SETUP.md`.
-- Lịch: lịch tháng dương, ngày âm Việt Nam UTC+7 và tháng nhuận (2024–2099). Vol− ngày trước, Vol+ ngày sau; giữ 1 giây lặp mỗi 180ms, tự chuyển tháng/năm. BOOT về hôm nay, giữ BOOT trở lại menu. Ngày chọn tô xanh, hôm nay có viền. Cần giờ đã đồng bộ qua Wi-Fi hoặc BLE; sau đó xem lịch offline được khi thiết bị vẫn có giờ.
+- Bluetooth tạm ngưng: không có mục Bluetooth/icon BLE, không khởi động BLE host. Mã nguồn và trang BLE cũ giữ lại để tham khảo, không dùng cho setup bản này.
+- Lịch: lịch tháng dương, ngày âm Việt Nam UTC+7 và tháng nhuận (2024–2099). Vol− ngày trước, Vol+ ngày sau; giữ 1 giây lặp mỗi 180ms, tự chuyển tháng/năm. BOOT về hôm nay, giữ BOOT trở lại menu. Cần giờ đồng bộ qua Wi-Fi hoặc trang Setting; sau đó xem offline được khi thiết bị vẫn có giờ.
 - Đèn pin: vào là màn trắng, backlight 100%; Vol− bật/tắt, BOOT chuyển Sáng → Chớp → SOS → Sáng, Vol+ hoặc giữ BOOT về menu và khôi phục độ sáng đã lưu. Chớp 500ms sáng/500ms tắt; SOS `... --- ...` với đơn vị 200ms, lặp lại. Không ghi lại setting độ sáng, không tự sleep khi đang ở Đèn pin.
 - Phụ đề: API queue cho worker, chưa nối AI/STT/TTS.
+- Setting: QR hotspot WPA2 với mật khẩu ngẫu nhiên 16 ký tự mỗi phiên, SSID ổn định theo MAC. QR địa chỉ HTTP tự hiện khi điện thoại kết nối. Web dùng list Wi-Fi/icon sóng; chạm mạng đã lưu kết nối ngay, mạng mới mở dialog mật khẩu. Không giới hạn 5 phút: thoát màn HISU vẫn chạy; mục Dừng Setting riêng hoặc Dừng trên web đóng ngay. Ngắt hotspot 10 giây hoặc đóng web 8 giây sẽ đóng phiên; mất liveness 90 giây đóng dự phòng. Không cần router/BLE/Internet/PIN/BOOT duyệt ảnh. HTTP không có bảo vệ TLS. Hướng dẫn: [Setting](docs/WALLPAPER_SETUP.md).
 
 ## Build
 
@@ -47,7 +50,7 @@ Chạy host tests từ PowerShell thường:
 
 Helper tự tìm headers/libraries của MSVC x64 và Windows SDK đã cài, chạy bộ UI/Wi-Fi/pin và test lịch 2024–2099. Không cần mở Developer PowerShell.
 
-Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và flash 16MB theo profile N16R8. Partition dành hai app slots 4MB cho OTA tương lai; vùng storage chỉ được reserve, chưa mount filesystem.
+Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và flash 16MB theo profile N16R8. Partition dành hai app slots 4MB cho OTA tương lai; media dùng 240 KiB đầu vùng storage cho hai records hình nền, phần còn lại reserve. Chưa mount filesystem.
 
 ## Điều Khiển
 
@@ -56,7 +59,8 @@ Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và fla
 - Editor Loa/Theme: Vol− đổi trạng thái (chấm rỗng/đặc), BOOT lưu, Vol+ trở lại không lưu. Chấm đặc biểu thị Loa bật hoặc Theme sáng.
 - Thời gian chờ đặt thời gian tự tắt backlight. Tắt màn hình tắt ngay và về idle; nút tiếp theo chỉ đánh thức. Đóng menu trở về màn hình chờ.
 - Menu cuộn từng dòng, giữ vị trí khi quay lại. Font UI 16px Semibold hỗ trợ tiếng Việt.
-- Footer theo thứ tự nút Vol− / BOOT / Vol+. Trang Pin dùng Vol− để trở lại; trang Bluetooth dùng BOOT đổi Tắt/1/5/10/30 phút, Vol− xác nhận, Vol+ trở lại. Trang BLE trên điện thoại hiện danh sách Wi-Fi, chọn mạng mới mở ô mật khẩu.
+- Trong menu chính, giữ Vol+ khoảng 1,5 giây để đóng menu; nhả không phát thêm nhấn ngắn.
+- Footer theo thứ tự nút Vol− / BOOT / Vol+. Trang Pin dùng Vol− để trở lại. Setting dùng ba gạch mở tuỳ chọn; BOOT ở màn QR mở thông tin hotspot hoặc mở lại phiên đã đóng, X đóng hotspot và phiên cấu hình. QR tự đổi theo kết nối điện thoại. Gửi ảnh tự lưu.
 - Giữ BOOT 800ms: quay lại; trong editor là hủy; từ menu là về màn hình đen.
 - Khi hiển thị phụ đề thật: up/down cuộn nội dung dài theo chiều dọc.
 - Khi backlight đã tắt: nút đầu tiên chỉ đánh thức, không kích hoạt hành động.

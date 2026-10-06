@@ -5,6 +5,7 @@
 #include <string.h>
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nimble/nimble_port.h"
@@ -31,6 +32,7 @@ static char s_ssid[33], s_password[65];
 static struct ble_npl_event s_control;
 static struct ble_npl_callout s_timeout;
 static int gap_event(struct ble_gap_event *event, void *arg);
+static const char *TAG = "HisuBLE";
 
 static void clear_input(void) { memset(s_ssid, 0, sizeof(s_ssid)); memset(s_password, 0, sizeof(s_password)); }
 void hisu_ble_get(hisu_ble_status_t *out)
@@ -61,7 +63,10 @@ static void advertise(void)
     if (!rc) rc = ble_gap_adv_rsp_set_fields(&response);
     struct ble_gap_adv_params params = {.conn_mode = BLE_GAP_CONN_MODE_UND, .disc_mode = BLE_GAP_DISC_MODE_GEN};
     if (!rc) rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event, NULL);
-    report_error(rc);
+    if (rc) {
+        ESP_LOGW(TAG, "Advertising failed: rc=%d", rc);
+        report_error(rc);
+    }
 }
 static void close_window(void)
 {
@@ -82,6 +87,7 @@ static void control_event(struct ble_npl_event *event)
     s_status.enabled = enabled;
     s_status.window_minutes = minutes;
     s_status.error = 0;
+    if (!s_status.connected) s_status.show_pin = false;
     xSemaphoreGive(s_lock);
     ble_npl_callout_stop(&s_timeout);
     if (!enabled) close_window();
@@ -111,42 +117,67 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     (void)arg;
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
-        if (event->connect.status) { advertise(); break; }
+        if (event->connect.status) {
+            ESP_LOGW(TAG, "Connection failed: status=%d", event->connect.status);
+            report_error(event->connect.status);
+            advertise(); break;
+        }
         s_connection = event->connect.conn_handle;
         hisu_ble_status_t current; hisu_ble_get(&current);
         if (!current.enabled) { ble_gap_terminate(s_connection, BLE_ERR_REM_USER_CONN_TERM); break; }
         clear_input();
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_status.connected = true; s_status.authenticated = false; s_status.show_pin = false;
+        s_status.error = 0;
         s_ap_length = 0;
         xSemaphoreGive(s_lock);
-        report_error(ble_gap_security_initiate(s_connection));
+        {
+            int rc = ble_gap_security_initiate(s_connection);
+            ESP_LOGI(TAG, "Connected: handle=%u; security initiate rc=%d", s_connection, rc);
+            if (rc && rc != BLE_HS_EALREADY) report_error(rc);
+        }
         break;
     case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI(TAG, "Disconnected: reason=%d", event->disconnect.reason);
         s_connection = BLE_HS_CONN_HANDLE_NONE;
         clear_input();
         xSemaphoreTake(s_lock, portMAX_DELAY);
-        s_status.connected = false; s_status.authenticated = false; s_status.show_pin = false;
+        if (s_status.show_pin && !s_status.authenticated && !s_status.error)
+            s_status.error = event->disconnect.reason;
+        s_status.connected = false; s_status.authenticated = false;
         s_ap_length = 0;
         xSemaphoreGive(s_lock);
         advertise();
         break;
     case BLE_GAP_EVENT_PASSKEY_ACTION: {
-        if (event->passkey.params.action != BLE_SM_IOACT_DISP) return BLE_HS_EINVAL;
+        ESP_LOGI(TAG, "Pairing action=%u", event->passkey.params.action);
+        if (event->passkey.params.action != BLE_SM_IOACT_DISP) {
+            ESP_LOGW(TAG, "Unsupported pairing action=%u", event->passkey.params.action);
+            report_error(BLE_HS_EINVAL);
+            return BLE_HS_EINVAL;
+        }
         struct ble_sm_io io = {.action = BLE_SM_IOACT_DISP, .passkey = esp_random() % 1000000};
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_status.pin = io.passkey; s_status.show_pin = true;
         xSemaphoreGive(s_lock);
-        report_error(ble_sm_inject_io(event->passkey.conn_handle, &io));
+        int rc = ble_sm_inject_io(event->passkey.conn_handle, &io);
+        ESP_LOGI(TAG, "Passkey supplied to stack: rc=%d", rc);
+        if (rc) report_error(rc);
         break;
     }
     case BLE_GAP_EVENT_ENC_CHANGE: {
         struct ble_gap_conn_desc desc;
-        bool authenticated = !event->enc_change.status && !ble_gap_conn_find(event->enc_change.conn_handle, &desc) &&
+        int rc = ble_gap_conn_find(event->enc_change.conn_handle, &desc);
+        ESP_LOGI(TAG, "Security result: status=%d lookup=%d encrypted=%d authenticated=%d bonded=%d",
+                 event->enc_change.status, rc, rc ? 0 : desc.sec_state.encrypted,
+                 rc ? 0 : desc.sec_state.authenticated, rc ? 0 : desc.sec_state.bonded);
+        bool authenticated = !event->enc_change.status && !rc &&
                              desc.sec_state.encrypted && desc.sec_state.authenticated;
         xSemaphoreTake(s_lock, portMAX_DELAY);
-        s_status.authenticated = authenticated; s_status.show_pin = false;
-        s_status.error = event->enc_change.status;
+        s_status.authenticated = authenticated;
+        if (authenticated) s_status.show_pin = false;
+        s_status.error = event->enc_change.status ? event->enc_change.status :
+                         rc ? rc : authenticated ? 0 : BLE_HS_EAUTHEN;
         xSemaphoreGive(s_lock);
         if (!authenticated) ble_gap_terminate(s_connection, BLE_ERR_AUTH_FAIL);
         break;

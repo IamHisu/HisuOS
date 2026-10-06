@@ -27,7 +27,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Host model compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Wi-Fi input compilation failed.' }
 & $compiler.FullName /nologo /c /std:c11 /O1 /GS- /Zl /W4 /WX "/I$include" "/Fo$powerObject" (Join-Path $root 'components\hisu_power\src\hisu_power_model.c')
 if ($LASTEXITCODE -ne 0) { throw 'Power model compilation failed.' }
-& $linker /nologo /dll /noentry /nodefaultlib /machine:x64 "/out:$dll" /export:hisu_ui_model_key /export:hisu_ui_adjust /export:hisu_ui_valid_utf8 /export:hisu_wifi_password_is_valid /export:hisu_power_percent_from_adc /export:hisu_power_remaining_seconds $object $wifiObject $powerObject
+& $linker /nologo /dll /noentry /nodefaultlib /machine:x64 "/out:$dll" /export:hisu_ui_model_key /export:hisu_ui_adjust /export:hisu_ui_valid_utf8 /export:hisu_ui_overlay_dark_ink /export:hisu_wifi_password_is_valid /export:hisu_wifi_can_auto_join /export:hisu_wifi_setup_password /export:hisu_power_percent_from_adc /export:hisu_power_remaining_seconds $object $wifiObject $powerObject
 if ($LASTEXITCODE -ne 0) { throw 'Host model linking failed.' }
 & $idf.python (Join-Path $root 'tests\test_ui_model.py') $dll
 if ($LASTEXITCODE -ne 0) { throw 'UI model tests failed.' }
@@ -40,3 +40,17 @@ if ($LASTEXITCODE -ne 0) { throw 'Calendar compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Calendar linking failed.' }
 & $calendar
 if ($LASTEXITCODE -ne 0) { throw 'Calendar tests failed.' }
+$media = Join-Path $out 'media-test.exe'
+& $compiler.FullName /nologo /c /std:c11 /MT /GS- /W4 /WX "/I$include" "/I$($sdk.FullName)\ucrt" "/I$root\components\hisu_media\src" "/Fo$out\" (Join-Path $root 'tests\test_media_model.c') (Join-Path $root 'components\hisu_media\src\hisu_media_model.c')
+if ($LASTEXITCODE -ne 0) { throw 'Media model compilation failed.' }
+& $linker /nologo /subsystem:console "/out:$media" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_media_model.obj') (Join-Path $out 'hisu_media_model.obj')
+if ($LASTEXITCODE -ne 0) { throw 'Media model linking failed.' }
+& $media
+if ($LASTEXITCODE -ne 0) { throw 'Media model tests failed.' }
+$dns = Join-Path $out 'setup-dns-test.exe'
+& $compiler.FullName /nologo /c /std:c11 /MT /GS- /W4 /WX "/I$include" "/I$($sdk.FullName)\ucrt" "/I$root\components\hisu_media\src" "/Fo$out\" (Join-Path $root 'tests\test_setup_dns.c') (Join-Path $root 'components\hisu_media\src\hisu_setup_dns.c')
+if ($LASTEXITCODE -ne 0) { throw 'Setup DNS compilation failed.' }
+& $linker /nologo /subsystem:console "/out:$dns" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_setup_dns.obj') (Join-Path $out 'hisu_setup_dns.obj')
+if ($LASTEXITCODE -ne 0) { throw 'Setup DNS linking failed.' }
+& $dns
+if ($LASTEXITCODE -ne 0) { throw 'Setup DNS tests failed.' }

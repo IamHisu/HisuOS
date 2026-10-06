@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+const source = await readFile(new URL('../components/hisu_media/web/app.js',import.meta.url),'utf8');
+const {encodeRgb565,imagePlacement} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const rgba = new Uint8ClampedArray(240*240*4);
+rgba.set([255,0,0,255,0,255,0,255,0,0,255,255,255,255,255,255]);
+const pixels = encodeRgb565(rgba);
+assert.equal(pixels.length,115200);
+assert.deepEqual([...pixels.slice(0,8)],[0,248,224,7,31,0,255,255]);
+assert.throws(()=>encodeRgb565(new Uint8Array(10)));
+assert.deepEqual(imagePlacement(480,240,'cover'),{x:-120,y:0,width:480,height:240});
+assert.deepEqual(imagePlacement(480,240,'contain'),{x:0,y:60,width:240,height:120});
+assert.deepEqual(imagePlacement(240,480,'contain'),{x:60,y:0,width:120,height:240});
+for (const [width,height] of [[0,1],[1,0],[4097,20],[4096,4096]]) assert.throws(()=>imagePlacement(width,height,'cover'));
+console.log('Media web encoding and placement tests passed.');

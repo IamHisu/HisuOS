@@ -1,9 +1,10 @@
 #pragma once
 
-enum {UI_IDLE, UI_MENU, UI_EDIT, UI_INFO, UI_PREVIEW, UI_WIFI_PAGE, UI_WIFI_PASSWORD, UI_CALENDAR_PAGE, UI_FLASHLIGHT_PAGE};
+enum {UI_IDLE, UI_MENU, UI_EDIT, UI_INFO, UI_PREVIEW, UI_WIFI_PAGE, UI_WIFI_PASSWORD, UI_CALENDAR_PAGE, UI_FLASHLIGHT_PAGE, UI_SETUP_PAGE};
 enum {UI_KEY_BOOT = 1, UI_KEY_UP, UI_KEY_DOWN, UI_KEY_BACK};
-enum {UI_BRIGHTNESS, UI_VOLUME, UI_SPEAKER, UI_TIMEOUT, UI_THEME, UI_WIFI, UI_BLE,
-      UI_BATTERY, UI_CALENDAR, UI_FLASHLIGHT, UI_SCREEN_OFF, UI_CLOSE, UI_ITEM_COUNT};
+enum {UI_SETUP_QR, UI_SETUP_INFO, UI_SETUP_RESET, UI_SETUP_STOP, UI_SETUP_VIEW_COUNT};
+enum {UI_BRIGHTNESS, UI_VOLUME, UI_SPEAKER, UI_TIMEOUT, UI_THEME, UI_WIFI,
+      UI_BATTERY, UI_CALENDAR, UI_FLASHLIGHT, UI_SETUP, UI_SCREEN_OFF, UI_CLOSE, UI_ITEM_COUNT};
 
 typedef struct {
     int page;
@@ -16,3 +17,5 @@ typedef struct {
 void hisu_ui_model_key(hisu_ui_model_t *model, int key);
 int hisu_ui_adjust(int setting, int value, int direction);
 int hisu_ui_valid_utf8(const char *text, unsigned max_bytes);
+int hisu_ui_overlay_dark_ink(const unsigned char *pixels, unsigned width, unsigned height,
+                             unsigned stride, int x, int y, int w, int h, int previous);

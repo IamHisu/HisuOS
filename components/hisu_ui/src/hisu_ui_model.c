@@ -40,6 +40,7 @@ void hisu_ui_model_key(hisu_ui_model_t *m, int key)
             else if (m->selected == UI_WIFI) m->page = UI_WIFI_PAGE;
             else if (m->selected == UI_CALENDAR) m->page = UI_CALENDAR_PAGE;
             else if (m->selected == UI_FLASHLIGHT) m->page = UI_FLASHLIGHT_PAGE;
+            else if (m->selected == UI_SETUP) m->page = UI_SETUP_PAGE;
             else if (m->selected == UI_SCREEN_OFF || m->selected == UI_CLOSE) m->page = UI_IDLE;
             else m->page = UI_INFO;
         }
@@ -52,6 +53,14 @@ void hisu_ui_model_key(hisu_ui_model_t *m, int key)
         }
         else m->value = hisu_ui_adjust(m->selected, m->value, key == UI_KEY_UP ? 1 : -1);
         break;
+    case UI_SETUP_PAGE:
+        if (key == UI_KEY_UP) m->page = UI_MENU;
+        else if (key == UI_KEY_DOWN) m->preview = (m->preview + 1) % UI_SETUP_VIEW_COUNT;
+        else if (key == UI_KEY_BOOT) {
+            if (m->preview == UI_SETUP_STOP) m->page = UI_MENU;
+            else m->preview = m->preview == UI_SETUP_QR ? UI_SETUP_INFO : UI_SETUP_QR;
+        }
+        break;
     case UI_INFO:
         if (key == UI_KEY_DOWN) m->page = UI_MENU; /* physical left button: Vol- */
         break;
@@ -61,6 +70,33 @@ void hisu_ui_model_key(hisu_ui_model_t *m, int key)
         } else if (key == UI_KEY_UP && m->preview > 0) --m->preview;
         break;
     }
+}
+
+int hisu_ui_overlay_dark_ink(const unsigned char *pixels, unsigned width, unsigned height,
+                             unsigned stride, int x, int y, int w, int h, int previous)
+{
+    int fallback = previous > 0;
+    if (!pixels || !width || !height || width > 512 || height > 512 ||
+        stride < width * 2 || w <= 0 || h <= 0) return fallback;
+    unsigned sum = 0, count = 0;
+    for (int py = y; py < y + h; py += 2) {
+        if (py < 0 || (unsigned)py >= height) continue;
+        for (int px = x; px < x + w; px += 2) {
+            if (px < 0 || (unsigned)px >= width) continue;
+            const unsigned char *p = pixels + (unsigned)py * stride + (unsigned)px * 2;
+            unsigned rgb = p[0] | ((unsigned)p[1] << 8);
+            unsigned r = ((rgb >> 11) & 31) * 255 / 31;
+            unsigned g = ((rgb >> 5) & 63) * 255 / 63;
+            unsigned b = (rgb & 31) * 255 / 31;
+            sum += (77 * r + 150 * g + 29 * b) >> 8;
+            ++count;
+        }
+    }
+    if (!count) return fallback;
+    unsigned light = sum / count;
+    /* A dead band keeps moving GIF pixels from flipping the overlay each frame. */
+    if (previous < 0) return light >= 128;
+    return previous ? light >= 104 : light > 152;
 }
 
 int hisu_ui_valid_utf8(const char *text, unsigned max_bytes)

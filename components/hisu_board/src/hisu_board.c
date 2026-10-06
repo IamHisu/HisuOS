@@ -7,12 +7,32 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_timer.h"
+#include "esp_system.h"
 
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static hisu_display_done_fn s_done;
 static void *s_context;
 static bool s_volume_hold;
+static bool s_menu_close_hold;
+static bool s_backlight_ready;
+
+static esp_err_t backlight_off(void)
+{
+    esp_err_t err = s_backlight_ready ? ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0) : ESP_OK;
+    if (err != ESP_OK) return err;
+    /* GPIO20 is shared with USB D+: detach PWM and actively drive low, like Muse. */
+    if ((err = gpio_reset_pin(LCD_BL)) != ESP_OK) return err;
+    if ((err = gpio_set_level(LCD_BL, 0)) != ESP_OK) return err;
+    if ((err = gpio_set_direction(LCD_BL, GPIO_MODE_OUTPUT)) != ESP_OK) return err;
+    if ((err = gpio_set_level(LCD_BL, 0)) != ESP_OK) return err;
+    return gpio_hold_en(LCD_BL);
+}
+
+static void display_shutdown(void)
+{
+    (void)backlight_off();
+}
 
 typedef struct {
     int pin;
@@ -41,6 +61,28 @@ static bool transfer_done(esp_lcd_panel_io_handle_t io,
     return false;
 }
 
+esp_err_t hisu_board_prepare_boot(void)
+{
+    if (s_panel || s_io) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = gpio_reset_pin(LCD_BL);
+    if (err != ESP_OK) return err;
+    err = gpio_set_level(LCD_BL, 0);
+    if (err != ESP_OK) return err;
+    const gpio_config_t backlight = {
+        .pin_bit_mask = 1ULL << LCD_BL,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+    };
+    err = gpio_config(&backlight);
+    if (err != ESP_OK) return err;
+    /* Configure low before releasing the level held across a software restart. */
+    err = gpio_hold_dis(LCD_BL);
+    if (err != ESP_OK) return err;
+    err = gpio_hold_en(LCD_BL);
+    if (err != ESP_OK) return err;
+    return esp_register_shutdown_handler(display_shutdown);
+}
+
 esp_err_t hisu_board_init(hisu_display_done_fn done, void *context)
 {
     if (!done) return ESP_ERR_INVALID_ARG;
@@ -66,6 +108,7 @@ esp_err_t hisu_board_init(hisu_display_done_fn done, void *context)
     };
     err = ledc_channel_config(&channel);
     if (err != ESP_OK) return err;
+    s_backlight_ready = true;
     const spi_bus_config_t bus = {
         .mosi_io_num = LCD_MOSI, .sclk_io_num = LCD_SCLK, .miso_io_num = -1,
         .quadwp_io_num = -1, .quadhd_io_num = -1,
@@ -89,7 +132,7 @@ esp_err_t hisu_board_init(hisu_display_done_fn done, void *context)
     if ((err = esp_lcd_panel_reset(s_panel)) != ESP_OK) goto fail;
     if ((err = esp_lcd_panel_init(s_panel)) != ESP_OK) goto fail;
     if ((err = esp_lcd_panel_invert_color(s_panel, true)) != ESP_OK) goto fail;
-    if ((err = esp_lcd_panel_disp_on_off(s_panel, true)) != ESP_OK) goto fail;
+    if ((err = esp_lcd_panel_disp_on_off(s_panel, false)) != ESP_OK) goto fail;
     const esp_lcd_panel_io_callbacks_t callbacks = {.on_color_trans_done = transfer_done};
     err = esp_lcd_panel_io_register_event_callbacks(s_io, &callbacks, NULL);
     if (err == ESP_OK) return ESP_OK;
@@ -111,16 +154,27 @@ esp_err_t hisu_board_display_write(int x1, int y1, int x2, int y2, const void *p
     return esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2, y2, pixels);
 }
 
+esp_err_t hisu_board_display_show(void)
+{
+    if (!s_panel) return ESP_ERR_INVALID_STATE;
+    /* IDF SPI parameter commands wait for all queued color DMA transfers. */
+    return esp_lcd_panel_disp_on_off(s_panel, true);
+}
+
 esp_err_t hisu_board_set_brightness(int percent)
 {
     if (!s_panel) return ESP_ERR_INVALID_STATE;
     if (percent < 0 || percent > 100) return ESP_ERR_INVALID_ARG;
-    esp_err_t err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, percent * 1023 / 100);
+    if (percent == 0) return backlight_off();
+    esp_err_t err = ledc_set_pin(LCD_BL, LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    if (err == ESP_OK) err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, percent * 1023 / 100);
     if (err == ESP_OK) err = ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    if (err == ESP_OK) err = gpio_hold_dis(LCD_BL);
     return err;
 }
 
 void hisu_board_enable_volume_hold(bool enabled) { s_volume_hold = enabled; }
+void hisu_board_enable_menu_close_hold(bool enabled) { s_menu_close_hold = enabled; }
 
 hisu_key_t hisu_board_poll_key(void)
 {
@@ -142,14 +196,15 @@ hisu_key_t hisu_board_poll_key(void)
                 result = b->key;
             }
         }
-        int hold_ms = b->key == HISU_KEY_BOOT ? 800 : 1000;
-        if ((b->key == HISU_KEY_BOOT || s_volume_hold) && b->pressed && b->raw && !b->held &&
+        bool menu_close = s_menu_close_hold && b->key == HISU_KEY_UP;
+        int hold_ms = menu_close ? 1500 : b->key == HISU_KEY_BOOT ? 800 : 1000;
+        if ((b->key == HISU_KEY_BOOT || s_volume_hold || menu_close) && b->pressed && b->raw && !b->held &&
             now - b->pressed_ms >= hold_ms && result == HISU_KEY_NONE) {
             b->held = true;
             b->repeat_ms = now;
-            result = b->key == HISU_KEY_BOOT ? HISU_KEY_BACK :
+            result = (b->key == HISU_KEY_BOOT || menu_close) ? HISU_KEY_BACK :
                      b->key == HISU_KEY_UP ? HISU_KEY_UP_HELD : HISU_KEY_DOWN_HELD;
-        } else if (s_volume_hold && b->key != HISU_KEY_BOOT && b->pressed && b->raw && b->held &&
+        } else if (s_volume_hold && !menu_close && b->key != HISU_KEY_BOOT && b->pressed && b->raw && b->held &&
                    now - b->repeat_ms >= 180 && result == HISU_KEY_NONE) {
             b->repeat_ms = now;
             result = b->key == HISU_KEY_UP ? HISU_KEY_UP_HELD : HISU_KEY_DOWN_HELD;

@@ -1,5 +1,9 @@
 # Setup Wi-Fi và đồng hồ qua BLE
 
+**Bluetooth tạm ngưng:** firmware hiện tại không khởi động BLE host, không có
+mục Bluetooth hoặc icon BLE. Dùng hotspot và trang [Setting](WALLPAPER_SETUP.md).
+Hướng dẫn bên dưới dành cho phiên bản cũ, giữ lại để tham khảo.
+
 Mở Menu → Bluetooth: tự mở theo lựa chọn hiện tại và hiện QR (mặc định 5 phút). BOOT đổi **Tắt / 1 / 5 / 10 / 30 phút**, Vol− xác nhận mở/gia hạn hoặc tắt, Vol+ hoặc giữ BOOT trở lại. Lựa chọn giữ trong phiên chạy, reboot về 5 phút. Quét QR để mở trang BLE, bấm **Kết nối HisuOS**. Khi ghép, QR chuyển sang mã 6 số để nhập vào hộp thoại trên điện thoại. Thiết bị tên `HisuOS-XXXX`; QR chỉ chứa URL và tên thiết bị để lọc danh sách, không chứa PIN hoặc credential. BLE không quảng bá sau reboot cho đến khi mở, tự ngắt sau thời gian đã xác nhận. Chưa lưu bond, mỗi kết nối ghép lại. GATT yêu cầu link mã hóa và xác thực bằng passkey; không đọc lại hoặc log mật khẩu Wi-Fi. Web Bluetooth không cung cấp tên điện thoại, nên board giữ trạng thái ghép nối chung, không có ô nhập tên.
 
 ## Xuất bản trang cho QR
@@ -45,6 +49,10 @@ Packet danh sách: version `01`, flags (bit 0 radio bật, bit 1 đang quét), s
 Ghi SSID → password → commit theo thứ tự, Write With Response, MTU ưu tiên 128 cho password dài. Xóa staging khi commit thành công, ngắt hoặc hết cửa sổ. Giờ chấp nhận 2024–2099, offset −720..+840 phút. Múi giờ lưu NVS; reboot/mất nguồn chưa có giờ hợp lệ hiện `--:--`. Khi nhận IP, SNTP đồng bộ từ `pool.ntp.org`; mặc định UTC+7 trước khi nhận múi giờ từ điện thoại. Không có RTC giữ giờ qua mất nguồn.
 
 ## Kiểm chứng
+
+Mã PIN được giữ trên trang Bluetooth khi ghép thất bại, kèm mã lỗi BLE. Nó ẩn sau khi xác thực thành công, đóng/hết cửa sổ setup hoặc bắt đầu lần kết nối mới. PIN cũ trên màn hình thất bại không dùng cho lần ghép mới; nhập mã mới khi web kết nối lại. Thay đổi này không kéo dài timeout SMP của stack và không xác nhận đã sửa nguyên nhân lỗi ghép.
+
+Nếu Windows báo `Connection failed` dù đã nhập đúng mã, dùng firmware có log `HisuBLE` và chạy `./tools/build.ps1 -Action monitor` sau khi flash. Thử ghép từ web một lần, lấy các dòng `Connected`, `Pairing action`, `Passkey supplied to stack`, `Security result` và `Disconnected`. Log không chứa PIN hoặc mật khẩu Wi-Fi. Mã lỗi xác thực được giữ qua lần quảng bá lại, đến khi mở lại cửa sổ hoặc kết nối mới. Console của web ghi lỗi gốc để phân biệt lỗi GATT với lỗi ghép đôi; không kết luận nguyên nhân chỉ từ hộp thoại Windows.
 
 `node tests/test_ble_companion.mjs`: đã chạy kiểm tra UUID, giới hạn SSID/password và packet UTC/múi giờ little endian. Firmware đã build; chưa chạy radio trên board.
 

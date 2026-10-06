@@ -12,6 +12,8 @@ typedef struct {
     char ssid[33], ip[16];
     int rssi, count;
     hisu_wifi_ap_t aps[HISU_WIFI_MAX_APS];
+    bool setup_enabled, setup_client_connected;
+    char setup_ssid[33], setup_password[17], setup_ip[16];
 } hisu_network_status_t;
 esp_err_t hisu_network_start(void);
 void hisu_network_get(hisu_network_status_t *out);
@@ -20,4 +22,6 @@ esp_err_t hisu_network_provision_scan(void);
 esp_err_t hisu_network_join(const char *ssid, const char *password);
 esp_err_t hisu_network_provision(const char *ssid, const char *password);
 esp_err_t hisu_network_enable(bool enabled);
+/* Physical setup portal radio lifecycle; password is for the board screen only. */
+esp_err_t hisu_network_setup(bool enabled);
 bool hisu_network_valid_password(const char *password);
