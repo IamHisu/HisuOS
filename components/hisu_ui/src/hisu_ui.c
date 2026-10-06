@@ -531,8 +531,9 @@ static void render_menu(void)
             lv_obj_set_style_bg_color(obj, lv_color_hex(theme_color(0x224b3d)), 0);
             lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
         }
+        uint32_t item_color = item == UI_SCREEN_OFF ? 0xffd000 : 0xeeeeee;
         label(obj, s_items[item], 7, 3, item == UI_TIMEOUT ? 130 : 158,
-              0xeeeeee);
+              item_color);
         if (item == UI_THEME) {
             create_theme_icon(obj, hisu_settings_get(HISU_SETTING_THEME) == 1, item == s_model.selected);
             continue;
@@ -556,8 +557,9 @@ static void render_menu(void)
         else if (item == UI_BATTERY && s_power.valid) snprintf(value, sizeof(value), "~%d%%", s_power.percent);
         else if (item <= UI_BATTERY) snprintf(value, sizeof(value), "--");
         else snprintf(value, sizeof(value), "%s", LV_SYMBOL_RIGHT);
+        uint32_t value_color = item == UI_SCREEN_OFF ? 0xffd000 : 0x86dbaf;
         lv_obj_t *v = label(obj, value, item == UI_TIMEOUT ? 142 : 164, 3,
-                            item == UI_TIMEOUT ? 76 : 54, 0x86dbaf);
+                            item == UI_TIMEOUT ? 76 : 54, value_color);
         if (item > UI_BATTERY) lv_obj_set_style_text_font(v, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
     }
