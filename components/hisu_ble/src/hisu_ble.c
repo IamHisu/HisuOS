@@ -14,13 +14,17 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
-/* e3a10000-7d4b-4ee0-b417-6d9f67485501; characteristics end in 0001..0005. */
+/* e3a10000-7d4b-4ee0-b417-6d9f67485501; characteristics end in 0001..0007. */
 #define HISU_UUID(n) BLE_UUID128_INIT(0x01,0x55,0x48,0x67,0x9f,0x6d,0x17,0xb4,0xe0,0x4e,0x4b,0x7d,n,0x00,0xa1,0xe3)
 static const ble_uuid128_t s_uuid = HISU_UUID(0);
-static const ble_uuid128_t s_chars[] = {HISU_UUID(1),HISU_UUID(2),HISU_UUID(3),HISU_UUID(4),HISU_UUID(5)};
+static const ble_uuid128_t s_chars[] = {HISU_UUID(1),HISU_UUID(2),HISU_UUID(3),HISU_UUID(4),HISU_UUID(5),HISU_UUID(6),HISU_UUID(7)};
+/* Freeze a complete value across ATT Read Blob fragments (one BLE connection). */
+static uint8_t s_ap_value[7+HISU_WIFI_MAX_APS*35];
+static unsigned s_ap_length;
 static SemaphoreHandle_t s_lock;
 static hisu_ble_status_t s_status;
 static bool s_requested;
+static unsigned s_requested_minutes = 5;
 static uint8_t s_addr_type;
 static uint16_t s_connection = BLE_HS_CONN_HANDLE_NONE;
 static char s_ssid[33], s_password[65];
@@ -74,22 +78,29 @@ static void control_event(struct ble_npl_event *event)
     (void)event;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool enabled = s_requested;
+    unsigned minutes = s_requested_minutes;
     s_status.enabled = enabled;
+    s_status.window_minutes = minutes;
     s_status.error = 0;
     xSemaphoreGive(s_lock);
     ble_npl_callout_stop(&s_timeout);
     if (!enabled) close_window();
     else {
-        ble_npl_callout_reset(&s_timeout, ble_npl_time_ms_to_ticks32(300000));
+        ble_npl_callout_reset(&s_timeout, ble_npl_time_ms_to_ticks32(minutes*60000));
         advertise();
     }
 }
 esp_err_t hisu_ble_enable(bool enabled)
 {
+    return hisu_ble_open(enabled ? 5 : 0);
+}
+esp_err_t hisu_ble_open(unsigned minutes)
+{
+    if (minutes > 30) return ESP_ERR_INVALID_ARG;
     if (!s_lock) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool ready = s_status.ready;
-    if (ready) s_requested = enabled;
+    if (ready) { s_requested = minutes != 0; s_requested_minutes = minutes; }
     xSemaphoreGive(s_lock);
     if (!ready) return ESP_ERR_INVALID_STATE;
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &s_control);
@@ -107,6 +118,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         clear_input();
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_status.connected = true; s_status.authenticated = false; s_status.show_pin = false;
+        s_ap_length = 0;
         xSemaphoreGive(s_lock);
         report_error(ble_gap_security_initiate(s_connection));
         break;
@@ -115,6 +127,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         clear_input();
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_status.connected = false; s_status.authenticated = false; s_status.show_pin = false;
+        s_ap_length = 0;
         xSemaphoreGive(s_lock);
         advertise();
         break;
@@ -149,6 +162,25 @@ static int access_value(uint16_t connection, uint16_t attr, struct ble_gatt_acce
     hisu_ble_status_t ble; hisu_ble_get(&ble);
     if (!ble.enabled || !ble.authenticated) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
     int field = (int)(intptr_t)arg;
+    if (field == 7 && ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        if (ctxt->offset == 0) {
+            hisu_network_status_t network; hisu_network_get(&network);
+            s_ap_value[0] = 1;
+            s_ap_value[1] = (network.enabled ? 1 : 0)|(network.scanning ? 2 : 0);
+            s_ap_value[2] = network.enabled ? network.count : 0;
+            for (int i=0;i<4;++i) s_ap_value[3+i] = (uint32_t)network.error>>(i*8);
+            s_ap_length = 7;
+            for (int i=0;i<s_ap_value[2];++i) {
+                hisu_wifi_ap_t *ap = &network.aps[i];
+                unsigned len = strlen(ap->ssid);
+                s_ap_value[s_ap_length++] = len;
+                memcpy(s_ap_value+s_ap_length,ap->ssid,len); s_ap_length += len;
+                s_ap_value[s_ap_length++] = (int8_t)ap->rssi;
+                s_ap_value[s_ap_length++] = (ap->secure ? 1 : 0)|(ap->saved ? 2 : 0)|(ap->supported ? 4 : 0);
+            }
+        }
+        return os_mbuf_append(ctxt->om,s_ap_value,s_ap_length) ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
+    }
     if (field == 5 && ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
         hisu_network_status_t network; hisu_network_get(&network);
         char clock[6]; bool has_time = hisu_clock_read(clock);
@@ -175,6 +207,8 @@ static int access_value(uint16_t connection, uint16_t attr, struct ble_gatt_acce
         for (int i = 0; i < 8; ++i) utc |= (uint64_t)data[i] << (i * 8);
         int16_t offset = (int16_t)((uint16_t)data[8] | (uint16_t)data[9] << 8);
         err = hisu_clock_set(utc, offset);
+    } else if (field == 7 && size == 1 && data[0] == 1) {
+        err = hisu_network_provision_scan();
     }
     memset(data, 0, sizeof(data));
     return err == ESP_OK ? 0 : err == ESP_ERR_INVALID_ARG ? BLE_ATT_ERR_UNLIKELY : BLE_ATT_ERR_INSUFFICIENT_RES;
@@ -183,7 +217,8 @@ static int access_value(uint16_t connection, uint16_t attr, struct ble_gatt_acce
 static const struct ble_gatt_svc_def s_services[] = {
     {.type=BLE_GATT_SVC_TYPE_PRIMARY,.uuid=&s_uuid.u,.characteristics=(struct ble_gatt_chr_def[]){
         WRITE_FIELD(1),WRITE_FIELD(2),WRITE_FIELD(3),WRITE_FIELD(4),
-        {.uuid=&s_chars[4].u,.access_cb=access_value,.arg=(void *)5,.flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_AUTHEN}, {0}}}, {0}
+        {.uuid=&s_chars[4].u,.access_cb=access_value,.arg=(void *)5,.flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_AUTHEN},
+        {.uuid=&s_chars[6].u,.access_cb=access_value,.arg=(void *)7,.flags=BLE_GATT_CHR_F_READ|BLE_GATT_CHR_F_READ_AUTHEN|BLE_GATT_CHR_F_WRITE|BLE_GATT_CHR_F_WRITE_AUTHEN}, {0}}}, {0}
 };
 static void on_sync(void)
 {
@@ -197,6 +232,7 @@ static void on_reset(int reason)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_status.ready = s_status.enabled = s_status.connected = s_status.authenticated = s_status.show_pin = false;
     s_status.error = reason; s_requested = false;
+    s_ap_length = 0;
     xSemaphoreGive(s_lock);
 }
 static void host_task(void *arg) { (void)arg; nimble_port_run(); nimble_port_freertos_deinit(); }

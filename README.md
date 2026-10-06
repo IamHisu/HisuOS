@@ -40,7 +40,7 @@ Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và fla
 - Editor Loa/Theme: Vol− đổi trạng thái (chấm rỗng/đặc), BOOT lưu, Vol+ trở lại không lưu. Chấm đặc biểu thị Loa bật hoặc Theme sáng.
 - Thời gian chờ đặt thời gian tự tắt backlight. Tắt màn hình tắt ngay và về idle; nút tiếp theo chỉ đánh thức. Đóng menu trở về màn hình chờ.
 - Menu cuộn từng dòng, giữ vị trí khi quay lại. Font UI 16px Semibold hỗ trợ tiếng Việt.
-- Footer theo thứ tự nút Vol− / BOOT / Vol+. Trang Pin dùng Vol− để trở lại; trang Bluetooth dùng Vol− bật/tắt, BOOT mở/gia hạn kết nối, Vol+ trở lại.
+- Footer theo thứ tự nút Vol− / BOOT / Vol+. Trang Pin dùng Vol− để trở lại; trang Bluetooth dùng BOOT đổi Tắt/1/5/10/30 phút, Vol− xác nhận, Vol+ trở lại. Trang BLE trên điện thoại hiện danh sách Wi-Fi, chọn mạng mới mở ô mật khẩu.
 - Giữ BOOT 800ms: quay lại; trong editor là hủy; từ menu là về màn hình đen.
 - Khi hiển thị phụ đề thật: up/down cuộn nội dung dài theo chiều dọc.
 - Khi backlight đã tắt: nút đầu tiên chỉ đánh thức, không kích hoạt hành động.

@@ -196,7 +196,19 @@ static void worker(void *arg)
     for (;;) {
         command_t command;
         if (xQueueReceive(s_commands, &command, pdMS_TO_TICKS(200)) == pdTRUE) {
-            if (command.type == CMD_SCAN) scan();
+            if (command.type == CMD_SCAN) {
+                xSemaphoreTake(s_lock, portMAX_DELAY);
+                bool enabled = s_status.enabled;
+                xSemaphoreGive(s_lock);
+                if (command.enabled && !enabled) {
+                    esp_err_t err = hisu_settings_set(HISU_SETTING_WIFI_ENABLED, 1);
+                    if (err != ESP_OK) { failed(err); continue; }
+                    xSemaphoreTake(s_lock, portMAX_DELAY);
+                    s_status.enabled = true;
+                    xSemaphoreGive(s_lock);
+                }
+                scan();
+            }
             else if (command.type == CMD_JOIN) {
                 xSemaphoreTake(s_lock, portMAX_DELAY);
                 bool enabled = s_status.enabled;
@@ -374,20 +386,22 @@ static esp_err_t send_command(command_t *command)
     return xQueueSend(s_commands, command, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
-esp_err_t hisu_network_scan(void)
+static esp_err_t request_scan(bool enable)
 {
     if (!s_lock) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (!s_status.ready || !s_status.enabled || s_status.scanning) {
+    if (!s_status.ready || (!s_status.enabled && !enable) || s_status.scanning) {
         xSemaphoreGive(s_lock); return ESP_ERR_INVALID_STATE;
     }
     s_status.scanning = true; ++s_status.revision;
     xSemaphoreGive(s_lock);
-    command_t command = {.type = CMD_SCAN};
+    command_t command = {.type = CMD_SCAN, .enabled = enable};
     esp_err_t err = send_command(&command);
     if (err != ESP_OK) failed(err);
     return err;
 }
+esp_err_t hisu_network_scan(void) { return request_scan(false); }
+esp_err_t hisu_network_provision_scan(void) { return request_scan(true); }
 
 static esp_err_t submit_join(const char *ssid, const char *password, bool provision)
 {

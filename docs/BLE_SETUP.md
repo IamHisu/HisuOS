@@ -1,6 +1,6 @@
 # Setup Wi-Fi và đồng hồ qua BLE
 
-Mở Menu → Bluetooth: tự mở kết nối 5 phút và hiện QR. Quét QR để mở trang BLE, bấm **Kết nối HisuOS**. Khi ghép, QR chuyển sang mã 6 số để nhập vào hộp thoại trên điện thoại. Vol− bật/tắt kết nối, BOOT **Mở 5 phút** gia hạn, Vol+ hoặc giữ BOOT trở lại. Thiết bị tên `HisuOS-XXXX`; QR chỉ chứa URL và tên thiết bị để lọc danh sách, không chứa PIN hoặc credential. BLE không quảng bá sau reboot cho đến khi mở, tự ngắt sau 5 phút. Chưa lưu bond, mỗi kết nối ghép lại. GATT yêu cầu link mã hóa và xác thực bằng passkey; không đọc lại hoặc log mật khẩu Wi-Fi.
+Mở Menu → Bluetooth: tự mở theo lựa chọn hiện tại và hiện QR (mặc định 5 phút). BOOT đổi **Tắt / 1 / 5 / 10 / 30 phút**, Vol− xác nhận mở/gia hạn hoặc tắt, Vol+ hoặc giữ BOOT trở lại. Lựa chọn giữ trong phiên chạy, reboot về 5 phút. Quét QR để mở trang BLE, bấm **Kết nối HisuOS**. Khi ghép, QR chuyển sang mã 6 số để nhập vào hộp thoại trên điện thoại. Thiết bị tên `HisuOS-XXXX`; QR chỉ chứa URL và tên thiết bị để lọc danh sách, không chứa PIN hoặc credential. BLE không quảng bá sau reboot cho đến khi mở, tự ngắt sau thời gian đã xác nhận. Chưa lưu bond, mỗi kết nối ghép lại. GATT yêu cầu link mã hóa và xác thực bằng passkey; không đọc lại hoặc log mật khẩu Wi-Fi. Web Bluetooth không cung cấp tên điện thoại, nên board giữ trạng thái ghép nối chung, không có ô nhập tên.
 
 ## Xuất bản trang cho QR
 
@@ -15,7 +15,7 @@ Nguồn `/docs` xuất bản trang BLE cùng các tài liệu trong `docs`, khô
 
 ## Trang điều khiển
 
-Trang `docs/ble/index.html` + `app.js` cho phép kết nối, nhập Wi-Fi, gửi giờ/múi giờ. Nhấn **Kết nối HisuOS**, ghép bằng mã, rồi nhập Wi-Fi. Để trống mật khẩu với mạng mở. Wi-Fi tự bật nếu đang tắt; chỉ lưu mạng sau nhận IP thành công. Giờ được gửi ngay khi kết nối và có nút đồng bộ lại.
+Trang `docs/ble/index.html` + `app.js` cho phép kết nối, chọn Wi-Fi, gửi giờ/múi giờ. Nhấn **Kết nối HisuOS**, ghép bằng mã; trang tự bật radio và quét danh sách Wi-Fi. Mạng đã lưu đứng trước theo mức sóng, rồi tới mạng chưa lưu. Bấm chọn mạng mới hiện form; mạng mở ẩn ô mật khẩu, mạng có khóa yêu cầu nhập mật khẩu. Có nút Quét lại; mạng Enterprise không cho chọn. Chỉ lưu mạng sau nhận IP thành công. Giờ được gửi ngay khi kết nối và có nút đồng bộ lại. Firmware và trang web phải cùng được cập nhật để có characteristic danh sách mới.
 
 Web Bluetooth cần HTTPS hoặc localhost. [Chrome hỗ trợ trên Android/máy tính, không hỗ trợ kết nối website/Bluetooth trên iPhone/iPad](https://support.google.com/chrome/answer/6362090?co=GENIE.Platform%3DAndroid&hl=en-GB). [Tài liệu Chrome](https://developer.chrome.com/docs/capabilities/bluetooth/).
 
@@ -38,6 +38,9 @@ Service: `e3a10000-7d4b-4ee0-b417-6d9f67485501`. Các characteristic cùng hậu
 | `e3a10003` | Write authenticated | Byte `01`: kết nối bằng credential staging. |
 | `e3a10004` | Write authenticated | 10 byte: UTC Unix giây uint64 LE + offset phút phía đông UTC int16 LE. |
 | `e3a10005` | Read authenticated | JSON `wifi` (connected/joining/disconnected), `error` (esp_err_t), `time` (bool). |
+| `e3a10007` | Read/write authenticated | Ghi byte `01` để bật Wi-Fi và quét. Đọc packet danh sách, tối đa 427 byte, hỗ trợ ATT Read Blob. |
+
+Packet danh sách: version `01`, flags (bit 0 radio bật, bit 1 đang quét), số mạng, mã lỗi uint32 little endian; mỗi mạng gồm độ dài SSID 1 byte + SSID UTF-8 + RSSI int8 + flags (bit 0 có khóa, bit 1 đã lưu, bit 2 hỗ trợ). Snapshot cố định cho từng lần đọc dài; không gửi mật khẩu đã lưu.
 
 Ghi SSID → password → commit theo thứ tự, Write With Response, MTU ưu tiên 128 cho password dài. Xóa staging khi commit thành công, ngắt hoặc hết cửa sổ. Giờ chấp nhận 2024–2099, offset −720..+840 phút. Múi giờ lưu NVS; reboot/mất nguồn chưa có giờ hợp lệ hiện `--:--`. Khi nhận IP, SNTP đồng bộ từ `pool.ntp.org`; mặc định UTC+7 trước khi nhận múi giờ từ điện thoại. Không có RTC giữ giờ qua mất nguồn.
 

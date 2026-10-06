@@ -3,14 +3,15 @@
 <title>HisuOS · Kết nối điện thoại</title>
 <style>
 body{margin:0;background:#101b16;color:#edf5ef;font:16px system-ui,sans-serif}main{max-width:440px;margin:40px auto;padding:24px}h1{font-size:28px}p{line-height:1.6;color:#b8cbbf}section{background:#1b2d23;border:1px solid #355441;border-radius:18px;padding:22px;margin:20px 0}label{display:block;margin:18px 0 7px}input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #496553;border-radius:9px;background:#112018;color:white;font:inherit}button{padding:12px 18px;border:0;border-radius:10px;background:#86dbaf;color:#102317;font:600 16px system-ui;cursor:pointer}button:disabled{opacity:.4;cursor:default}.secondary{background:#324b3b;color:#edf5ef}#message{min-height:48px;white-space:pre-wrap}small{color:#b8cbbf}header{display:flex;align-items:center;justify-content:space-between;gap:12px}#state{font-size:14px;color:#86dbaf}
+.network{display:block;width:100%;margin:8px 0;text-align:left;overflow-wrap:anywhere;background:#243c2e;color:#edf5ef}.network.saved{color:#86dbaf}[hidden]{display:none!important}
 </style>
 <main><header><h1>HisuOS</h1><span id="state">Chưa kết nối</span></header>
-<p>Mở <b>Bluetooth</b> trên HisuOS rồi bấm <b>Kết nối HisuOS</b> bên dưới. Giữ màn hình Bluetooth mở để đọc mã 6 số khi điện thoại yêu cầu ghép nối. Nếu hết 5 phút, nhấn BOOT trên thiết bị để mở lại.</p>
+<p>Mở <b>Bluetooth</b> trên HisuOS rồi bấm <b>Kết nối HisuOS</b> bên dưới. Giữ màn hình Bluetooth mở để đọc mã 6 số khi điện thoại yêu cầu ghép nối. Nếu hết thời gian, BOOT chọn thời gian mở và Vol− xác nhận trên thiết bị.</p>
 <button id="connect">Kết nối HisuOS</button> <button id="disconnect" class="secondary" disabled>Ngắt</button>
 <p id="message" role="status" aria-live="polite"></p>
-<section><h2>Wi-Fi</h2><form id="wifi"><label for="ssid">Tên Wi-Fi</label><input id="ssid" maxlength="32" autocomplete="off" required>
-<label for="password">Mật khẩu</label><input id="password" type="password" maxlength="64" autocomplete="new-password">
-<p><small>Để trống mật khẩu với mạng mở. Mạng được lưu sau khi kết nối thành công.</small></p><button id="send" disabled>Kết nối Wi-Fi</button></form></section>
+<section><h2>Wi-Fi</h2><button id="scan" disabled>Quét lại Wi-Fi</button><p id="scan-status" role="status">Kết nối Bluetooth để xem danh sách Wi-Fi.</p><div id="wifi-list"></div><form id="wifi" hidden><label for="ssid">Wi-Fi đã chọn</label><input id="ssid" readonly>
+<div id="password-field"><label for="password">Mật khẩu</label><input id="password" type="password" maxlength="64" autocomplete="new-password"></div>
+<p><small>Mạng được lưu sau khi kết nối thành công.</small></p><button id="send" disabled>Kết nối Wi-Fi</button></form></section>
 <section><h2>Đồng hồ</h2><p>Giờ và múi giờ của điện thoại được gửi khi kết nối. Bạn có thể đồng bộ lại bất cứ lúc nào.</p><button id="time" disabled>Đồng bộ giờ</button></section>
 <p><small>Dùng Chrome/Edge có hỗ trợ Bluetooth trên Android hoặc máy tính, qua HTTPS hoặc localhost. Nếu trình duyệt không hỗ trợ, dùng ứng dụng BLE theo hướng dẫn đi kèm.</small></p>
 </main><script type="module" src="app.js"></script></html>

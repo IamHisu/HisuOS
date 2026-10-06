@@ -75,6 +75,8 @@ static bool s_flashlight_enabled;
 static unsigned s_flashlight_mode; /* Steady, blink, SOS. */
 static int64_t s_flashlight_start_ms;
 static hisu_ble_status_t s_rendered_ble;
+static unsigned s_ble_choice = 2;
+static const unsigned s_ble_windows[] = {0,1,5,10,30};
 /* 8x5 keypad flow adapted from Muse's button menu (Apache-2.0).
  * Copyright (c) Meta Platforms, Inc. and affiliates. See licenses/NOTICE.md.
  */
@@ -794,7 +796,9 @@ static void render(void)
                 label(root,ble.authenticated ? "Đã ghép điện thoại" : "Bluetooth chưa sẵn",12,53,216,0x86dbaf);
                 label(root,ble.name,12,82,216,0xeeeeee);
                 label(root,"Setup Wi-Fi / gửi giờ",12,116,216,0xeeeeee);
-                label(root,"Tự tắt sau 5 phút",12,146,216,0x8c9690);
+                char duration[40];
+                snprintf(duration,sizeof(duration),"Tự tắt sau %u phút",ble.window_minutes);
+                label(root,duration,12,146,216,0x8c9690);
             } else {
                 lv_obj_t *name = label(root,ble.error ? "Ghép nối bị lỗi" : ble.name,8,43,224,
                                       ble.enabled ? 0x86dbaf : 0x8c9690);
@@ -820,7 +824,10 @@ static void render(void)
                     label(root,"Kiểm tra link BLE",12,116,216,0xf0a0a0);
                 }
             }
-            footer(ble.enabled ? "filled-circle" : "circle", "Mở 5 phút", "Trở lại");
+            char choice[32];
+            if (s_ble_windows[s_ble_choice]) snprintf(choice,sizeof(choice),"%u phút",s_ble_windows[s_ble_choice]);
+            else snprintf(choice,sizeof(choice),"Tắt");
+            footer(ble.enabled ? "filled-circle" : "circle",choice,"Trở lại");
         } else label(root, "Không khả dụng", 12, 83, 216, 0xa1a9a5);
         if (s_model.selected != UI_BLE) footer("Trở lại", "", "");
         break;
@@ -862,9 +869,8 @@ static void handle_key(hisu_key_t key)
         render(); return;
     }
     if (s_model.page == UI_INFO && s_model.selected == UI_BLE) {
-        hisu_ble_status_t ble; hisu_ble_get(&ble);
-        if (key == HISU_KEY_DOWN) hisu_ble_enable(!ble.enabled);
-        if (key == HISU_KEY_BOOT) hisu_ble_enable(true);
+        if (key == HISU_KEY_DOWN) hisu_ble_open(s_ble_windows[s_ble_choice]);
+        if (key == HISU_KEY_BOOT) s_ble_choice = (s_ble_choice+1)%5;
         if (key == HISU_KEY_UP || key == HISU_KEY_BACK) s_model.page = UI_MENU;
         render(); return;
     }
@@ -902,7 +908,7 @@ static void handle_key(hisu_key_t key)
     hisu_ui_model_key(&s_model, key);
     if (previous == UI_MENU && s_model.page == UI_CALENDAR_PAGE) s_calendar_day = 0;
     if (previous == UI_MENU && s_model.page == UI_INFO && s_model.selected == UI_BLE)
-        hisu_ble_enable(true);
+        hisu_ble_open(s_ble_windows[s_ble_choice]);
     if (previous == UI_MENU && s_model.page == UI_FLASHLIGHT_PAGE) {
         s_flashlight_enabled = true;
         s_flashlight_mode = 0;
@@ -993,7 +999,7 @@ static void ui_task(void *arg)
                 if (ble.ready != s_rendered_ble.ready || ble.enabled != s_rendered_ble.enabled ||
                     ble.connected != s_rendered_ble.connected || ble.authenticated != s_rendered_ble.authenticated ||
                     ble.show_pin != s_rendered_ble.show_pin || ble.pin != s_rendered_ble.pin ||
-                    ble.error != s_rendered_ble.error || strcmp(ble.name,s_rendered_ble.name)) render();
+                    ble.error != s_rendered_ble.error || strcmp(ble.name,s_rendered_ble.name) || ble.window_minutes != s_rendered_ble.window_minutes) render();
             }
             else if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE) update_idle_status();
         }

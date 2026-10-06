@@ -43,7 +43,7 @@ Không flash trong build helper. Flash cần được thực hiện riêng sau k
 - Không có chữ bị cắt/đè trong header, row, value hoặc footer 240x240.
 - Font UI là Hisu Semibold 16px (Source Code Pro Semibold), đủ dấu tiếng Việt. Kiểm tra nét chữ ở cả theme sáng/tối.
 - Từ mục đầu đi xuống: sau năm dòng, cửa sổ danh sách dịch từng dòng; đi lên và quay lại từ editor/info giữ vị trí. Chỉ wrap khi đi qua đầu/cuối danh sách.
-- Footer khớp thứ tự vật lý Vol− / BOOT / Vol+: menu v / Chọn / ^; editor − / Lưu / +; trang Pin: Vol− trở lại; Bluetooth: Vol− bật/tắt, BOOT mở/gia hạn 5 phút, Vol+ trở lại. Wi-Fi có danh sách riêng, giữ BOOT về menu.
+- Footer khớp thứ tự vật lý Vol− / BOOT / Vol+: menu v / Chọn / ^; editor − / Lưu / +; trang Pin: Vol− trở lại; Bluetooth: BOOT đổi Tắt/1/5/10/30 phút, Vol− xác nhận mở/gia hạn hoặc tắt, Vol+ trở lại. Chấm tròn BLE biểu thị trạng thái mở. Wi-Fi có danh sách riêng, giữ BOOT về menu.
 - Brightness 10–100%, preview đúng, giữ BOOT hủy và trả về giá trị đã lưu.
 - BOOT xác nhận brightness/volume/speaker/timeout; reboot giữ giá trị.
 - Timeout chỉ tắt backlight khi idle, không khi editor/preview hoặc active subtitle.
