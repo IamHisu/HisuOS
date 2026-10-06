@@ -34,6 +34,9 @@ export function encodeTime(date = new Date()) {
 if (typeof document !== 'undefined') {
   const el = id => document.getElementById(id);
   const message = text => { el('message').textContent = text; };
+  const note = (id, text, kind='') => { const n = el(id); n.textContent = text; n.className = 'note' + (kind ? ' ' + kind : ''); };
+  const wifiNote = (text, kind) => note('wifi-message', text, kind);
+  const timeNote = (text, kind) => note('time-message', text, kind);
   let device, fields = [], polling, pending = false, pollBusy = false, ready = false;
   let selected=null, lastNetworks='';
   function controls() {
@@ -46,7 +49,7 @@ if (typeof document !== 'undefined') {
   }
   function disconnected() {
     clearInterval(polling); ready = false; fields = [];
-    selected=null; lastNetworks=''; el('wifi').hidden=true; el('wifi-list').replaceChildren();
+    selected=null; lastNetworks=''; wifiNote(''); timeNote(''); el('wifi').hidden=true; el('wifi-list').replaceChildren();
     el('state').textContent = 'Chưa kết nối'; controls();
     message('Đã ngắt kết nối.');
   }
@@ -86,8 +89,8 @@ if (typeof document !== 'undefined') {
       const status = JSON.parse(new TextDecoder().decode(value));
       showNetworks(decodeNetworks(await fields[7].readValue()));
       el('state').textContent = status.wifi === 'connected' ? 'Wi-Fi đã kết nối' : status.wifi === 'joining' ? 'Đang kết nối Wi-Fi' : 'Đã ghép điện thoại';
-      if (status.error) message('Không kết nối được Wi-Fi. Kiểm tra mật khẩu.');
-      else if (status.wifi === 'connected') message('Đã kết nối Wi-Fi.');
+      if (status.error) wifiNote('Không kết nối được. Kiểm tra mật khẩu.','err');
+      else if (status.wifi === 'connected') wifiNote('Đã kết nối Wi-Fi.','ok');
     } catch { /* A disconnect is handled by the GATT event. */ }
     finally { pollBusy = false; }
   }
@@ -106,7 +109,7 @@ if (typeof document !== 'undefined') {
       await syncTime(); ready = true;
       el('state').textContent = device.name || 'HisuOS'; message('');
       try { await fields[7].writeValueWithResponse(Uint8Array.of(1)); }
-      catch { message('Wi-Fi đang bận. Thử quét lại sau.'); }
+      catch { wifiNote('Wi-Fi đang bận. Thử quét lại sau.','err'); }
       polling = setInterval(refresh, 2000);
     } catch (error) {
       if (device?.gatt.connected) device.gatt.disconnect();
@@ -120,14 +123,14 @@ if (typeof document !== 'undefined') {
     pending=true; controls();
     while (pollBusy) await new Promise(resolve=>setTimeout(resolve,50));
     try { await fields[7].writeValueWithResponse(Uint8Array.of(1)); }
-    catch { message('Quét thất bại. Thử lại.'); }
+    catch { wifiNote('Quét thất bại. Thử lại.','err'); }
     finally { pending=false; controls(); }
     await refresh();
   };
   el('time').onclick = async () => {
     pending = true; controls();
-    try { await syncTime(); message('Đã đồng bộ giờ.'); }
-    catch { message('Gửi giờ thất bại. Kết nối lại.'); }
+    try { await syncTime(); timeNote('Đã đồng bộ giờ.','ok'); }
+    catch { timeNote('Gửi giờ thất bại. Kết nối lại.','err'); }
     finally { pending = false; controls(); }
   };
   el('wifi').onsubmit = async event => {
@@ -138,7 +141,7 @@ if (typeof document !== 'undefined') {
       if (selected.secure && !el('password').value) throw new Error('Nhập mật khẩu của Wi-Fi đã chọn.');
       payload = encodeWifi(selected.ssid, selected.secure ? el('password').value : '');
     }
-    catch (error) { message(error.message); return; }
+    catch (error) { wifiNote(error.message,'err'); return; }
     pending = true; controls();
     // Wait for a status read to finish; browsers serialize GATT operations inconsistently.
     while (pollBusy) await new Promise(resolve => setTimeout(resolve, 50));
@@ -146,8 +149,8 @@ if (typeof document !== 'undefined') {
       await fields[1].writeValueWithResponse(payload[0]);
       await fields[2].writeValueWithResponse(payload[1]);
       await fields[3].writeValueWithResponse(Uint8Array.of(1));
-      el('password').value = ''; el('wifi').hidden = true; message('Đang kết nối Wi-Fi…');
-    } catch { message('Gửi Wi-Fi thất bại. Thử lại.'); }
+      el('password').value = ''; el('wifi').hidden = true; wifiNote('Đang kết nối Wi-Fi…');
+    } catch { wifiNote('Gửi Wi-Fi thất bại. Thử lại.','err'); }
     finally { payload[1].fill(0); pending = false; controls(); }
   };
   if (!navigator.bluetooth || !isSecureContext) message('Cần Chrome hoặc Edge qua HTTPS/localhost.');
