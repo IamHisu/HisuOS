@@ -305,7 +305,7 @@ static esp_err_t server_start(void)
     config.server_port = HISU_SETUP_HTTP_PORT;
     config.ctrl_port = HISU_SETUP_HTTP_CTRL_PORT;
     config.max_open_sockets = 2;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 26;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 3;
     config.send_wait_timeout = 3;

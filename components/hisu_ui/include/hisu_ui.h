@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 
 typedef enum {
     HISU_UI_IDLE,
@@ -14,3 +15,5 @@ esp_err_t hisu_ui_start(void);
 // Copies UTF-8 text (up to 255 bytes); returns an error on invalid input or full queue.
 // Safe for worker tasks, not ISR callbacks. Caller never accesses LVGL.
 esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle);
+// Uses the UI task's existing flashlight state; safe for worker tasks.
+esp_err_t hisu_ui_post_flashlight(bool enabled);

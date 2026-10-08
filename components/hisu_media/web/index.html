@@ -83,6 +83,22 @@
         <label for="timeout">Tắt màn hình sau</label><select id="timeout" data-setting="timeout"><option value="0">Không tự tắt</option><option value="30">30 giây</option><option value="60">1 phút</option><option value="120">2 phút</option><option value="300">5 phút</option><option value="600">10 phút</option></select>
         <label for="timezone">Múi giờ UTC (phút)</label><input id="timezone" type="number" min="-720" max="840" step="1" data-setting="timezone">
         <button id="time-sync" type="button">Đồng bộ giờ điện thoại</button>
+        <form id="asr-key-form" autocomplete="off">
+          <h2>Lệnh giọng nói tiếng Việt</h2>
+          <p id="asr-key-status" role="status"></p>
+          <label for="asr-key">Groq API key</label>
+          <input id="asr-key" type="password" maxlength="127" autocomplete="off" spellcheck="false" placeholder="gsk_…">
+          <button id="asr-key-save" type="submit">Lưu key</button>
+          <button id="asr-key-clear" class="secondary" type="button">Xóa key</button>
+        </form>
+        <form id="gemini-key-form" autocomplete="off">
+          <h2>Trả lời bằng giọng nói</h2>
+          <p id="gemini-key-status" role="status"></p>
+          <label for="gemini-key">Gemini API key</label>
+          <input id="gemini-key" type="password" maxlength="127" autocomplete="off" spellcheck="false">
+          <button id="gemini-key-save" type="submit">Lưu key</button>
+          <button id="gemini-key-clear" class="secondary" type="button">Xóa key</button>
+        </form>
       </section>
     </section>
   </main>

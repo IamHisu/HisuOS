@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef enum {
@@ -17,6 +18,13 @@ typedef enum {
 esp_err_t hisu_settings_init(void);
 int hisu_settings_get(hisu_setting_t key);
 esp_err_t hisu_settings_set(hisu_setting_t key, int value);
+/* API key remains in NVS and is never returned by the setup web API. */
+esp_err_t hisu_settings_get_asr_key(char out[128]);
+esp_err_t hisu_settings_set_asr_key(const char *key);
+bool hisu_settings_has_asr_key(void);
+esp_err_t hisu_settings_get_gemini_key(char out[128]);
+esp_err_t hisu_settings_set_gemini_key(const char *key);
+bool hisu_settings_has_gemini_key(void);
 esp_err_t hisu_settings_get_wifi(char ssid[33], char password[65]);
 esp_err_t hisu_settings_save_wifi(const char *ssid, const char *password);
 #define HISU_WIFI_SAVED_MAX 8

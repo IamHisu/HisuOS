@@ -57,6 +57,8 @@ if (typeof document !== 'undefined') {
     el('editor').hidden = true; el('login-section').hidden = false;
     el('connection').textContent = 'Đã ngắt kết nối';
     el('wifi-password').value = ''; el('wifi-ssid').value = '';
+    el('asr-key').value = '';
+    el('gemini-key').value = '';
     el('wifi-dialog').close();
     controls();
   }
@@ -185,6 +187,32 @@ if (typeof document !== 'undefined') {
       }
       if (el(`${input.id}-value`)) el(`${input.id}-value`).value = `${value}%`;
     }
+    for (const name of ['asr','gemini']) {
+      const state = await request(`/${name}-key`);
+      el(`${name}-key-status`).textContent = state.configured ? 'Đã lưu key trên thiết bị' : 'Chưa có API key';
+    }
+  }
+  for (const name of ['asr','gemini']) {
+    el(`${name}-key-form`).onsubmit = async event => {
+      event.preventDefault();
+      const key = el(`${name}-key`).value.trim();
+      if (!key || !token) return;
+      el(`${name}-key-save`).disabled = true;
+      try {
+        await request(`/${name}-key`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
+        el(`${name}-key-status`).textContent = 'Đã lưu key trên thiết bị';
+        message('Đã lưu API key.');
+      } catch (error) { message(error.message,true); }
+      finally { el(`${name}-key`).value = ''; el(`${name}-key-save`).disabled = false; }
+    };
+    el(`${name}-key-clear`).onclick = async () => {
+      if (!token) return;
+      try {
+        await request(`/${name}-key`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:''})});
+        el(`${name}-key`).value = ''; el(`${name}-key-status`).textContent = 'Chưa có API key';
+        message('Đã xóa API key.');
+      } catch (error) { message(error.message,true); }
+    };
   }
   el('time-sync').onclick = async () => {
     if (!token) return;

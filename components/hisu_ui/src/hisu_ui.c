@@ -61,7 +61,13 @@ static uint32_t theme_color(uint32_t dark)
     }
 }
 
-typedef struct { hisu_ui_status_t status; char text[256]; } status_event_t;
+typedef enum { UI_EVENT_STATUS, UI_EVENT_FLASHLIGHT } ui_event_kind_t;
+typedef struct {
+    ui_event_kind_t kind;
+    hisu_ui_status_t status;
+    bool flashlight_enabled;
+    char text[256];
+} status_event_t;
 static QueueHandle_t s_events;
 static EventGroupHandle_t s_startup;
 static esp_err_t s_startup_result;
@@ -1214,13 +1220,21 @@ static void ui_task(void *arg)
         bool changed = false;
         // Bound draining so a fast producer cannot starve input/rendering.
         for (int i = 0; i < 8 && xQueueReceive(s_events, &event, 0) == pdTRUE; ++i) {
-            s_status = event;
+            if (event.kind == UI_EVENT_FLASHLIGHT) {
+                s_flashlight_enabled = event.flashlight_enabled;
+                s_flashlight_mode = 0;
+                s_flashlight_start_ms = esp_timer_get_time() / 1000;
+                s_model.page = event.flashlight_enabled ? UI_FLASHLIGHT_PAGE : UI_IDLE;
+            } else {
+                s_status.status = event.status;
+                memcpy(s_status.text, event.text, sizeof(s_status.text));
+            }
             changed = true;
         }
         if (changed) {
             s_asleep = false;
             s_activity_ms = esp_timer_get_time() / 1000;
-            if (s_model.page == UI_IDLE) render();
+            if (s_model.page == UI_IDLE || s_model.page == UI_FLASHLIGHT_PAGE) render();
         }
         int timeout = hisu_settings_get(HISU_SETTING_TIMEOUT);
         int64_t now = esp_timer_get_time() / 1000;
@@ -1299,7 +1313,15 @@ esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle)
     if (status < HISU_UI_IDLE || status > HISU_UI_ERROR || !hisu_ui_valid_utf8(subtitle, 255)) {
         return ESP_ERR_INVALID_ARG;
     }
-    status_event_t event = {.status = status};
+    status_event_t event = {.kind = UI_EVENT_STATUS, .status = status};
     memcpy(event.text, subtitle, strlen(subtitle) + 1);
+    return xQueueSend(s_events, &event, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t hisu_ui_post_flashlight(bool enabled)
+{
+    if (!s_events || !s_startup || !(xEventGroupGetBits(s_startup) & 1) || s_startup_result != ESP_OK)
+        return ESP_ERR_INVALID_STATE;
+    status_event_t event = {.kind = UI_EVENT_FLASHLIGHT, .flashlight_enabled = enabled};
     return xQueueSend(s_events, &event, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }

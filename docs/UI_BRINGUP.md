@@ -110,7 +110,7 @@ Các mục bên dưới ghi lịch sử bring-up; mô tả mã riêng/BOOT duy�
 
 Bản thêm Wi-Fi/pin trước đây đã build và link thành công trên ESP-IDF 5.5.5, tạo `HisuOS.bin` kích thước `0x116d50`, còn 73% app slot trống. Đây là số liệu lịch sử, không phải binary hiện tại. Bàn phím kiểm tra đủ 95 ký tự ASCII in được, mask và nhãn phím vừa 240×240. Đây chưa phải kết quả kết nối/ADC trên board; kết quả host tests hiện tại ở phần Sửa Lỗi Sau Pull.
 
-Firmware dùng ESP-IDF 5.5.5 và LVGL 9.4.0. Đã thêm service Wi-Fi và battery ADC theo profile Muse ZHENGCHEN; chưa kiểm chứng chúng trên board thật. Đã tích hợp BLE setup Wi-Fi và gửi giờ, chưa kiểm chứng ghép nối trên board. Chưa tích hợp microphone, speaker hoặc AI. Menu chỉ lưu volume/speaker preferences, không phát âm thanh.
+Firmware dùng ESP-IDF 5.5.5 và LVGL 9.4.0. Wi-Fi, mic I2S và câu gọi MultiNet7 "Hi Su" đã chạy trên board. Nhánh nhận lệnh tiếng Việt qua Groq Whisper đã build và nạp, nhưng chưa thử được với API key thật; cần kiểm tra HTTPS, bản chép và lệnh bật/tắt đèn sau khi lưu key trong Setting hotspot. Chưa có TTS hay phát loa. Partition `storage` kết thúc tại 0xD00000; model ở 0xD00000, hai slot ảnh giữ phần đầu.
 
 Board driver không include LVGL; UI sở hữu display buffer, render và input loop. LCD DMA callback chỉ báo `lv_display_flush_ready`, không thay đổi LVGL objects. Render buffer internal DMA 40 dòng, RGB565. SPI mode 3/80MHz, RGB/inversion theo cấu hình FriendOS trước; cần kiểm tra lại trên board cho bản driver mới.
 

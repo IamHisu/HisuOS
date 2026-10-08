@@ -15,9 +15,9 @@ GIF nguồn trong suốt là `components/hisu_ui/assets/idle_cat.gif`; firmware 
 Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên editor. BOOT lưu vào NVS; giữ BOOT hủy. Mặc định là Tối. Theme áp dụng cho menu, phụ đề và nền GIF.
 
 - Độ sáng: PWM thật, preview khi chỉnh, lưu NVS khi xác nhận.
-- Âm lượng/bật loa: chỉ lưu cấu hình; chưa nối audio service.
+- Câu gọi "Hi Su" được nhận offline bằng ESP-SR MultiNet7. Sau đó board ghi tối đa 5 giây, kết thúc sớm khi đã nghe câu lệnh và đủ 1,1 giây im lặng, rồi gửi WAV qua HTTPS tới Groq Whisper. Lệnh bật/tắt đèn pin được xử lý trên board. Nếu lưu thêm Gemini API key trong Setting hotspot, câu hỏi khác được trả lời ngắn bằng tiếng Việt qua Gemini và phát qua loa I2S; lệnh đèn pin cũng có lời xác nhận. Phần Gemini/loa mới build được, còn cần thử trên board thật.
 - Timeout: tắt backlight khi idle, không deep sleep.
-- Wi-Fi: quét/chọn mạng, nhập mật khẩu bằng ba nút, RSSI/IP, bật/tắt radio; lưu mạng kết nối thành công vào NVS và tự reconnect có giới hạn.
+- Wi-Fi: quét/chọn mạng, nhập mật khẩu bằng ba nút, RSSI/IP, bật/tắt radio; lưu mạng kết nối thành công vào NVS và tự quét lại khi mất kết nối.
 - Pin: phần trăm ước tính từ ADC GPIO8 theo profile Muse ZHENGCHEN; hiển thị raw ADC và tín hiệu nguồn ngoài GPIO9. Cần kiểm chứng calibration/polarity trên board thật.
 - Trang Pin có thời gian còn dùng được ước tính từ tốc độ tụt pin đo được: chờ ổn định 1 phút, cần ít nhất 10 phút và tụt 5 điểm phần trăm, nếu chưa đủ thì hiện Đang đo. Thống kê màn hình sáng, dùng pin và sleep tính trong lúc không có nguồn ngoài, theo chu kỳ từ lần rút sạc gần nhất; giữ qua reboot bằng checkpoint NVS mỗi phút và khi đổi nguồn. Rút sạc bắt đầu chu kỳ mới; cắm sạc tạm dừng bộ đếm. Reboot giữ thống kê nhưng đo lại tốc độ tụt pin. Sleep ở đây là backlight tắt, chưa phải deep sleep của ESP32. Ước tính còn lại phụ thuộc bảng ADC và mức sử dụng, chưa được kiểm chứng trên board.
 - Bluetooth tạm ngưng: không có mục Bluetooth/icon BLE, không khởi động BLE host. Mã nguồn và trang BLE cũ giữ lại để tham khảo, không dùng cho setup bản này.
@@ -66,6 +66,8 @@ Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và fla
 - Khi backlight đã tắt: nút đầu tiên chỉ đánh thức, không kích hoạt hành động.
 
 Trong bước UI này BOOT chưa dành cho push-to-talk. Mapping sẽ được điều chỉnh khi tích hợp voice.
+
+MultiNet cần flash cả partition table và model: `idf.py -p COM6 flash` (không dùng `app-flash`). Model nằm ở cuối flash tại `0xD00000`; hai slot ảnh vẫn giữ offset cũ ở đầu partition `storage`. Nói “Hi Su” sẽ đánh thức màn hình; nếu đã có Wi-Fi và Groq API key, board thu câu tiếp theo và gửi Groq để chép tiếng Việt. Vào Setting hotspot → Thiết bị để lưu/xóa Groq và Gemini API key; trang web chỉ cho biết đã cấu hình hay chưa, không trả giá trị key. Gemini hiện chạy theo từng yêu cầu HTTPS, chưa truyền âm thanh hai chiều liên tục như Xiaozhi. Đây là nhận dạng câu gọi bằng MultiNet, chưa phải model WakeNet được huấn luyện riêng.
 
 ## Setup Wi-Fi
 

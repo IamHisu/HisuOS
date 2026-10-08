@@ -67,6 +67,80 @@ esp_err_t hisu_settings_set(hisu_setting_t key, int value)
     return err;
 }
 
+esp_err_t hisu_settings_get_asr_key(char out[128])
+{
+    if (!s_lock || !out) return ESP_ERR_INVALID_ARG;
+    out[0] = 0;
+    size_t length = 128;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = nvs_get_str(s_nvs, "groq_key", out, &length);
+    xSemaphoreGive(s_lock);
+    if (err != ESP_OK) memset(out, 0, 128);
+    return err;
+}
+
+bool hisu_settings_has_asr_key(void)
+{
+    if (!s_lock) return false;
+    size_t length = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool exists = nvs_get_str(s_nvs, "groq_key", NULL, &length) == ESP_OK && length > 1;
+    xSemaphoreGive(s_lock);
+    return exists;
+}
+
+esp_err_t hisu_settings_set_asr_key(const char *key)
+{
+    if (!s_lock || !key) return ESP_ERR_INVALID_ARG;
+    size_t length = strlen(key);
+    if (length >= 128) return ESP_ERR_INVALID_ARG;
+    for (size_t i = 0; i < length; ++i)
+        if ((unsigned char)key[i] < 33 || (unsigned char)key[i] > 126) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = length ? nvs_set_str(s_nvs, "groq_key", key) : nvs_erase_key(s_nvs, "groq_key");
+    if (err == ESP_ERR_NVS_NOT_FOUND && !length) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(s_nvs);
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+esp_err_t hisu_settings_get_gemini_key(char out[128])
+{
+    if (!s_lock || !out) return ESP_ERR_INVALID_ARG;
+    out[0] = 0;
+    size_t length = 128;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = nvs_get_str(s_nvs, "gemini_key", out, &length);
+    xSemaphoreGive(s_lock);
+    if (err != ESP_OK) memset(out, 0, 128);
+    return err;
+}
+
+bool hisu_settings_has_gemini_key(void)
+{
+    if (!s_lock) return false;
+    size_t length = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool exists = nvs_get_str(s_nvs, "gemini_key", NULL, &length) == ESP_OK && length > 1;
+    xSemaphoreGive(s_lock);
+    return exists;
+}
+
+esp_err_t hisu_settings_set_gemini_key(const char *key)
+{
+    if (!s_lock || !key) return ESP_ERR_INVALID_ARG;
+    size_t length = strlen(key);
+    if (length >= 128) return ESP_ERR_INVALID_ARG;
+    for (size_t i = 0; i < length; ++i)
+        if ((unsigned char)key[i] < 33 || (unsigned char)key[i] > 126) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = length ? nvs_set_str(s_nvs, "gemini_key", key) : nvs_erase_key(s_nvs, "gemini_key");
+    if (err == ESP_ERR_NVS_NOT_FOUND && !length) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(s_nvs);
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
 typedef struct { char ssid[33]; char password[65]; } wifi_credentials_t;
 
 esp_err_t hisu_settings_load_power_usage(hisu_power_usage_record_t *out)

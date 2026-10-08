@@ -131,6 +131,30 @@ static esp_err_t time_api(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"saved\":true}");
 }
 
+static esp_err_t asr_key_api(httpd_req_t *req)
+{
+    if (!s_guard(req)) return error(req, "403 Forbidden", "Session expired.");
+    bool gemini = strcmp(req->uri, "/gemini-key") == 0;
+    if (req->method == HTTP_GET) {
+        cJSON *json = cJSON_CreateObject();
+        if (json) cJSON_AddBoolToObject(json, "configured",
+                                         gemini ? hisu_settings_has_gemini_key() : hisu_settings_has_asr_key());
+        return json_response(req, json);
+    }
+    cJSON *json = body(req);
+    cJSON *key = cJSON_GetObjectItemCaseSensitive(json, "key");
+    esp_err_t result = ESP_ERR_INVALID_ARG;
+    if (s_guard(req) && json && cJSON_GetArraySize(json) == 1 && cJSON_IsString(key))
+        result = gemini ? hisu_settings_set_gemini_key(key->valuestring) :
+                          hisu_settings_set_asr_key(key->valuestring);
+    if (cJSON_IsString(key)) memset(key->valuestring, 0, strlen(key->valuestring));
+    cJSON_Delete(json);
+    if (result != ESP_OK) return error(req, "400 Bad Request", "API key rejected.");
+    s_headers(req); httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, "{\"saved\":true}");
+}
+
 static esp_err_t wifi_action(httpd_req_t *req)
 {
     if (!s_guard(req)) return error(req, "403 Forbidden", "Session expired.");
@@ -182,6 +206,10 @@ esp_err_t hisu_setup_api_register(httpd_handle_t server, bool (*guard)(httpd_req
         {.uri="/wifi/join", .method=HTTP_POST, .handler=wifi_action},
         {.uri="/wifi/power", .method=HTTP_POST, .handler=wifi_action},
         {.uri="/time", .method=HTTP_POST, .handler=time_api},
+        {.uri="/asr-key", .method=HTTP_GET, .handler=asr_key_api},
+        {.uri="/asr-key", .method=HTTP_POST, .handler=asr_key_api},
+        {.uri="/gemini-key", .method=HTTP_GET, .handler=asr_key_api},
+        {.uri="/gemini-key", .method=HTTP_POST, .handler=asr_key_api},
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
         esp_err_t err = httpd_register_uri_handler(server, &routes[i]);
