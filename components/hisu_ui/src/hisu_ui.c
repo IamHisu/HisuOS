@@ -1236,6 +1236,11 @@ static void ui_task(void *arg)
             } else {
                 s_status.status = event.status;
                 memcpy(s_status.text, event.text, sizeof(s_status.text));
+                if (event.status == HISU_UI_IDLE) {
+                    /* A finished voice session always returns to the wallpaper. */
+                    s_model.page = UI_IDLE;
+                    s_flashlight_enabled = false;
+                }
             }
             changed = true;
         }

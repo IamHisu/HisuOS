@@ -15,7 +15,7 @@ GIF nguồn trong suốt là `components/hisu_ui/assets/idle_cat.gif`; firmware 
 Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên editor. BOOT lưu vào NVS; giữ BOOT hủy. Mặc định là Tối. Theme áp dụng cho menu, phụ đề và nền GIF.
 
 - Độ sáng: PWM thật, preview khi chỉnh, lưu NVS khi xác nhận.
-- Hội thoại: gọi "Hi Su" một lần để mở phiên; sau mỗi câu trả lời tự nghe câu tiếp theo. Giữ tối đa 6 cặp hỏi/đáp trong RAM, xóa ngữ cảnh khi mở phiên mới. Chờ 15 giây sau khi loa nói xong (cộng 300ms tránh tiếng vọng) mà không có câu mới thì đóng phiên. Nói "thôi nhé"/"tạm biệt" hoặc giữ BOOT 800ms để kết thúc; nhấn BOOT hoặc gọi "Hi Su" khi đang xử lý/phát loa để ngắt và nghe câu mới. Không phát kết quả của lượt đã hủy. Board ghi mỗi câu tối đa 12 giây, kết thúc sau 1,1 giây im lặng, rồi gửi WAV tới Groq Whisper. Gemini trả chữ từng phần qua SSE; TTS dùng Interactions API, giải mã/phát PCM 24kHz từng phần. Nhận dạng giọng nói vẫn theo từng câu; chưa phải voice realtime hoặc nói chen tự do. Cần kiểm chứng API, độ trễ và ngắt bằng câu gọi khi loa phát trên board thật. Xem [Hội thoại](docs/VOICE_CONVERSATION.md).
+- Hội thoại: gọi “Hi Su” mở Gemini Live qua WSS; mic gửi PCM 16kHz trong lúc thu, loa phát PCM 24kHz từng phần. Chỉ cần Gemini API key. Board lọc mở lượt bằng VAD + năng lượng, kết thúc sau 700ms im lặng; nghe tiếp tối đa 5 giây sau loa. BOOT/ngắt bằng câu gọi mở kết nối mới và reset ngữ cảnh; giữ BOOT đóng phiên. Bản Live đầu cần kiểm chứng API/độ trễ/tiếng nền trên board. Xem [Hội thoại](docs/VOICE_CONVERSATION.md).
 - Timeout: tắt backlight khi idle, không deep sleep.
 - Wi-Fi: quét/chọn mạng, nhập mật khẩu bằng ba nút, RSSI/IP, bật/tắt radio; lưu mạng kết nối thành công vào NVS và tự quét lại khi mất kết nối.
 - Pin: phần trăm ước tính từ ADC GPIO8 theo profile Muse ZHENGCHEN; hiển thị raw ADC và tín hiệu nguồn ngoài GPIO9. Cần kiểm chứng calibration/polarity trên board thật.
@@ -23,7 +23,7 @@ Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên edito
 - Bluetooth tạm ngưng: không có mục Bluetooth/icon BLE, không khởi động BLE host. Mã nguồn và trang BLE cũ giữ lại để tham khảo, không dùng cho setup bản này.
 - Lịch: lịch tháng dương, ngày âm Việt Nam UTC+7 và tháng nhuận (2024–2099). Vol− ngày trước, Vol+ ngày sau; giữ 1 giây lặp mỗi 180ms, tự chuyển tháng/năm. BOOT về hôm nay, giữ BOOT trở lại menu. Cần giờ đồng bộ qua Wi-Fi hoặc trang Setting; sau đó xem offline được khi thiết bị vẫn có giờ.
 - Đèn pin: giữ BOOT 1,5 giây ở màn hình chờ để mở màn trắng, backlight 100%; Vol− bật/tắt, BOOT chuyển Sáng → Chớp → SOS → Sáng, Vol+ hoặc giữ BOOT về màn hình chờ và khôi phục độ sáng đã lưu. Chớp 500ms sáng/500ms tắt; SOS `... --- ...` với đơn vị 200ms, lặp lại. Không ghi lại setting độ sáng, không tự sleep khi đang ở Đèn pin.
-- Phụ đề: API queue cho worker, chưa nối AI/STT/TTS.
+- Phụ đề: API queue nối output audio transcription từ Gemini Live.
 - Setting: QR hotspot WPA2 với mật khẩu ngẫu nhiên 16 ký tự mỗi phiên, SSID ổn định theo MAC. QR địa chỉ HTTP tự hiện khi điện thoại kết nối. Web dùng list Wi-Fi/icon sóng; chạm mạng đã lưu kết nối ngay, mạng mới mở dialog mật khẩu. Không giới hạn 5 phút: thoát màn HISU vẫn chạy; mục Dừng Setting riêng hoặc Dừng trên web đóng ngay. Ngắt hotspot 10 giây hoặc đóng web 8 giây sẽ đóng phiên; mất liveness 90 giây đóng dự phòng. Không cần router/BLE/Internet/PIN/BOOT duyệt ảnh. HTTP không có bảo vệ TLS. Hướng dẫn: [Setting](docs/WALLPAPER_SETUP.md).
 
 ## Build
@@ -68,7 +68,7 @@ Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và fla
 
 Trong phiên hội thoại, nhấn BOOT ngắt lượt hiện tại và chuyển sang nghe; giữ BOOT 800ms đóng phiên. Ngoài phiên, BOOT giữ hành vi menu/đèn pin hiện tại. Đây chưa phải push-to-talk.
 
-MultiNet cần flash cả partition table và model: `idf.py -p COM6 flash` (không dùng `app-flash`). Model nằm ở cuối flash tại `0xD00000`; hai slot ảnh vẫn giữ offset cũ ở đầu partition `storage`. Nói “Hi Su” sẽ đánh thức màn hình; nếu đã có Wi-Fi và Groq API key, board mở phiên để nghe các câu tiếp theo. Vào Setting hotspot → Thiết bị để lưu/xóa Groq và Gemini API key; trang web chỉ cho biết đã cấu hình hay chưa, không trả giá trị key. Gemini nhận phản hồi dạng streaming qua HTTPS, chưa truyền microphone liên tục như Xiaozhi. Đây là nhận dạng câu gọi bằng MultiNet, chưa phải model WakeNet được huấn luyện riêng.
+MultiNet cần flash cả partition table và model bằng `idf.py -p COM6 flash` (không dùng `app-flash`). Model tại `0xD00000`. Setting → Thiết bị lưu Gemini API key để dùng Live; Groq key cũ không dùng trong hội thoại này. Model `gemini-3.8-live` cần quyền/quota phù hợp. Đây là nhận câu gọi bằng MultiNet, chưa có WakeNet riêng hoặc AEC.
 
 ## Setup Wi-Fi
 

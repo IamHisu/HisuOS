@@ -37,7 +37,7 @@ bool voice_session_finish(voice_session_t *s, uint32_t generation, int64_t now_m
     if (!voice_session_current(s, generation)) return false;
     s->state = VOICE_WAITING;
     s->ready_ms = now_ms + 300;
-    s->deadline_ms = s->ready_ms + 15000;
+    s->deadline_ms = s->ready_ms + 3000;
     return true;
 }
 

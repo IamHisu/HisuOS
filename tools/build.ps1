@@ -13,6 +13,9 @@ if (!$idf) { throw 'Install ESP-IDF v5.5.5 with EIM first.' }
 
 $previous = @{}
 try {
+    # ESP-SR model packer prints Unicode; Windows redirected output may use cp1252.
+    $previous['PYTHONIOENCODING'] = [Environment]::GetEnvironmentVariable('PYTHONIOENCODING', 'Process')
+    [Environment]::SetEnvironmentVariable('PYTHONIOENCODING', 'utf-8', 'Process')
     # -e exports environment only: no global EIM selection or profile activation.
     $lines = & $idf.activationScript -e 6>&1
     foreach ($entry in $lines) {

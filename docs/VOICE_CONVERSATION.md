@@ -1,41 +1,35 @@
-# Hoi thoai theo phien
+# Hội thoại Gemini Live
 
-Firmware su dung MultiNet cho cau goi, Groq Whisper cho STT va Gemini cho tra loi/TTS. Chua tich hop MimiClaw.
+Hisu dùng MultiNet cho câu gọi và Gemini Live (`gemini-3.8-live`) cho audio trực tiếp. Chỉ cần Gemini API key trong Setting. Groq key được giữ để tương thích cấu hình cũ, không dùng trong hội thoại Live.
 
-## Hanh vi
+## Luồng audio
 
-- Goi "Hi Su" de mo phien khi co Wi-Fi va Groq API key. Gemini API key can cho hoi dap va tao giong noi; lenh den pin van chay rieng.
-- Khi mo phien, man hinh bao dang nghe. VAD xac nhan ba frame co giong noi, kem 200ms pre-roll de giu dau cau. Moi cau toi da 12 giay; 1,1 giay im lang ket thuc cau.
-- Giu toi da 6 cap hoi/dap hoan tat trong RAM. Phien moi khong dung lai ngu canh phien cu; khong luu lich su xuong flash.
-- Tra loi xong tu nghe tiep. Doi 300ms tranh duoi tieng loa, roi bat dau timeout 15 giay. Timeout khong chay trong khi thu cau, cho API hoac phat loa.
-- Nhan BOOT ngan hoac goi "Hi Su" khi dang xu ly/phat loa: huy luot cu, giu ngu canh cac luot hoan tat va nghe cau moi. Luot dang thu co the huy bang BOOT.
-- Giu BOOT 800ms: dong phien. Noi "thoi nhe", "tam biet" hoac "ket thuc hoi thoai" (co/khong dau theo implementation) la lenh ket thuc, khong can hoi LLM.
-- Ngoai phien, cac nut van theo menu hien tai. Trong phien, BOOT uu tien dieu khien hoi thoai.
-- Loi API hien tren man hinh; cua so nghe tiep van co timeout. Can goi lai sau khi phien dong.
+Gọi “Hi Su” mở một kết nối WSS có xác minh certificate bundle. Chờ thông báo “Mình đang nghe...” sau `setupComplete`. Firmware giữ kết nối qua các lượt hỏi/đáp và đóng khi kết thúc phiên. Mic gửi PCM mono 16-bit 16kHz theo frame trong lúc thu; Gemini trả PCM mono 24kHz. Task phát loa riêng không chặn việc gửi mic hoặc nhận WebSocket. Không còn chuỗi WAV → Groq → Gemini text → TTS riêng.
 
-## Streaming va huy luot
+Automatic activity detection trên server tắt. Board gửi `activityStart`/`activityEnd`: mở lượt cần VAD speech ≥200ms và mức trước AGC ≥−35dBFS; có 200ms pre-roll. Mỗi câu tối đa 12 giây, kết thúc sau 700ms im lặng. Khi không nói, không gửi audio nền lên server. Đây là ngưỡng ban đầu, giọng nhỏ/xa có thể bị bỏ sót. WebRTC noise suppression và VAD mode 3 vẫn hoạt động.
 
-Text su dung `streamGenerateContent?alt=sse`. Moi chunk cap nhat phu de; bo qua thinking. Chi TTS khi da nhan text hoan tat. TTS su dung `POST /v1beta/interactions` voi `stream: true`, `store: false`, `audio/l16`, 24kHz mono; phat tung audio delta thay vi doi toan bo am thanh.
+Ngữ cảnh nằm trong phiên Gemini đang kết nối; phiên mới bắt đầu ngữ cảnh mới. Phụ đề lấy từ output audio transcription, hiển thị tối đa 255 byte. Không log API key hoặc nội dung câu nói. Giữ BOOT 800ms hoặc nói “thôi nhé”/“tạm biệt” để đóng phiên (nhận câu kết thúc phụ thuộc transcript server). Sau khi loa phát xong chờ 300ms rồi nghe tiếp tối đa 5 giây.
 
-STT van gui WAV sau khi noi xong. Chua co pipeline STT streaming, TTS song song voi text generation, Gemini Live, AEC hoac noi chen tu do. Vi vay khong cam ket do tre tuong duong Xiaozhi.
+BOOT ngắn hoặc gọi “Hi Su” trong phiên hủy audio cũ bằng generation, đóng kết nối cũ và kết nối Live mới. Bản đầu này reset ngữ cảnh khi ngắt; chưa có session resumption hoặc barge-in tự do. Không AEC nên gọi khi loa phát cần thử trên board. Loa tắt vẫn nhận phụ đề; âm lượng áp dụng khi phát.
 
-Moi luot co generation rieng. Huy luot vo hieu hoa generation, danh thuc HTTP bang socket shutdown va ngan phat audio/ghi ngu canh/cuoi luot cu. HTTP worker so huu client va giai phong tai nguyen; UI khong cleanup client cua worker. Khi socket chua ket noi (DNS/TLS), worker phai doi lenh ket noi tra ve/timeout truoc khi xu ly yeu cau moi. Loa kiem tra generation giua cac block PCM; huy se bo buffer DMA.
+## Giới hạn và xử lý lỗi
 
-SSE co buffer gioi han (16KiB/event text, 256KiB/event audio). Su kien bi cat, audio sai dinh dang, phan hoi vuot 255 byte hoac khong hoan tat deu bao loi. Chunk audio lon hon gioi han can duoc danh gia lai theo heap thuc te.
+Input queue chứa tối đa 24 frame 40ms, đặt trong PSRAM; không block task fetch. Message WebSocket tối đa 128KiB, reassemble cả các event chia nhỏ và continuation frames. Audio output queue có tối đa 48 items và 512KiB PCM. Nếu tràn, sai JSON/base64/audio format hoặc kết nối lỗi thì đóng phiên thay vì mất audio âm thầm. Kết nối/setup timeout 15 giây, chờ phản hồi tối đa 60 giây. Server `goAway` đóng phiên; gọi lại để tạo kết nối mới. Chưa tự nối lại hoặc phục hồi phiên.
 
-API tham khao: [Text generation](https://ai.google.dev/api/generate-content), [TTS streaming](https://ai.google.dev/gemini-api/docs/speech-generation), [Interactions event names](https://ai.google.dev/gemini-api/docs/interactions-breaking-changes-may-2026).
+Live khai báo function tool `set_flashlight(enabled)` để bật/tắt đèn pin bằng giọng nói; tool response gửi lại trên cùng kết nối. Điều khiển menu/nút vẫn dùng được. Gemini key phải có quyền/quota cho model Live; compile không xác nhận API thật.
 
-## Kiem thu
+CPU 240MHz, I-cache 32KiB, D-cache 64KiB/line 64B, PSRAM 80MHz; mbedTLS dùng PSRAM để chừa RAM nội cho Wi-Fi/DMA. Mic/AFE core 0 (priority 5/6), fetch/MultiNet core 1 (priority 5). Cấu hình cũ cần cập nhật hoặc chạy `tools/build.ps1 -RefreshConfig` rồi rà lại các tùy chỉnh riêng. CPU cao có thể tăng tiêu thụ pin.
 
-Chay `tools/test-voice.ps1` de kiem tra timeout, huy/ket qua cu, ngu canh phien moi, cau ket thuc, SSE phan manh/CRLF/multiline/tran buffer va JSON Gemini.
+## Kiểm thử trên board
 
-Can thu tren board:
+1. Flash đầy đủ, Wi-Fi kết nối và có Gemini key. Gọi “Hi Su”: đợi setup hoàn tất, nói một câu. Log `LIVE: First audio: ... ms after activityEnd` đo thời gian từ gửi kết thúc câu tới audio đầu tiên.
+2. Hỏi tiếp có nhắc câu trước; kiểm tra ngữ cảnh trong cùng kết nối.
+3. Sau câu trả lời, im lặng: không có `Capture start`, không tự suy nghĩ/đáp, đóng sau khoảng 5 giây. Thử giọng nhỏ, bình thường và phòng có tiếng nền.
+4. BOOT ngắn khi đang chờ/phát: audio cũ dừng, kết nối mới mở. Giữ BOOT đóng ngay trạng thái phiên; kết nối có thể đợi thao tác TLS hiện tại/timeout trước khi giải phóng.
+5. Mất Wi-Fi, key sai/quota hết, API lỗi, loa tắt: hiện lỗi/phụ đề đúng, không treo/reboot. Chạy 20 lượt, theo dõi heap và queue warnings.
+6. Kiểm tra UI/Wi-Fi/GIF và cảnh báo AFE; đo độ trễ thực tế. Chưa cam kết nhanh bằng Xiaozhi hoặc mức thời gian cố định.
 
-1. Goi "Hi Su", hoi mot cau, sau do hoi tiep co tham chieu cau truoc ma khong goi lai.
-2. Khong noi 15 giay sau khi loa dung; xac nhan ve man hinh cho va can goi lai.
-3. Ngat bang BOOT khi STT, khi dang cho Gemini, khi TTS dang tao va khi loa dang phat; hoi cau moi, xac nhan khong co audio/phu de cu quay lai.
-4. Goi "Hi Su" khi loa phat o nhieu muc am luong. Do nhan dung va tu ngat nham do nghe chinh minh; chua co AEC nen day la gioi han can do thuc te.
-5. Giu BOOT, noi "thoi nhe", mat Wi-Fi, API loi va tat loa; xac nhan van thoat/nghe lai dung.
-6. Do heap noi/PSRAM, stack va chay nhieu luot lien tiep. Log `Transcription`, `First reply text`, `First speech audio` cho biet do tre tu khi worker nhan cau; chua tinh thoi gian nguoi dung noi va cho VAD.
+Nguồn: [Gemini Live protocol](https://ai.google.dev/api/live), [Live audio formats](https://ai.google.dev/gemini-api/docs/live-api), [model](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live).
+Host tests: tools/test-live.ps1 -Clang <host LLVM clang> biên dịch parser C thật sang WASM rồi chạy bằng Node. Cần host LLVM có wasm32 + wasm-ld; compiler Espressif chỉ hỗ trợ chip nên không chạy bộ này. Test bao gồm event chia nhỏ, continuation, UTF-8, tràn và offset sai. Không thay thế kiểm thử WSS/API/audio trên board.
 
-Build/host tests khong thay the kiem thu tren board va API that.
+WebSocket cần CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y để task nhận không giữ chung khóa với sender mic. Log Slow WSS send (>100ms) và pending cho biết mạng/khóa đang chặn gửi; queue tràn vẫn đóng phiên để tránh gửi audio thiếu.
