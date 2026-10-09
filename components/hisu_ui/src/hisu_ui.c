@@ -69,6 +69,12 @@ typedef struct {
     char text[256];
 } status_event_t;
 static QueueHandle_t s_events;
+static hisu_ui_voice_control_fn s_voice_control;
+
+void hisu_ui_set_voice_control(hisu_ui_voice_control_fn control)
+{
+    s_voice_control = control;
+}
 static EventGroupHandle_t s_startup;
 static esp_err_t s_startup_result;
 static esp_err_t s_first_frame_error;
@@ -1023,6 +1029,8 @@ static void handle_key(hisu_key_t key)
     if (!key) return;
     s_activity_ms = esp_timer_get_time() / 1000;
     if (s_asleep) { s_asleep = false; return; }
+    if ((key == HISU_KEY_BOOT || key == HISU_KEY_BACK) && s_voice_control &&
+        s_voice_control(key == HISU_KEY_BACK)) return;
     if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && key == HISU_KEY_FLASHLIGHT) {
         s_model.page = UI_FLASHLIGHT_PAGE;
         s_flashlight_enabled = true; s_flashlight_mode = 0;

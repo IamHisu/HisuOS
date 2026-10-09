@@ -15,7 +15,7 @@ GIF nguồn trong suốt là `components/hisu_ui/assets/idle_cat.gif`; firmware 
 Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên editor. BOOT lưu vào NVS; giữ BOOT hủy. Mặc định là Tối. Theme áp dụng cho menu, phụ đề và nền GIF.
 
 - Độ sáng: PWM thật, preview khi chỉnh, lưu NVS khi xác nhận.
-- Câu gọi "Hi Su" được nhận offline bằng ESP-SR MultiNet7. Sau đó board ghi tối đa 5 giây, kết thúc sớm khi đã nghe câu lệnh và đủ 1,1 giây im lặng, rồi gửi WAV qua HTTPS tới Groq Whisper. Lệnh bật/tắt đèn pin được xử lý trên board. Nếu lưu thêm Gemini API key trong Setting hotspot, câu hỏi khác được trả lời ngắn bằng tiếng Việt qua Gemini và phát qua loa I2S; lệnh đèn pin cũng có lời xác nhận. Phần Gemini/loa mới build được, còn cần thử trên board thật.
+- Hội thoại: gọi "Hi Su" một lần để mở phiên; sau mỗi câu trả lời tự nghe câu tiếp theo. Giữ tối đa 6 cặp hỏi/đáp trong RAM, xóa ngữ cảnh khi mở phiên mới. Chờ 15 giây sau khi loa nói xong (cộng 300ms tránh tiếng vọng) mà không có câu mới thì đóng phiên. Nói "thôi nhé"/"tạm biệt" hoặc giữ BOOT 800ms để kết thúc; nhấn BOOT hoặc gọi "Hi Su" khi đang xử lý/phát loa để ngắt và nghe câu mới. Không phát kết quả của lượt đã hủy. Board ghi mỗi câu tối đa 12 giây, kết thúc sau 1,1 giây im lặng, rồi gửi WAV tới Groq Whisper. Gemini trả chữ từng phần qua SSE; TTS dùng Interactions API, giải mã/phát PCM 24kHz từng phần. Nhận dạng giọng nói vẫn theo từng câu; chưa phải voice realtime hoặc nói chen tự do. Cần kiểm chứng API, độ trễ và ngắt bằng câu gọi khi loa phát trên board thật. Xem [Hội thoại](docs/VOICE_CONVERSATION.md).
 - Timeout: tắt backlight khi idle, không deep sleep.
 - Wi-Fi: quét/chọn mạng, nhập mật khẩu bằng ba nút, RSSI/IP, bật/tắt radio; lưu mạng kết nối thành công vào NVS và tự quét lại khi mất kết nối.
 - Pin: phần trăm ước tính từ ADC GPIO8 theo profile Muse ZHENGCHEN; hiển thị raw ADC và tín hiệu nguồn ngoài GPIO9. Cần kiểm chứng calibration/polarity trên board thật.
@@ -46,6 +46,7 @@ Chạy host tests từ PowerShell thường:
 
 ```powershell
 .\tools\test-ui.ps1
+.\tools\test-voice.ps1
 ```
 
 Helper tự tìm headers/libraries của MSVC x64 và Windows SDK đã cài, chạy bộ UI/Wi-Fi/pin và test lịch 2024–2099. Không cần mở Developer PowerShell.
@@ -65,9 +66,9 @@ Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và fla
 - Khi hiển thị phụ đề thật: up/down cuộn nội dung dài theo chiều dọc.
 - Khi backlight đã tắt: nút đầu tiên chỉ đánh thức, không kích hoạt hành động.
 
-Trong bước UI này BOOT chưa dành cho push-to-talk. Mapping sẽ được điều chỉnh khi tích hợp voice.
+Trong phiên hội thoại, nhấn BOOT ngắt lượt hiện tại và chuyển sang nghe; giữ BOOT 800ms đóng phiên. Ngoài phiên, BOOT giữ hành vi menu/đèn pin hiện tại. Đây chưa phải push-to-talk.
 
-MultiNet cần flash cả partition table và model: `idf.py -p COM6 flash` (không dùng `app-flash`). Model nằm ở cuối flash tại `0xD00000`; hai slot ảnh vẫn giữ offset cũ ở đầu partition `storage`. Nói “Hi Su” sẽ đánh thức màn hình; nếu đã có Wi-Fi và Groq API key, board thu câu tiếp theo và gửi Groq để chép tiếng Việt. Vào Setting hotspot → Thiết bị để lưu/xóa Groq và Gemini API key; trang web chỉ cho biết đã cấu hình hay chưa, không trả giá trị key. Gemini hiện chạy theo từng yêu cầu HTTPS, chưa truyền âm thanh hai chiều liên tục như Xiaozhi. Đây là nhận dạng câu gọi bằng MultiNet, chưa phải model WakeNet được huấn luyện riêng.
+MultiNet cần flash cả partition table và model: `idf.py -p COM6 flash` (không dùng `app-flash`). Model nằm ở cuối flash tại `0xD00000`; hai slot ảnh vẫn giữ offset cũ ở đầu partition `storage`. Nói “Hi Su” sẽ đánh thức màn hình; nếu đã có Wi-Fi và Groq API key, board mở phiên để nghe các câu tiếp theo. Vào Setting hotspot → Thiết bị để lưu/xóa Groq và Gemini API key; trang web chỉ cho biết đã cấu hình hay chưa, không trả giá trị key. Gemini nhận phản hồi dạng streaming qua HTTPS, chưa truyền microphone liên tục như Xiaozhi. Đây là nhận dạng câu gọi bằng MultiNet, chưa phải model WakeNet được huấn luyện riêng.
 
 ## Setup Wi-Fi
 
