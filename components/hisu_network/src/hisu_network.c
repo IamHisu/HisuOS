@@ -2,6 +2,7 @@
 #include "hisu_settings.h"
 #include "hisu_clock.h"
 #include "hisu_wifi_input.h"
+#include "hisu_connectivity.h"
 #include <stdio.h>
 #include <inttypes.h>
 #include <string.h>
@@ -23,6 +24,7 @@ typedef struct { int type; bool enabled; char ssid[33], password[65]; } command_
 static SemaphoreHandle_t s_lock;
 static QueueHandle_t s_commands;
 static EventGroupHandle_t s_events;
+static TaskHandle_t s_probe_task;
 static hisu_network_status_t s_status;
 static esp_netif_t *s_netif;
 static esp_netif_t *s_setup_netif;
@@ -32,6 +34,86 @@ static bool s_started, s_want_connection, s_save_candidate;
 static char s_ssid[33], s_password[65];
 static int s_retries;
 static int64_t s_deadline, s_retry_at;
+static bool s_auto_join;
+/* Protected by s_lock; invalidates HTTP results from a previous connection. */
+static uint32_t s_connection_generation;
+static unsigned s_internet_failures;
+typedef struct {
+    char ssid[33];
+    int64_t retry_after;
+    bool password_rejected;
+} join_failure_t;
+static join_failure_t s_failures[HISU_WIFI_SAVED_MAX + HISU_WIFI_MAX_APS];
+
+/* Worker owns failure history; scans do not erase rejected credentials. */
+static join_failure_t *join_failure(const char *ssid, bool create)
+{
+    join_failure_t *empty = NULL;
+    for (unsigned i = 0; i < sizeof(s_failures) / sizeof(s_failures[0]); ++i) {
+        if (!strcmp(s_failures[i].ssid, ssid)) return &s_failures[i];
+        if (!s_failures[i].ssid[0] && !empty) empty = &s_failures[i];
+    }
+    if (!create) return NULL;
+    if (!empty) {
+        empty = &s_failures[0];
+        for (unsigned i = 1; i < sizeof(s_failures) / sizeof(s_failures[0]); ++i)
+            if (s_failures[i].retry_after < empty->retry_after) empty = &s_failures[i];
+    }
+    *empty = (join_failure_t){0};
+    memcpy(empty->ssid, ssid, strlen(ssid));
+    return empty;
+}
+
+static bool auto_join_allowed(const char *ssid)
+{
+    join_failure_t *failure = join_failure(ssid, false);
+    return !failure || (!failure->password_rejected && esp_timer_get_time() >= failure->retry_after);
+}
+
+static void record_join_failure(bool password_rejected)
+{
+    join_failure_t *failure = join_failure(s_ssid, true);
+    failure->retry_after = esp_timer_get_time() + 60000000;
+    failure->password_rejected |= password_rejected;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; i < s_status.count; ++i)
+        if (!strcmp(s_status.aps[i].ssid, s_ssid))
+            s_status.aps[i].password_rejected = failure->password_rejected;
+    xSemaphoreGive(s_lock);
+}
+
+/* Caller owns s_lock. */
+static void reset_internet(hisu_internet_state_t state)
+{
+    ++s_connection_generation;
+    s_internet_failures = 0;
+    s_status.internet = state;
+}
+
+static void publish_internet(uint32_t generation, hisu_internet_state_t result)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_status.enabled && s_status.connected && generation == s_connection_generation) {
+        s_status.internet = result;
+        if (result == HISU_INTERNET_ONLINE) s_internet_failures = 0;
+        else if (s_internet_failures < 2) ++s_internet_failures;
+        ++s_status.revision;
+    }
+    xSemaphoreGive(s_lock);
+}
+
+static void internet_worker(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        bool connected = s_status.enabled && s_status.connected;
+        uint32_t generation = s_connection_generation;
+        xSemaphoreGive(s_lock);
+        if (connected) publish_internet(generation, hisu_connectivity_probe());
+    }
+}
 
 bool hisu_network_valid_password(const char *password)
 {
@@ -143,6 +225,10 @@ static void setup_radio(bool enabled)
 
 static void begin_join(void)
 {
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    reset_internet(HISU_INTERNET_UNKNOWN);
+    s_status.connected = false;
+    xSemaphoreGive(s_lock);
     wifi_config_t config = {0};
     memcpy(config.sta.ssid, s_ssid, strlen(s_ssid));
     memcpy(config.sta.password, s_password, strlen(s_password));
@@ -157,7 +243,11 @@ static void begin_join(void)
     if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_STA, &config);
     if (err == ESP_OK) err = esp_wifi_connect();
     memset(&config, 0, sizeof(config));
-    if (err != ESP_OK) { s_want_connection = false; failed(err); return; }
+    if (err != ESP_OK) {
+        record_join_failure(false);
+        s_want_connection = false; s_deadline = s_retry_at = 0;
+        failed(err); return;
+    }
     s_retry_at = 0;
     s_deadline = esp_timer_get_time() + 25000000;
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -211,6 +301,7 @@ static void scan(void)
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_status.joining = false;
         s_status.connected = false;
+        reset_internet(HISU_INTERNET_UNKNOWN);
         s_status.ip[0] = 0;
         xSemaphoreGive(s_lock);
     }
@@ -238,6 +329,8 @@ static void scan(void)
         ap->secure = records[i].authmode != WIFI_AUTH_OPEN;
         char saved_password[65] = {0};
         ap->saved = hisu_settings_find_wifi(ap->ssid, saved_password) == ESP_OK;
+        join_failure_t *failure = join_failure(ap->ssid, false);
+        ap->password_rejected = failure && failure->password_rejected;
         memset(saved_password, 0, sizeof(saved_password));
         ap->supported = records[i].authmode == WIFI_AUTH_OPEN || records[i].authmode == WIFI_AUTH_WPA2_PSK ||
             records[i].authmode == WIFI_AUTH_WPA_WPA2_PSK || records[i].authmode == WIFI_AUTH_WPA3_PSK ||
@@ -265,7 +358,7 @@ static void scan(void)
             xSemaphoreTake(s_lock, portMAX_DELAY);
             candidate = s_status.aps[i];
             xSemaphoreGive(s_lock);
-            if (!candidate.saved || !candidate.supported) continue;
+            if (!candidate.saved || !candidate.supported || !auto_join_allowed(candidate.ssid)) continue;
             char password[65] = {0};
             esp_err_t saved = hisu_settings_find_wifi(candidate.ssid, password);
             /* A saved protected SSID must not auto-join an open lookalike. */
@@ -278,10 +371,33 @@ static void scan(void)
             memset(password, 0, sizeof(password));
             if (!usable) continue;
             s_save_candidate = false;
+            s_auto_join = true;
             s_retries = 0;
             s_want_connection = true;
             begin_join();
-            break;
+            if (s_want_connection) break;
+        }
+        /* Hidden SSIDs may not be returned by a broadcast scan. Connect by
+         * saved name after visible candidates, retaining the auth threshold. */
+        for (unsigned i = 0; !s_want_connection && i < HISU_WIFI_SAVED_MAX; ++i) {
+            char ssid[33] = {0}, password[65] = {0};
+            esp_err_t saved = hisu_settings_get_wifi_at(i, ssid, password);
+            bool visible = false;
+            for (int j = 0; j < s_status.count; ++j)
+                if (!strcmp(s_status.aps[j].ssid, ssid)) visible = true;
+            bool usable = saved == ESP_OK && !visible && auto_join_allowed(ssid) &&
+                hisu_wifi_password_is_valid(password);
+            if (usable) {
+                memcpy(s_ssid, ssid, sizeof(s_ssid));
+                memcpy(s_password, password, sizeof(s_password));
+            }
+            memset(password, 0, sizeof(password));
+            if (!usable) continue;
+            s_save_candidate = false;
+            s_auto_join = true;
+            s_retries = 0;
+            s_want_connection = true;
+            begin_join();
         }
     }
 done:
@@ -291,6 +407,46 @@ done:
         s_want_connection = true;
         s_retry_at = esp_timer_get_time() + 10000000;
     }
+}
+
+static bool roam_without_internet(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool roam = s_auto_join && hisu_network_has_internet_warning(&s_status) &&
+        !s_status.joining && !s_status.scanning && s_internet_failures >= 2;
+    uint32_t generation = s_connection_generation;
+    if (roam) s_internet_failures = 0;
+    xSemaphoreGive(s_lock);
+    if (!roam) return false;
+    bool alternative = false;
+    for (unsigned i = 0; i < HISU_WIFI_SAVED_MAX && !alternative; ++i) {
+        char ssid[33] = {0}, password[65] = {0};
+        esp_err_t saved = hisu_settings_get_wifi_at(i, ssid, password);
+        bool usable = saved == ESP_OK && strcmp(ssid, s_ssid) && auto_join_allowed(ssid) &&
+            hisu_wifi_password_is_valid(password);
+        for (int j = 0; usable && j < s_status.count; ++j)
+            if (!strcmp(s_status.aps[j].ssid, ssid))
+                usable = hisu_wifi_can_auto_join(true, s_status.aps[j].supported, s_status.aps[j].secure, password);
+        memset(password, 0, sizeof(password));
+        alternative = usable;
+    }
+    if (!alternative) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (generation != s_connection_generation || !hisu_network_has_internet_warning(&s_status) ||
+        s_status.joining || s_status.scanning) {
+        xSemaphoreGive(s_lock);
+        return false;
+    }
+    s_status.connected = false; s_status.ip[0] = 0;
+    reset_internet(HISU_INTERNET_UNKNOWN);
+    ++s_status.revision;
+    xSemaphoreGive(s_lock);
+    record_join_failure(false);
+    join_failure(s_ssid, false)->retry_after = esp_timer_get_time() + 120000000;
+    s_want_connection = false; s_deadline = s_retry_at = 0;
+    esp_wifi_disconnect();
+    scan();
+    return true;
 }
 
 static void worker(void *arg)
@@ -343,6 +499,7 @@ static void worker(void *arg)
                 memcpy(s_ssid, command.ssid, sizeof(s_ssid));
                 memcpy(s_password, command.password, sizeof(s_password));
                 s_save_candidate = true;
+                s_auto_join = false;
                 s_retries = 0;
                 s_want_connection = true;
                 begin_join();
@@ -364,6 +521,7 @@ static void worker(void *arg)
                         xSemaphoreTake(s_lock, portMAX_DELAY);
                         s_status.enabled = command.enabled;
                         s_status.connected = false; s_status.joining = false; s_status.ip[0] = 0;
+                        reset_internet(HISU_INTERNET_UNKNOWN);
                         ++s_status.revision;
                         xSemaphoreGive(s_lock);
                     } else hisu_settings_set(HISU_SETTING_WIFI_ENABLED, previous_enabled);
@@ -388,6 +546,8 @@ static void worker(void *arg)
                 s_save_candidate = err != ESP_OK;
                 saved = err == ESP_OK;
             }
+            join_failure_t *failure = join_failure(s_ssid, false);
+            if (failure) *failure = (join_failure_t){0};
             xSemaphoreTake(s_lock, portMAX_DELAY);
             if (saved) {
                 for (int i = 0; i < s_status.count; ++i) {
@@ -398,13 +558,17 @@ static void worker(void *arg)
                 sort_access_points();
             }
             s_status.connected = true; s_status.joining = false; s_status.error = err;
+            reset_internet(HISU_INTERNET_CHECKING);
             s_status.rssi = ap.rssi;
             if (esp_netif_get_ip_info(s_netif, &ip) == ESP_OK)
                 snprintf(s_status.ip, sizeof(s_status.ip), IPSTR, IP2STR(&ip.ip));
+            for (int i = 0; i < s_status.count; ++i)
+                if (!strcmp(s_status.aps[i].ssid, s_ssid)) s_status.aps[i].password_rejected = false;
             ++s_status.revision;
             xSemaphoreGive(s_lock);
             s_retries = 0; s_deadline = 0; s_retry_at = 0;
             hisu_clock_network_connected();
+            xTaskNotifyGive(s_probe_task);
             events &= ~EVENT_DISCONNECTED;
         }
         if ((events & EVENT_DISCONNECTED) && s_want_connection) {
@@ -416,15 +580,19 @@ static void worker(void *arg)
                 continue; /* late completion of our explicit disconnect */
             }
             s_status.connected = false; s_status.joining = true; s_status.ip[0] = 0;
+            reset_internet(HISU_INTERNET_UNKNOWN);
             ++s_status.revision;
             xSemaphoreGive(s_lock);
             if (reason == WIFI_REASON_AUTH_FAIL || reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
                 reason == WIFI_REASON_HANDSHAKE_TIMEOUT) {
                 s_want_connection = false; s_deadline = 0; s_retry_at = 0;
+                record_join_failure(true);
                 failed(ESP_ERR_INVALID_ARG);
+                if (s_auto_join) next_auto_scan = 0;
             } else if (!s_retry_at) s_retry_at = esp_timer_get_time() + (1000000LL << (s_retries < 5 ? s_retries : 5));
         }
         int64_t now = esp_timer_get_time();
+        if (roam_without_internet()) next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
         static int64_t next_signal_poll;
         if (now >= next_signal_poll) {
             next_signal_poll = now + 5000000;
@@ -437,7 +605,9 @@ static void worker(void *arg)
         if (s_want_connection && ((s_deadline && now >= s_deadline) || (s_retry_at && now >= s_retry_at))) {
             if (++s_retries > 6) {
                 s_want_connection = false; s_deadline = 0; s_retry_at = 0;
+                record_join_failure(false);
                 esp_wifi_disconnect(); failed(ESP_ERR_TIMEOUT);
+                if (s_auto_join) next_auto_scan = 0;
             } else begin_join();
         }
         /* A saved AP may come online after boot or after reconnect attempts end.
@@ -496,11 +666,15 @@ esp_err_t hisu_network_start(void)
     s_status.ready = true;
     s_status.scanning = s_status.enabled;
     memcpy(s_status.ssid, s_ssid, sizeof(s_ssid));
+    if (xTaskCreate(internet_worker, "hisu_internet", 8192, NULL, 2, &s_probe_task) != pdPASS) {
+        err = ESP_ERR_NO_MEM; goto fail;
+    }
     if (xTaskCreate(worker, "hisu_network", 8192, NULL, 3, NULL) != pdPASS) {
         err = ESP_ERR_NO_MEM; goto fail;
     }
     return ESP_OK;
 fail:
+    if (s_probe_task) { vTaskDelete(s_probe_task); s_probe_task = NULL; }
     if (s_wifi_handler) esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_handler);
     if (s_ip_handler) esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
     s_wifi_handler = NULL; s_ip_handler = NULL;

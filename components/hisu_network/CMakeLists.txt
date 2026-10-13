@@ -1,2 +1,2 @@
-idf_component_register(SRCS "src/hisu_network.c" "src/hisu_wifi_input.c" INCLUDE_DIRS "include"
-    REQUIRES esp_common PRIV_REQUIRES esp_wifi esp_event esp_netif esp_hw_support hisu_settings hisu_clock esp_timer freertos)
+idf_component_register(SRCS "src/hisu_network.c" "src/hisu_wifi_input.c" "src/hisu_connectivity.c" INCLUDE_DIRS "include"
+    REQUIRES esp_common PRIV_REQUIRES esp_wifi esp_event esp_netif esp_hw_support hisu_settings hisu_clock esp_timer freertos esp_http_client mbedtls)

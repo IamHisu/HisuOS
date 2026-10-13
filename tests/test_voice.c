@@ -42,9 +42,9 @@ int main(void)
     assert(!voice_session_capture(&session, 100199));
     assert(voice_session_capture(&session, 100200));
     assert(voice_session_finish(&session, session.generation, 101000));
-    assert(session.deadline_ms == 116300);
-    assert(!voice_session_expire(&session, 116299));
-    assert(voice_session_expire(&session, 116300));
+    assert(session.deadline_ms == 106300);
+    assert(!voice_session_expire(&session, 106299));
+    assert(voice_session_expire(&session, 106300));
     assert(session.state == VOICE_IDLE);
     voice_session_open(&session, 120000);
     assert(session.session_id != id);

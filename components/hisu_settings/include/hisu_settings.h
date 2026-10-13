@@ -26,6 +26,7 @@ esp_err_t hisu_settings_get_gemini_key(char out[128]);
 esp_err_t hisu_settings_set_gemini_key(const char *key);
 bool hisu_settings_has_gemini_key(void);
 esp_err_t hisu_settings_get_wifi(char ssid[33], char password[65]);
+esp_err_t hisu_settings_get_wifi_at(unsigned index, char ssid[33], char password[65]);
 esp_err_t hisu_settings_save_wifi(const char *ssid, const char *password);
 #define HISU_WIFI_SAVED_MAX 8
 esp_err_t hisu_settings_find_wifi(const char *ssid, char password[65]);

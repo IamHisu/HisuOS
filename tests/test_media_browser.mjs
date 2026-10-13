@@ -14,6 +14,7 @@ for (const [route,file,type] of [['/','index.html','text/html'],['/app.js','app.
   assets.set(route,{body:await readFile(new URL(file,root)),type});
 let state, uploaded, uploadType, wifi, device, wifiRequests, sessionRequests, leaveRequests = 0;
 const token = 'a'.repeat(64);
+const wifiOnly = process.argv.includes('--wifi-only');
 const server = createServer(async(req,res)=>{
   try {
     const asset = assets.get(req.url);
@@ -37,11 +38,12 @@ const server = createServer(async(req,res)=>{
       return;
     }
     if (req.url==='/wifi') {send(200,wifi);return;}
+    if (req.method==='GET' && ['/asr-key','/gemini-key'].includes(req.url)) {send(200,{configured:false});return;}
     if (req.url==='/time') {assert.ok(Number.isInteger(JSON.parse(body).utc));send(200,{saved:true});return;}
     if (req.url.startsWith('/wifi/')) {
       const data=body.length ? JSON.parse(body) : null; wifiRequests.push({path:req.url,data});
       if (req.url==='/wifi/power') wifi.enabled=data.enabled;
-      if (req.url==='/wifi/join') {wifi.connected=true;wifi.ssid=data.ssid;wifi.ip='192.168.1.55';}
+      if (req.url==='/wifi/join') {wifi.connected=true;wifi.internet='online';wifi.ssid=data.ssid;wifi.ip='192.168.1.55';}
       send(200,{accepted:true});return;
     }
     if (req.url==='/image') {
@@ -62,7 +64,7 @@ try {
   for (const [name,width,height] of [['desktop',1280,800],['mobile',390,844],['small-mobile',320,720]]) {
     state={pending:false,saving:false,revision:1,error:0,seconds:299,expired:false};uploaded=null;sessionRequests=0;
     device={brightness:75,volume:55,speaker:1,timeout:0,theme:0,timezone:420};wifiRequests=[];
-    wifi={enabled:true,scanning:false,joining:false,connected:false,error:0,ssid:'',ip:'',aps:[
+    wifi={enabled:true,scanning:false,joining:false,connected:false,internet:'unknown',error:0,ssid:'',ip:'',aps:[
       {ssid:'Saved home',rssi:-45,saved:true,secure:true,supported:true},
       {ssid:'<img src=x onerror=alert(1)>',rssi:-60,saved:false,secure:true,supported:true},
       {ssid:'Enterprise',rssi:-70,saved:false,secure:true,supported:false},
@@ -92,6 +94,39 @@ try {
     assert.deepEqual(wifiRequests.find(request=>request.path==='/wifi/join').data,{ssid:'Saved home',password:'',saved:true});
     assert.equal(await page.locator('#wifi-password').inputValue(),'');
     assert.equal(await page.locator('#wifi-dialog').isVisible(),false);
+    const savedRow=page.locator('.wifi-row').filter({hasText:'Saved home'});
+    for (const [internet,text,warning] of [
+      ['checking','Đang kiểm tra Internet',false],
+      ['captive','Mạng yêu cầu đăng nhập',true],
+      ['offline','Wi-Fi chưa có Internet',true],
+      ['online','Có Internet',false],
+    ]) {
+      wifi.internet=internet;
+      await page.waitForFunction(text=>document.getElementById('wifi-status').textContent.includes(text),text);
+      assert.equal(await savedRow.locator('.wifi-warning').isVisible(),warning);
+      assert.equal(await savedRow.getAttribute('data-connected'),'true');
+      assert.equal(await page.locator('.wifi-row').filter({hasText:'Enterprise'}).locator('.wifi-warning').isVisible(),false);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      if (warning) {
+        assert.equal(await savedRow.evaluate(row=>{
+          const badge=row.querySelector('.wifi-warning').getBoundingClientRect();
+          const signal=row.querySelector('.wifi-signal-wrap').getBoundingClientRect();
+          return badge.left>=signal.left && badge.right<=signal.right && badge.bottom<=signal.bottom;
+        }),true);
+        await page.screenshot({path:fileURLToPath(new URL(`${name}-wifi-${internet}.png`,output)),fullPage:true});
+      }
+    }
+    // A rescan or another connection must not hide a saved network's auth failure.
+    wifi.aps[0].password_rejected=true;
+    wifi.connected=false;wifi.error=0;wifi.ssid='Other network';
+    await page.locator('#wifi-scan').click();
+    await page.waitForFunction(()=>document.querySelector('.wifi-row').dataset.connected === 'false');
+    const joinsBeforeCorrection=wifiRequests.filter(request=>request.path==='/wifi/join').length;
+    await page.locator('.wifi-row').filter({hasText:'Saved home'}).click();
+    await page.locator('#wifi-dialog').waitFor({state:'visible'});
+    assert.equal(await page.locator('#wifi-dialog-title').textContent(),'Saved home');
+    assert.equal(wifiRequests.filter(request=>request.path==='/wifi/join').length,joinsBeforeCorrection);
+    await page.locator('#wifi-cancel').click();
     await page.screenshot({path:fileURLToPath(new URL(`${name}-wifi.png`,output)),fullPage:true});
     await page.locator('.wifi-row').filter({hasText:'<img src=x onerror=alert(1)>'}).click();
     await page.locator('#wifi-dialog').waitFor({state:'visible'});
@@ -102,6 +137,11 @@ try {
     await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('<img'));
     assert.deepEqual(wifiRequests.filter(request=>request.path==='/wifi/join').at(-1).data,{ssid:'<img src=x onerror=alert(1)>',password:'password123'});
     assert.equal(await page.locator('#wifi-password').inputValue(),'');
+    if (wifiOnly) {
+      assert.deepEqual(errors,[]);
+      await context.close();
+      continue;
+    }
     await page.reload();
     await page.waitForFunction(()=>document.querySelectorAll('.wifi-row').length===3);
     assert.equal(sessionRequests,2);
@@ -180,7 +220,8 @@ try {
   for (let i=0;i<20 && leaveRequests===beforeClose;++i) await new Promise(resolve=>setTimeout(resolve,100));
   assert.ok(leaveRequests>beforeClose,'Closing an active page sends authenticated leave');
   await closingContext.close();
-  console.log('Setting browser tests passed: three viewports, Wi-Fi/settings, PNG save, animated GIF resize from >240px, reload/close leave, logout/expiry and retry. HTTP API mocked; device captive portal/AP/flash not tested.');
+  console.log(wifiOnly ? 'Wi-Fi browser tests passed: three viewports, connectivity states, warning badge/recovery, saved join, rescan after auth rejection, password correction, unsafe SSID and page close. HTTP API mocked; device radio not tested.' :
+    'Setting browser tests passed: three viewports, Wi-Fi/settings, PNG save, animated GIF resize from >240px, reload/close leave, logout/expiry and retry. HTTP API mocked; device captive portal/AP/flash not tested.');
 } finally {
   await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
 }

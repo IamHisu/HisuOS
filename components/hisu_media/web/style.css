@@ -87,6 +87,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .wifi-row[data-saved=true] .wifi-note{color:#83a99b}
 .wifi-row[data-connected=true] .wifi-note{color:var(--cyan)}
 .wifi-signal{width:24px;height:24px;flex:none;color:#c8d4df}
+.wifi-signal-wrap{position:relative;width:24px;height:24px;flex:none}
+.wifi-warning{position:absolute;right:0;bottom:0;width:9px;height:15px;line-height:15px;text-align:center;font-size:13px;font-weight:700;color:#111;background:#ffc857;border-radius:2px}
 .wifi-signal[data-level="1"] .wave-mid,.wifi-signal:not([data-level="3"]) .wave-high{opacity:.16}
 .wifi-lock{width:17px;height:17px;flex:none;color:var(--muted)}
 button.secondary{background:none;box-shadow:none;color:var(--cyan);border:1px solid var(--line-strong);border-radius:12px}

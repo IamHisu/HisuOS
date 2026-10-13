@@ -97,15 +97,18 @@ static esp_err_t wifi_status(httpd_req_t *req)
     if (!s_guard(req)) return error(req, "403 Forbidden", "Session expired.");
     hisu_network_status_t state; hisu_network_get(&state);
     cJSON *json = cJSON_CreateObject(), *aps = cJSON_CreateArray();
+    static const char *const internet[] = {"unknown", "checking", "online", "captive", "offline"};
     bool ok = json && aps && cJSON_AddBoolToObject(json, "enabled", state.enabled) &&
         cJSON_AddBoolToObject(json, "scanning", state.scanning) && cJSON_AddBoolToObject(json, "joining", state.joining) &&
         cJSON_AddBoolToObject(json, "connected", state.connected) && cJSON_AddStringToObject(json, "ssid", state.ssid) &&
+        cJSON_AddStringToObject(json, "internet", internet[state.internet]) &&
         cJSON_AddStringToObject(json, "ip", state.ip) && cJSON_AddNumberToObject(json, "error", state.error);
     for (int i = 0; ok && i < state.count; ++i) {
         cJSON *ap = cJSON_CreateObject();
         ok = ap && cJSON_AddStringToObject(ap, "ssid", state.aps[i].ssid) &&
             cJSON_AddNumberToObject(ap, "rssi", state.aps[i].rssi) && cJSON_AddBoolToObject(ap, "saved", state.aps[i].saved) &&
-            cJSON_AddBoolToObject(ap, "secure", state.aps[i].secure) && cJSON_AddBoolToObject(ap, "supported", state.aps[i].supported);
+            cJSON_AddBoolToObject(ap, "secure", state.aps[i].secure) && cJSON_AddBoolToObject(ap, "supported", state.aps[i].supported) &&
+            cJSON_AddBoolToObject(ap, "password_rejected", state.aps[i].password_rejected);
         if (ok) ok = cJSON_AddItemToArray(aps, ap);
         if (!ok) cJSON_Delete(ap);
     }

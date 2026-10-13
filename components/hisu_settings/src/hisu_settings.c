@@ -204,15 +204,20 @@ static esp_err_t read_wifi_store(wifi_store_t *store)
 
 esp_err_t hisu_settings_get_wifi(char ssid[33], char password[65])
 {
+    return hisu_settings_get_wifi_at(0, ssid, password);
+}
+
+esp_err_t hisu_settings_get_wifi_at(unsigned index, char ssid[33], char password[65])
+{
     if (!s_lock || !ssid || !password) return ESP_ERR_INVALID_ARG;
     wifi_store_t store;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     esp_err_t err = read_wifi_store(&store);
     xSemaphoreGive(s_lock);
-    if (err == ESP_OK && !store.count) err = ESP_ERR_NVS_NOT_FOUND;
+    if (err == ESP_OK && index >= store.count) err = ESP_ERR_NVS_NOT_FOUND;
     if (err == ESP_OK) {
-        memcpy(ssid, store.entries[0].ssid, 33);
-        memcpy(password, store.entries[0].password, 65);
+        memcpy(ssid, store.entries[index].ssid, 33);
+        memcpy(password, store.entries[index].password, 65);
     } else { ssid[0] = 0; password[0] = 0; }
     memset(&store, 0, sizeof(store));
     return err;

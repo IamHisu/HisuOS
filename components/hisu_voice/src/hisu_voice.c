@@ -265,6 +265,9 @@ static void detection_task(void *arg)
                     /* Interruption works even if connectivity was lost during the turn. */
                 } else if (!network.connected) {
                     (void)hisu_ui_post_status(HISU_UI_ERROR, "Cần Wi-Fi để nghe lệnh");
+                } else if (hisu_network_has_internet_warning(&network)) {
+                    (void)hisu_ui_post_status(HISU_UI_ERROR, network.internet == HISU_INTERNET_CAPTIVE
+                        ? "Wi-Fi yêu cầu đăng nhập" : "Wi-Fi chưa có Internet");
                 } else if (!hisu_settings_has_gemini_key()) {
                     (void)hisu_ui_post_status(HISU_UI_ERROR, "Cần Gemini API key trong Setting");
                 } else {

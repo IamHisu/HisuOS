@@ -75,7 +75,7 @@ int main(void)
     for (size_t n=0;n<sizeof(gif);++n) assert(!hisu_media_gif_valid(gif,n));
     gif[6]=241; assert(!hisu_media_gif_valid(gif,sizeof(gif))); gif[6]=240;
     gif[6]=120; assert(hisu_media_gif_valid(gif,sizeof(gif))); gif[6]=240;
-    gif[23]=241; assert(!hisu_media_gif_valid(gif,sizeof(gif))); gif[23]=1;
+    gif[23]=241; assert(!hisu_media_gif_valid(gif,sizeof(gif))); gif[23]=0;
     record.flags=2; record.length=sizeof(gif); record.crc=hisu_media_crc(gif,sizeof(gif)); checksum(&record);
     assert(hisu_media_record_valid(&record,gif));
     gif[sizeof(gif)-1]=0; assert(!hisu_media_record_valid(&record,gif));

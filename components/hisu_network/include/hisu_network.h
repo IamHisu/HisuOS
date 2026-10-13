@@ -3,9 +3,18 @@
 #include <stdint.h>
 #include "esp_err.h"
 #define HISU_WIFI_MAX_APS 12
-typedef struct { char ssid[33]; int rssi; bool secure; bool supported; bool saved; } hisu_wifi_ap_t;
+typedef struct { char ssid[33]; int rssi; bool secure; bool supported; bool saved; bool password_rejected; } hisu_wifi_ap_t;
+
+typedef enum {
+    HISU_INTERNET_UNKNOWN,
+    HISU_INTERNET_CHECKING,
+    HISU_INTERNET_ONLINE,
+    HISU_INTERNET_CAPTIVE,
+    HISU_INTERNET_OFFLINE,
+} hisu_internet_state_t;
 typedef struct {
     bool ready, enabled, scanning, joining, connected;
+    hisu_internet_state_t internet;
     uint32_t revision;
     esp_err_t error;
     int disconnect_reason;
@@ -15,6 +24,11 @@ typedef struct {
     bool setup_enabled, setup_client_connected;
     char setup_ssid[33], setup_password[17], setup_ip[16];
 } hisu_network_status_t;
+static inline bool hisu_network_has_internet_warning(const hisu_network_status_t *status)
+{
+    return status->enabled && status->connected &&
+        (status->internet == HISU_INTERNET_CAPTIVE || status->internet == HISU_INTERNET_OFFLINE);
+}
 esp_err_t hisu_network_start(void);
 void hisu_network_get(hisu_network_status_t *out);
 esp_err_t hisu_network_scan(void);

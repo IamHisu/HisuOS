@@ -96,9 +96,12 @@ if (typeof document !== 'undefined') {
   }
   function updateWifi(state) {
     wifiState = state;
+    const internet = {unknown:'Đang kiểm tra Internet…',checking:'Đang kiểm tra Internet…',
+      online:'Có Internet',captive:'Mạng yêu cầu đăng nhập',offline:'Wi-Fi chưa có Internet'}[state.internet] || 'Đang kiểm tra Internet…';
+    const warning = state.connected && ['captive','offline'].includes(state.internet);
     el('wifi-enabled').checked = state.enabled;
     el('wifi-status').textContent = state.scanning ? 'Đang quét…' : state.joining ? `Đang kết nối ${state.ssid}…` :
-      state.connected ? `${state.ssid} · ${state.ip}` : state.error ? `Kết nối thất bại (${state.error})` : state.enabled ? 'Chưa kết nối' : 'Wi-Fi đã tắt';
+      state.connected ? `${state.ssid} · ${internet} · ${state.ip}` : state.error ? `Kết nối thất bại (${state.error})` : state.enabled ? 'Chưa kết nối' : 'Wi-Fi đã tắt';
     const aps = [...state.aps].sort((a,b) => Number(b.ssid === state.ssid && state.connected) - Number(a.ssid === state.ssid && state.connected) || Number(b.saved) - Number(a.saved) || b.rssi - a.rssi);
     const names = new Set(aps.map(ap => ap.ssid));
     for (const [ssid,row] of wifiRows) if (!names.has(ssid)) { row.remove(); wifiRows.delete(ssid); }
@@ -113,7 +116,8 @@ if (typeof document !== 'undefined') {
       const connected = state.connected && state.ssid === ap.ssid;
       row.dataset.saved = String(ap.saved); row.dataset.connected = String(connected);
       row.disabled = wifiBusy || state.scanning || state.joining || !state.enabled || !ap.supported;
-      row.querySelector('.wifi-note').textContent = connected ? 'Đã kết nối' : !ap.supported ? 'Không hỗ trợ' : ap.saved ? 'Đã lưu' : '';
+      row.querySelector('.wifi-note').textContent = connected ? internet : !ap.supported ? 'Không hỗ trợ' : ap.saved ? 'Đã lưu' : '';
+      row.querySelector('.wifi-warning').hidden = !(connected && warning);
       const signal = row.querySelector('.wifi-signal');
       signal.dataset.level = ap.rssi >= -60 ? '3' : ap.rssi >= -75 ? '2' : '1';
       row.title = ap.rssi >= -60 ? 'Sóng mạnh' : ap.rssi >= -75 ? 'Sóng vừa' : 'Sóng yếu';
@@ -143,7 +147,7 @@ if (typeof document !== 'undefined') {
     const ap = wifiState?.aps.find(ap => ap.ssid === ssid);
     if (!ap || !ap.supported || wifiBusy || wifiState.joining || wifiState.scanning) return;
     if (wifiState.connected && wifiState.ssid === ssid) return;
-    if (ap.saved && wifiState.error && wifiState.ssid === ssid) openWifiDialog(ssid);
+    if (ap.saved && (ap.password_rejected || (wifiState.error && wifiState.ssid === ssid))) openWifiDialog(ssid);
     else if (ap.saved) void wifiAction('/wifi/join',{ssid,password:'',saved:true});
     else if (!ap.secure) void wifiAction('/wifi/join',{ssid,password:''});
     else openWifiDialog(ssid);

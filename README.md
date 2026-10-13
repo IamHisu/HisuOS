@@ -46,6 +46,7 @@ Chạy host tests từ PowerShell thường:
 
 ```powershell
 .\tools\test-ui.ps1
+.\tools\test-network.ps1
 .\tools\test-voice.ps1
 ```
 
@@ -76,6 +77,8 @@ Mở menu → Wi-Fi. Vol−/Vol+ di chuyển danh sách, BOOT chọn mạng ho�
 
 Bàn phím 8×5: nhấn Vol− sang phải, Vol+ xuống hàng; giữ 1 giây bắt đầu lặp cùng hướng mỗi 180ms và vòng lại ở mép. Nhả sau giữ không phát thêm nhấn ngắn. BOOT chọn ký tự. `Aa` đổi chữ thường/chữ hoa/ký hiệu; `<` xóa, `OK` kết nối, `X` hủy. Phím `SP` trong bảng ký hiệu là dấu cách. Mật khẩu chỉ hiển thị dấu `*`, được xóa khỏi buffer UI khi gửi/hủy; firmware không log credential.
 
-Hỗ trợ mạng 2.4GHz mở và WPA2/WPA3 Personal, mật khẩu ASCII 8–63 ký tự hoặc PSK hex 64 ký tự. Menu chưa có nhập SSID ẩn; trang BLE có thể gửi SSID trực tiếp. Chưa hỗ trợ Wi-Fi Enterprise hoặc captive portal. Credential dùng NVS thường của prototype, chưa bật encryption. Lưu tối đa 8 mạng sau khi nhận IP thành công; mạng dùng gần nhất đứng đầu và được thử kết nối khi khởi động. Khi đầy, lưu mạng mới thay mạng lâu nhất. Bản nâng cấp giữ mạng đã lưu theo định dạng cũ. Mạng đã lưu hiện tên màu xanh; BOOT dùng lại mật khẩu, lỗi xác thực rồi chọn lại sẽ mở bàn phím để sửa. Chưa kết nối thì không hiện tên mạng cũ ở dòng trạng thái.
+Hỗ trợ mạng 2.4GHz mở và WPA2/WPA3 Personal, mật khẩu ASCII 8–63 ký tự hoặc PSK hex 64 ký tự. Menu chưa có nhập SSID ẩn; mục Thêm mạng trên web có thể gửi SSID trực tiếp. Chưa hỗ trợ Wi-Fi Enterprise hoặc tự đăng nhập captive portal. Credential dùng NVS thường của prototype, chưa bật encryption. Lưu tối đa 8 mạng sau khi nhận IP thành công. Khi khởi động, thử mạng đã lưu thấy được theo mức sóng rồi thử các SSID đã lưu không thấy khi quét, gồm mạng ẩn. Khi đầy, lưu mạng mới thay mạng lâu nhất. Bản nâng cấp giữ mạng đã lưu theo định dạng cũ. Mạng đã lưu hiện tên màu xanh; BOOT dùng lại mật khẩu, lỗi xác thực rồi chọn lại sẽ mở bàn phím để sửa, kể cả sau khi quét lại. Chưa kết nối thì không hiện tên mạng cũ ở dòng trạng thái.
+
+Nhận IP chỉ xác nhận đã nối Wi-Fi. Hisu kiểm tra Internet ngay sau đó và mỗi 30 giây bằng hai điểm kiểm tra độc lập: HTTPS `connectivitycheck.gstatic.com/generate_204` và HTTP `www.msftconnecttest.com/connecttest.txt` (dự phòng, đối chiếu nội dung). Mỗi yêu cầu có timeout 4 giây và không theo chuyển hướng. Trang đăng nhập/chuyển hướng được báo là mạng yêu cầu đăng nhập; lỗi truy cập được báo là Wi-Fi chưa có Internet. Đây là phát hiện qua phản hồi mạng, không phải trình duyệt đăng nhập. Icon Wi-Fi ở màn hình chờ, menu và mạng hiện tại có dấu `!` vàng khi cần đăng nhập hoặc chưa có Internet; dấu tự mất khi kiểm tra thành công. Mạng tự chọn có thể chuyển sang mạng đã lưu khác sau hai lần kiểm tra lỗi liên tiếp, chờ 120 giây trước khi thử lại mạng cũ. Nếu không có mạng khác hoặc mạng đang được người dùng chọn thủ công, giữ kết nối Wi-Fi hiện tại. AI báo lỗi mạng rõ ràng khi chưa có Internet.
 
 Hướng dẫn kiểm thử: [UI Bring-up](docs/UI_BRINGUP.md). Nguồn font và license: [NOTICE](licenses/NOTICE.md).

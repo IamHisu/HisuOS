@@ -89,7 +89,7 @@ static hisu_network_status_t s_network;
 static hisu_power_status_t s_power;
 static lv_obj_t *s_battery_body, *s_battery_bars[5], *s_battery_tip, *s_battery_charge;
 static lv_obj_t *s_battery_outline, *s_battery_tip_outline, *s_charge_outline;
-typedef struct { lv_obj_t *root, *arcs[3], *dot, *outline[3], *dot_outline; } wifi_icon_t;
+typedef struct { lv_obj_t *root, *arcs[3], *dot, *outline[3], *dot_outline, *warning; } wifi_icon_t;
 static wifi_icon_t s_idle_wifi;
 static int s_wifi_selected, s_wifi_first;
 static bool s_wifi_select_after_scan;
@@ -207,10 +207,12 @@ static int wifi_signal_bars(int rssi)
     return rssi >= -60 ? 3 : rssi >= -75 ? 2 : 1;
 }
 
-static void update_wifi_icon(wifi_icon_t *icon, int bars, bool visible, lv_color_t color)
+static void update_wifi_icon(wifi_icon_t *icon, int bars, bool visible, bool warning, lv_color_t color)
 {
     if (visible) lv_obj_remove_flag(icon->root, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(icon->root, LV_OBJ_FLAG_HIDDEN);
+    if (warning) lv_obj_remove_flag(icon->warning, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(icon->warning, LV_OBJ_FLAG_HIDDEN);
     for (int i = 0; i < 3; ++i) {
         lv_obj_set_style_arc_color(icon->arcs[i], color, LV_PART_MAIN);
         lv_obj_set_style_arc_opa(icon->arcs[i], i < bars ? LV_OPA_COVER : LV_OPA_30, LV_PART_MAIN);
@@ -227,7 +229,7 @@ static void update_wifi_icon(wifi_icon_t *icon, int bars, bool visible, lv_color
     }
 }
 
-static wifi_icon_t create_wifi_icon(lv_obj_t *parent, int x, int y, int bars, bool outlined)
+static wifi_icon_t create_wifi_icon(lv_obj_t *parent, int x, int y, int bars, bool outlined, bool warning)
 {
     wifi_icon_t icon = {0};
     icon.root = lv_obj_create(parent);
@@ -270,7 +272,23 @@ static wifi_icon_t create_wifi_icon(lv_obj_t *parent, int x, int y, int bars, bo
     lv_obj_set_pos(icon.dot, 9, 10);
     lv_obj_set_size(icon.dot, 2, 2);
     lv_obj_set_style_radius(icon.dot, LV_RADIUS_CIRCLE, 0);
-    update_wifi_icon(&icon, bars, true, lv_color_hex(theme_color(0x86dbaf)));
+    icon.warning = lv_obj_create(icon.root);
+    lv_obj_remove_style_all(icon.warning);
+    lv_obj_remove_flag(icon.warning, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(icon.warning, 12, 3);
+    lv_obj_set_size(icon.warning, 8, 12);
+    lv_obj_set_style_radius(icon.warning, 2, 0);
+    lv_obj_set_style_bg_color(icon.warning, lv_color_hex(0xffc857), 0);
+    lv_obj_set_style_bg_opa(icon.warning, LV_OPA_COVER, 0);
+    for (int i = 0; i < 2; ++i) {
+        lv_obj_t *mark = lv_obj_create(icon.warning);
+        lv_obj_remove_style_all(mark);
+        lv_obj_set_pos(mark, 3, i ? 9 : 2);
+        lv_obj_set_size(mark, 2, i ? 2 : 5);
+        lv_obj_set_style_bg_color(mark, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(mark, LV_OPA_COVER, 0);
+    }
+    update_wifi_icon(&icon, bars, true, warning, lv_color_hex(theme_color(0x86dbaf)));
     return icon;
 }
 
@@ -365,7 +383,7 @@ static void update_idle_status(void)
         lv_obj_add_flag(s_charge_outline, LV_OBJ_FLAG_HIDDEN);
     }
     update_wifi_icon(&s_idle_wifi, s_network.connected ? wifi_signal_bars(s_network.rssi) : 0,
-                     s_network.enabled, overlay_color(1, 176, 10, 22, 18));
+                     s_network.enabled, hisu_network_has_internet_warning(&s_network), overlay_color(1, 176, 10, 22, 18));
 }
 
 static void render_idle_status(lv_obj_t *root)
@@ -388,7 +406,7 @@ static void render_idle_status(lv_obj_t *root)
     lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_opa(panel, LV_OPA_TRANSP, 0);
     /* Visible Wi-Fi pixels span 12 px; center them on the 14 px battery. */
-    s_idle_wifi = create_wifi_icon(panel, 21, 6, 0, true);
+    s_idle_wifi = create_wifi_icon(panel, 21, 6, 0, true, false);
     s_battery_outline = lv_obj_create(panel);
     lv_obj_remove_style_all(s_battery_outline);
     lv_obj_set_pos(s_battery_outline, 44, 4);
@@ -552,7 +570,8 @@ static void render_menu(void)
         }
         if (item == UI_WIFI) {
             wifi_icon_t icon = create_wifi_icon(obj, 196, 8,
-                s_network.enabled && s_network.connected ? wifi_signal_bars(s_network.rssi) : 0, false);
+                s_network.enabled && s_network.connected ? wifi_signal_bars(s_network.rssi) : 0, false,
+                hisu_network_has_internet_warning(&s_network));
             if (!s_network.enabled) {
                 static const lv_point_precise_t slash[] = {{0, 0}, {14, 14}};
                 lv_obj_t *line = lv_line_create(icon.root);
@@ -766,7 +785,12 @@ static const char *network_state(void)
     if (!s_network.enabled) return "Wi-Fi đã tắt";
     if (s_network.scanning) return "Đang quét mạng...";
     if (s_network.joining) return "Đang kết nối...";
-    if (s_network.connected) return s_network.error == ESP_OK ? "Đã kết nối" : "Đã nối, lưu bị lỗi";
+    if (s_network.connected) {
+        if (s_network.internet == HISU_INTERNET_CAPTIVE) return "Mạng yêu cầu đăng nhập";
+        if (s_network.internet == HISU_INTERNET_OFFLINE) return "Wi-Fi chưa có Internet";
+        if (s_network.internet != HISU_INTERNET_ONLINE) return "Đang kiểm tra Internet...";
+        return s_network.error == ESP_OK ? "Đã kết nối Internet" : "Đã nối, lưu bị lỗi";
+    }
     if (s_network.error == ESP_ERR_INVALID_ARG) return "Kiểm tra mật khẩu";
     if (s_network.error != ESP_OK) return "Kết nối/quét bị lỗi";
     return "Chưa kết nối";
@@ -795,7 +819,7 @@ static void render_wifi(void)
     }
     header("Wi-Fi");
     label(lv_screen_active(), s_error ? s_error : network_state(), 12, 44, 216,
-          s_error || s_network.error != ESP_OK ? 0xf0a0a0 : 0x86dbaf);
+          s_error || s_network.error != ESP_OK || hisu_network_has_internet_warning(&s_network) ? 0xf0a0a0 : 0x86dbaf);
     char status[48] = "";
     if (s_network.enabled && s_network.connected) snprintf(status, sizeof(status), "%s %ddB", s_network.ip, s_network.rssi);
     lv_obj_t *summary = label(lv_screen_active(), status, 12, 67, 216, 0x8c9690);
@@ -827,7 +851,8 @@ static void render_wifi(void)
                               saved ? 0x86dbaf : 0xeeeeee);
         lv_label_set_long_mode(text, LV_LABEL_LONG_DOT);
         if (item < count) {
-            create_wifi_icon(cell, 196, 5, wifi_signal_bars(s_network.aps[item].rssi), false);
+            create_wifi_icon(cell, 196, 5, wifi_signal_bars(s_network.aps[item].rssi), false,
+                hisu_network_has_internet_warning(&s_network) && !strcmp(s_network.ssid, s_network.aps[item].ssid));
         }
     }
     footer("v", "Chọn", "^");
@@ -891,7 +916,7 @@ static bool handle_wifi_key(hisu_key_t key)
                 else if (s_network.joining || s_network.scanning) s_error = "Wi-Fi đang bận";
                 else {
                     memcpy(s_join_ssid, ap->ssid, sizeof(s_join_ssid));
-                    bool retry_password = s_network.error == ESP_ERR_INVALID_ARG && !strcmp(s_network.ssid, ap->ssid);
+                    bool retry_password = ap->password_rejected;
                     if (ap->secure && ap->saved && !retry_password) {
                         char saved_password[65] = {0};
                         esp_err_t err = hisu_settings_find_wifi(ap->ssid, saved_password);
