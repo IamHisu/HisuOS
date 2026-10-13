@@ -418,23 +418,31 @@ static bool roam_without_internet(void)
     if (roam) s_internet_failures = 0;
     xSemaphoreGive(s_lock);
     if (!roam) return false;
+    /* Refresh while still connected; saved credentials alone do not prove
+     * that a replacement router is present. A failed scan keeps this link. */
+    scan();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool scanned = s_status.error == ESP_OK && !s_status.scanning;
+    xSemaphoreGive(s_lock);
+    if (!scanned) return false;
     bool alternative = false;
-    for (unsigned i = 0; i < HISU_WIFI_SAVED_MAX && !alternative; ++i) {
-        char ssid[33] = {0}, password[65] = {0};
-        esp_err_t saved = hisu_settings_get_wifi_at(i, ssid, password);
-        bool usable = saved == ESP_OK && strcmp(ssid, s_ssid) && auto_join_allowed(ssid) &&
-            hisu_wifi_password_is_valid(password);
-        for (int j = 0; usable && j < s_status.count; ++j)
-            if (!strcmp(s_status.aps[j].ssid, ssid))
-                usable = hisu_wifi_can_auto_join(true, s_status.aps[j].supported, s_status.aps[j].secure, password);
-        memset(password, 0, sizeof(password));
-        alternative = usable;
+    char next_ssid[33] = {0}, next_password[65] = {0};
+    for (int i = 0; i < s_status.count && !alternative; ++i) {
+        hisu_wifi_ap_t candidate = s_status.aps[i];
+        if (!candidate.saved || !candidate.supported || !strcmp(candidate.ssid, s_ssid) ||
+            !auto_join_allowed(candidate.ssid)) continue;
+        esp_err_t saved = hisu_settings_find_wifi(candidate.ssid, next_password);
+        alternative = hisu_wifi_can_auto_join(saved == ESP_OK, candidate.supported,
+                                               candidate.secure, next_password);
+        if (alternative) memcpy(next_ssid, candidate.ssid, sizeof(next_ssid));
+        else memset(next_password, 0, sizeof(next_password));
     }
     if (!alternative) return false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (generation != s_connection_generation || !hisu_network_has_internet_warning(&s_status) ||
         s_status.joining || s_status.scanning) {
         xSemaphoreGive(s_lock);
+        memset(next_password, 0, sizeof(next_password));
         return false;
     }
     s_status.connected = false; s_status.ip[0] = 0;
@@ -443,9 +451,13 @@ static bool roam_without_internet(void)
     xSemaphoreGive(s_lock);
     record_join_failure(false);
     join_failure(s_ssid, false)->retry_after = esp_timer_get_time() + 120000000;
-    s_want_connection = false; s_deadline = s_retry_at = 0;
-    esp_wifi_disconnect();
-    scan();
+    memcpy(s_ssid, next_ssid, sizeof(s_ssid));
+    memcpy(s_password, next_password, sizeof(s_password));
+    memset(next_password, 0, sizeof(next_password));
+    s_save_candidate = false;
+    s_retries = 0;
+    s_want_connection = true;
+    begin_join();
     return true;
 }
 

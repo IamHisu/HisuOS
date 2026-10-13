@@ -48,6 +48,9 @@ static uint16_t mock_count;
 static wifi_config_t mock_config;
 static esp_err_t mock_connect_error;
 static int mock_connects;
+static int mock_disconnects;
+static esp_err_t mock_scan_error;
+static int mock_scans;
 static char mock_saved_ssids[8][33], mock_saved_passwords[8][65];
 static unsigned mock_saved_count;
 typedef struct {
@@ -112,12 +115,12 @@ static void xTaskNotifyGive(TaskHandle_t task) {}
 static void vTaskDelete(TaskHandle_t task) {}
 static esp_err_t esp_wifi_start(void) { return ESP_OK; }
 static esp_err_t esp_wifi_stop(void) { return ESP_OK; }
-static esp_err_t esp_wifi_disconnect(void) { return ESP_OK; }
+static esp_err_t esp_wifi_disconnect(void) { ++mock_disconnects; return ESP_OK; }
 static esp_err_t esp_wifi_connect(void) { ++mock_connects; return mock_connect_error; }
 static esp_err_t esp_wifi_set_mode(int mode) { return ESP_OK; }
 static esp_err_t esp_wifi_set_config(int interface, const wifi_config_t *config) { mock_config = *config; return ESP_OK; }
 static esp_err_t esp_wifi_deauth_sta(int aid) { return ESP_OK; }
-static esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config, bool block) { return ESP_OK; }
+static esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config, bool block) { ++mock_scans; return mock_scan_error; }
 static esp_err_t esp_wifi_scan_get_ap_records(uint16_t *count, wifi_ap_record_t *records) {
     *count = mock_count; memcpy(records, mock_aps, mock_count * sizeof(*records)); return ESP_OK;
 }
