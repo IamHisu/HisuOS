@@ -31,6 +31,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Power model compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Host model linking failed.' }
 & $idf.python (Join-Path $root 'tests\test_ui_model.py') $dll
 if ($LASTEXITCODE -ne 0) { throw 'UI model tests failed.' }
+$timing = Join-Path $out 'ui-timing-test.exe'
+& $compiler.FullName /nologo /c /std:c11 /MT /GS- /W4 /WX "/I$include" "/I$($sdk.FullName)\ucrt" "/I$root\components\hisu_ui\src" "/Fo$out\" (Join-Path $root 'tests\test_ui_timing.c')
+if ($LASTEXITCODE -ne 0) { throw 'UI timing compilation failed.' }
+& $linker /nologo /subsystem:console "/out:$timing" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_ui_timing.obj')
+if ($LASTEXITCODE -ne 0) { throw 'UI timing linking failed.' }
+& $timing
+if ($LASTEXITCODE -ne 0) { throw 'UI timing tests failed.' }
 $calendar = Join-Path $out 'calendar-test.exe'
 $calendarObject = Join-Path $out 'hisu_calendar.obj'
 $calendarTestObject = Join-Path $out 'test_calendar.obj'

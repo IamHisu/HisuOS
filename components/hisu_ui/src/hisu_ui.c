@@ -1,5 +1,6 @@
 #include "hisu_ui.h"
 #include "hisu_ui_model.h"
+#include "hisu_ui_timing.h"
 #include "hisu_board.h"
 #include "hisu_settings.h"
 #include "hisu_network.h"
@@ -80,6 +81,7 @@ static esp_err_t s_startup_result;
 static esp_err_t s_first_frame_error;
 static hisu_ui_model_t s_model;
 static status_event_t s_status;
+static int64_t s_status_shown_ms;
 static bool s_asleep;
 static int s_applied_brightness = -1;
 static int64_t s_activity_ms;
@@ -616,7 +618,7 @@ static void render_setup(void)
     s_setup_url = media.enabled && network.setup_client_connected;
     lv_obj_t *root = lv_screen_active();
     header(media.enabled && s_model.preview == UI_SETUP_QR ?
-        (s_setup_url ? "Trang Setting" : "Hotspot") : "Setting");
+        (s_setup_url ? "Setting page" : "Hotspot") : "Setting");
     if (!media.ready) {
         label(root,"Không khả dụng",12,80,216,0xf0a0a0); footer("","","back"); return;
     }
@@ -1049,11 +1051,25 @@ static void render(void)
     }
 }
 
+static void dismiss_voice_error(void)
+{
+    s_status.status = HISU_UI_IDLE;
+    s_status.text[0] = 0;
+    s_activity_ms = esp_timer_get_time() / 1000;
+    if (s_model.page == UI_IDLE) render();
+}
+
 static void handle_key(hisu_key_t key)
 {
     if (!key) return;
     s_activity_ms = esp_timer_get_time() / 1000;
     if (s_asleep) { s_asleep = false; return; }
+    if (s_model.page == UI_IDLE && s_status.status == HISU_UI_ERROR &&
+        (key == HISU_KEY_BOOT || key == HISU_KEY_BACK)) {
+        if (s_voice_control) (void)s_voice_control(true);
+        dismiss_voice_error();
+        return;
+    }
     if ((key == HISU_KEY_BOOT || key == HISU_KEY_BACK) && s_voice_control &&
         s_voice_control(key == HISU_KEY_BACK)) return;
     if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && key == HISU_KEY_FLASHLIGHT) {
@@ -1167,6 +1183,22 @@ static void render_boot_splash(void)
     ESP_LOGI("UI", "Boot GIF loaded: 240x240; duration=%d ms; no overlays", HISU_BOOT_SPLASH_MS);
 }
 
+static void ui_timer_wake(void *arg)
+{
+    xTaskNotifyGive((TaskHandle_t)arg);
+}
+
+static void ui_run_timers(esp_timer_handle_t wake_timer)
+{
+    uint32_t wait_ms = hisu_ui_wait_ms(lv_timer_handler());
+    /* An ESP timer avoids rounding short GIF deadlines to the 10 ms RTOS tick. */
+    if (esp_timer_start_once(wake_timer, (uint64_t)wait_ms * 1000) == ESP_OK) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    } else {
+        vTaskDelay(1);
+    }
+}
+
 static void ui_task(void *arg)
 {
     (void)arg;
@@ -1205,6 +1237,22 @@ static void ui_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    esp_timer_handle_t wake_timer = NULL;
+    const esp_timer_create_args_t wake_args = {
+        .callback = ui_timer_wake,
+        .arg = xTaskGetCurrentTaskHandle(),
+        .name = "ui_wake",
+    };
+    err = esp_timer_create(&wake_args, &wake_timer);
+    if (err != ESP_OK) {
+        ESP_LOGE("UI", "UI wake timer failed: %s", esp_err_to_name(err));
+        s_startup_result = err;
+        xEventGroupSetBits(s_startup, 1);
+        vTaskDelete(NULL);
+        return;
+    }
+    /* Refresh only invalidated areas; a shorter cadence reduces GIF display lag. */
+    lv_timer_set_period(lv_display_get_refr_timer(display), 16);
     render_boot_splash();
     /* Draw with backlight off; display-on drains the final asynchronous DMA. */
     lv_refr_now(display);
@@ -1215,6 +1263,7 @@ static void ui_task(void *arg)
     if (err != ESP_OK) {
         (void)hisu_board_set_brightness(0);
         ESP_LOGE("UI", "First boot frame failed: %s", esp_err_to_name(err));
+        esp_timer_delete(wake_timer);
         s_startup_result = err;
         xEventGroupSetBits(s_startup, 1);
         vTaskDelete(NULL);
@@ -1237,8 +1286,7 @@ static void ui_task(void *arg)
             /* Discard splash inputs rather than replaying them into the menu. */
             (void)hisu_board_poll_key();
             if (esp_timer_get_time() / 1000 < boot_until_ms) {
-                lv_timer_handler();
-                vTaskDelay(pdMS_TO_TICKS(10));
+                ui_run_timers(wake_timer);
                 continue;
             }
             boot_splash = false;
@@ -1260,6 +1308,7 @@ static void ui_task(void *arg)
                 s_model.page = event.flashlight_enabled ? UI_FLASHLIGHT_PAGE : UI_IDLE;
             } else {
                 s_status.status = event.status;
+                s_status_shown_ms = esp_timer_get_time() / 1000;
                 memcpy(s_status.text, event.text, sizeof(s_status.text));
                 if (event.status == HISU_UI_IDLE) {
                     /* A finished voice session always returns to the wallpaper. */
@@ -1276,6 +1325,10 @@ static void ui_task(void *arg)
         }
         int timeout = hisu_settings_get(HISU_SETTING_TIMEOUT);
         int64_t now = esp_timer_get_time() / 1000;
+        /* A newer listening/thinking status supersedes the old error timeout. */
+        if (hisu_ui_error_due(s_status.status == HISU_UI_ERROR, s_status_shown_ms, now)) {
+            dismiss_voice_error();
+        }
         if (now - s_last_service_refresh >= 1000) {
             s_last_service_refresh = now;
             hisu_media_status_t media; hisu_media_get(&media);
@@ -1314,8 +1367,7 @@ static void ui_task(void *arg)
             if (s_asleep) lv_gif_pause(s_idle_gif);
             else lv_gif_resume(s_idle_gif);
         }
-        lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        ui_run_timers(wake_timer);
     }
 }
 

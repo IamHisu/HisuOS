@@ -17,6 +17,27 @@ export function imagePlacement(width, height, fit) {
 
 if (typeof document !== 'undefined') {
   const el = id => document.getElementById(id);
+  let gifToolsLoading;
+  function loadGifTools() {
+    if (globalThis.FriendGifResize) return Promise.resolve(globalThis.FriendGifResize);
+    if (gifToolsLoading) return gifToolsLoading;
+    gifToolsLoading = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const fail = () => {
+        clearTimeout(timeout); script.remove(); gifToolsLoading = undefined;
+        reject(new Error('Không tải được bộ xử lý GIF. Hãy chọn lại ảnh để thử lại.'));
+      };
+      const timeout = setTimeout(fail, 35000);
+      script.src = '/gif-resize.js';
+      script.onload = () => {
+        if (!globalThis.FriendGifResize) { fail(); return; }
+        clearTimeout(timeout); resolve(globalThis.FriendGifResize);
+      };
+      script.onerror = fail;
+      document.head.append(script);
+    });
+    return gifToolsLoading;
+  }
   const canvas = el('preview'), ctx = canvas.getContext('2d', {willReadFrequently:true});
   let token = '', bitmap, gifData, pollTimer, pending = false, uploadBusy = false, pollBusy = false;
   let processing = false, procText = '', procRatio = null, gifUrl = '';
@@ -332,8 +353,8 @@ if (typeof document !== 'undefined') {
         throw new Error('Chọn PNG, JPEG, WebP hoặc GIF.');
       let nextGif;
       if (gif) {
-        if (!globalThis.FriendGifResize) throw new Error('Không tải được bộ xử lý GIF. Hãy mở lại trang.');
-        const resized=await globalThis.FriendGifResize.resizeGif(file,
+        const gifTools = await loadGifTools();
+        const resized=await gifTools.resizeGif(file,
           (done,total)=>setProc(`Đang xử lý GIF ${done}/${total}`,total ? done / total : null));
         nextGif=new Uint8Array(await resized.arrayBuffer());
       }

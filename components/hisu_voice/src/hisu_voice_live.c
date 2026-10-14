@@ -21,8 +21,10 @@
 
 #define MESSAGE_MAX (128 * 1024)
 #define INPUT_SAMPLES 640
-#define ENCODED_CAPACITY 1720
-#define SEND_BODY_CAPACITY 1900
+#define INPUT_QUEUE_FRAMES 256
+#define SEND_SAMPLES 1600
+#define ENCODED_CAPACITY (((SEND_SAMPLES * 2 + 2) / 3) * 4 + 1)
+#define SEND_BODY_CAPACITY (ENCODED_CAPACITY + 128)
 typedef struct { uint32_t epoch, generation; unsigned kind; size_t count; int16_t pcm[INPUT_SAMPLES]; } input_t;
 typedef struct { uint32_t epoch, generation; int16_t *pcm; size_t bytes; bool done; } output_t;
 static const char *TAG = "LIVE";
@@ -278,11 +280,38 @@ static bool send_text(esp_websocket_client_handle_t client, const char *text)
                                 (unsigned)uxQueueMessagesWaiting(s_input));
     return sent == (int)length;
 }
+static size_t collect_audio(const input_t *first, int16_t *pcm)
+{
+    size_t samples = first->count;
+    memcpy(pcm, first->pcm, samples * sizeof(*pcm));
+    input_t next;
+    /* Drain only queued audio from this turn, leaving control messages in order. */
+    while (xQueuePeek(s_input, &next, 0) == pdTRUE && next.kind == 0 &&
+           next.epoch == first->epoch && next.generation == first->generation &&
+           next.count <= SEND_SAMPLES - samples) {
+        if (xQueueReceive(s_input, &next, 0) != pdTRUE) break;
+        memcpy(pcm + samples, next.pcm, next.count * sizeof(*pcm));
+        samples += next.count;
+    }
+    return samples;
+}
+static void format_audio(char *body, const char *encoded, size_t length)
+{
+    static const char prefix[] = "{\"realtimeInput\":{\"audio\":{\"mimeType\":\"audio/pcm;rate=16000\",\"data\":\"";
+    static const char suffix[] = "\"}}}";
+    _Static_assert(sizeof(prefix) - 1 + ENCODED_CAPACITY - 1 + sizeof(suffix) <= SEND_BODY_CAPACITY,
+                   "Audio JSON must fit the send buffer");
+    memcpy(body, prefix, sizeof(prefix) - 1);
+    memcpy(body + sizeof(prefix) - 1, encoded, length);
+    memcpy(body + sizeof(prefix) - 1 + length, suffix, sizeof(suffix));
+}
 static void transport_task(void *arg)
 {
     (void)arg;
     input_t frame;
-    char *encoded = s_send_storage, *body = s_send_storage + ENCODED_CAPACITY;
+    int16_t *pcm = (int16_t *)s_send_storage;
+    char *encoded = s_send_storage + SEND_SAMPLES * sizeof(*pcm);
+    char *body = encoded + ENCODED_CAPACITY;
     const char *setup = "{\"setup\":{\"model\":\"models/gemini-3.8-live\",\"generationConfig\":{\"responseModalities\":[\"AUDIO\"]},\"systemInstruction\":{\"parts\":[{\"text\":\"Bạn là Hisu. Trả lời bằng tiếng Việt, ngắn gọn và tự nhiên. Không tự nói khi người dùng chưa hỏi.\"}]},\"realtimeInputConfig\":{\"automaticActivityDetection\":{\"disabled\":true},\"activityHandling\":\"START_OF_ACTIVITY_INTERRUPTS\"},\"inputAudioTranscription\":{},\"outputAudioTranscription\":{},\"tools\":[{\"functionDeclarations\":[{\"name\":\"set_flashlight\",\"description\":\"Bật hoặc tắt đèn pin của Hisu theo yêu cầu người dùng\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"enabled\":{\"type\":\"BOOLEAN\"}},\"required\":[\"enabled\"]}}]}]}}";
     for (;;) {
         portENTER_CRITICAL(&s_mux);
@@ -354,12 +383,12 @@ static void transport_task(void *arg)
             } else if (frame.kind == 3) {
                 ok = send_text(client, (char *)frame.pcm);
             } else {
+                size_t samples = collect_audio(&frame, pcm);
                 size_t length;
                 int err = mbedtls_base64_encode((unsigned char *)encoded, ENCODED_CAPACITY, &length,
-                                               (unsigned char *)frame.pcm, frame.count * 2);
-                if (err) { fail(epoch, generation); break; }
-                encoded[length] = 0;
-                snprintf(body, SEND_BODY_CAPACITY, "{\"realtimeInput\":{\"audio\":{\"mimeType\":\"audio/pcm;rate=16000\",\"data\":\"%s\"}}}", encoded);
+                                               (unsigned char *)pcm, samples * sizeof(*pcm));
+                if (err || length >= ENCODED_CAPACITY) { fail(epoch, generation); break; }
+                format_audio(body, encoded, length);
                 ok = send_text(client, body);
             }
             if (!ok) { fail(epoch, generation); break; }
@@ -389,6 +418,18 @@ static esp_err_t speaker_open(void)
 static void speaker_close(void)
 {
     if (s_speaker) { i2s_channel_disable(s_speaker); i2s_del_channel(s_speaker); s_speaker = NULL; }
+}
+static bool speaker_write(const int16_t *pcm, size_t bytes)
+{
+    size_t written = 0;
+    /* I2S takes milliseconds, unlike FreeRTOS queue and WebSocket APIs. */
+    esp_err_t err = s_speaker ? i2s_channel_write(s_speaker, pcm, bytes, &written, 100) : ESP_ERR_INVALID_STATE;
+    if (err != ESP_OK || written != bytes) {
+        ESP_LOGW(TAG, "Speaker write failed: %s, bytes=%u/%u", esp_err_to_name(err),
+                 (unsigned)written, (unsigned)bytes);
+        return false;
+    }
+    return true;
 }
 static void playback_task(void *arg)
 {
@@ -425,14 +466,17 @@ static void playback_task(void *arg)
             s_callback(LIVE_AUDIO, audio.generation, ""); first = false;
         }
         if (hisu_settings_get(HISU_SETTING_SPEAKER) == 1) {
-            if (speaker_open() != ESP_OK) fail(audio.epoch, audio.generation);
+            esp_err_t speaker_err = speaker_open();
+            if (speaker_err != ESP_OK) {
+                ESP_LOGW(TAG, "Speaker open failed: %s", esp_err_to_name(speaker_err));
+                fail(audio.epoch, audio.generation);
+            }
             size_t offset = 0;
             while (offset < audio.bytes / 2 && current(audio.epoch, audio.generation)) {
                 size_t count = audio.bytes / 2 - offset; if (count > 256) count = 256;
                 int volume = hisu_settings_get(HISU_SETTING_VOLUME);
                 for (size_t i = 0; i < count; ++i) stereo[2*i] = stereo[2*i+1] = (int32_t)audio.pcm[offset+i] * volume / 100;
-                size_t written = 0;
-                if (!s_speaker || i2s_channel_write(s_speaker, stereo, count * 4, &written, pdMS_TO_TICKS(100)) != ESP_OK || written != count * 4) {
+                if (!speaker_write(stereo, count * 4)) {
                     fail(audio.epoch, audio.generation); break;
                 }
                 offset += count;
@@ -444,10 +488,11 @@ static void playback_task(void *arg)
 esp_err_t voice_live_init(live_event_fn callback)
 {
     s_callback = callback;
-    s_send_storage = heap_caps_malloc(ENCODED_CAPACITY + SEND_BODY_CAPACITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_input_storage = heap_caps_malloc(24 * sizeof(input_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_send_storage = heap_caps_malloc(SEND_SAMPLES * sizeof(int16_t) + ENCODED_CAPACITY + SEND_BODY_CAPACITY,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_input_storage = heap_caps_malloc(INPUT_QUEUE_FRAMES * sizeof(input_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_input_storage || !s_send_storage) { voice_live_deinit(); return ESP_ERR_NO_MEM; }
-    s_input = xQueueCreateStatic(24, sizeof(input_t), s_input_storage, &s_input_control);
+    s_input = xQueueCreateStatic(INPUT_QUEUE_FRAMES, sizeof(input_t), s_input_storage, &s_input_control);
     s_output = xQueueCreate(48, sizeof(output_t));
     if (!s_input || !s_output) { voice_live_deinit(); return ESP_ERR_NO_MEM; }
     if (xTaskCreate(transport_task, "live_send", 6144, NULL, 4, &s_transport_task) != pdPASS) {

@@ -124,7 +124,7 @@ static void microphone_task(void *arg)
         while (filled < needed) {
             size_t bytes = 0;
             esp_err_t err = i2s_channel_read(s_rx, (uint8_t *)raw + filled,
-                                             needed - filled, &bytes, pdMS_TO_TICKS(1000));
+                                             needed - filled, &bytes, 1000);
             if (err != ESP_OK || !bytes) {
                 ESP_LOGW(TAG, "Microphone read: %s", esp_err_to_name(err));
                 filled = 0;

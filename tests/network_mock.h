@@ -104,7 +104,8 @@ static void vSemaphoreDelete(SemaphoreHandle_t lock) {}
 static QueueHandle_t xQueueCreate(int count, size_t size) { return (void *)1; }
 static int (*mock_queue_send)(QueueHandle_t queue, const void *data);
 static int xQueueSend(QueueHandle_t queue, const void *data, int timeout) { return mock_queue_send ? mock_queue_send(queue, data) : 1; }
-static int xQueueReceive(QueueHandle_t queue, void *data, int timeout) { return 0; }
+static int (*mock_queue_receive)(QueueHandle_t queue, void *data);
+static int xQueueReceive(QueueHandle_t queue, void *data, int timeout) { return mock_queue_receive ? mock_queue_receive(queue, data) : 0; }
 static void vQueueDelete(QueueHandle_t queue) {}
 static EventGroupHandle_t xEventGroupCreate(void) { return (void *)1; }
 static EventBits_t xEventGroupClearBits(EventGroupHandle_t events, unsigned bits) { return 0; }

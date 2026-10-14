@@ -13,12 +13,16 @@ for (const [route,file,type] of [['/','index.html','text/html'],['/app.js','app.
   ['/gif-resize.js','gif-resize.js','text/javascript'],['/style.css','style.css','text/css']])
   assets.set(route,{body:await readFile(new URL(file,root)),type});
 let state, uploaded, uploadType, wifi, device, wifiRequests, sessionRequests, leaveRequests = 0;
+let gifAssetRequests = 0;
 const token = 'a'.repeat(64);
 const wifiOnly = process.argv.includes('--wifi-only');
 const server = createServer(async(req,res)=>{
   try {
     const asset = assets.get(req.url);
-    if (asset) {res.writeHead(200,{'Content-Type':asset.type});res.end(asset.body);return;}
+    if (asset) {
+      if (req.url === '/gif-resize.js') ++gifAssetRequests;
+      res.writeHead(200,{'Content-Type':asset.type});res.end(asset.body);return;
+    }
     const chunks=[];
     for await (const chunk of req) chunks.push(chunk);
     const body=Buffer.concat(chunks);
@@ -62,7 +66,7 @@ let browser;
 try {
   browser=await chromium.launch({headless:true,...(process.env.HISU_BROWSER_PATH ? {executablePath:process.env.HISU_BROWSER_PATH} : {})});
   for (const [name,width,height] of [['desktop',1280,800],['mobile',390,844],['small-mobile',320,720]]) {
-    state={pending:false,saving:false,revision:1,error:0,seconds:299,expired:false};uploaded=null;sessionRequests=0;
+    state={pending:false,saving:false,revision:1,error:0,seconds:299,expired:false};uploaded=null;sessionRequests=0;gifAssetRequests=0;
     device={brightness:75,volume:55,speaker:1,timeout:0,theme:0,timezone:420};wifiRequests=[];
     wifi={enabled:true,scanning:false,joining:false,connected:false,internet:'unknown',error:0,ssid:'',ip:'',aps:[
       {ssid:'Saved home',rssi:-45,saved:true,secure:true,supported:true},
@@ -76,6 +80,7 @@ try {
     assert.equal(await page.evaluate(async()=> (await fetch('/settings')).status),403);
     assert.equal(await page.locator('#pin').count(),0);
     await page.locator('#editor').waitFor({state:'visible'});
+    assert.equal(gifAssetRequests,0,'Setting must open without loading the GIF processor');
     await page.waitForFunction(()=>document.querySelectorAll('.wifi-row').length===3);
     assert.equal(sessionRequests,1);
     assert.equal(await page.locator('#panel-wifi').isVisible(),true);
@@ -138,6 +143,18 @@ try {
     assert.deepEqual(wifiRequests.filter(request=>request.path==='/wifi/join').at(-1).data,{ssid:'<img src=x onerror=alert(1)>',password:'password123'});
     assert.equal(await page.locator('#wifi-password').inputValue(),'');
     if (wifiOnly) {
+      await page.locator('#tab-wallpaper').click();
+      const tinyGif = {name:'test.gif',mimeType:'image/gif',
+        buffer:Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64')};
+      await page.route('**/gif-resize.js',route=>route.abort());
+      await page.locator('#file').setInputFiles(tinyGif);
+      await page.waitForFunction(()=>document.getElementById('message').textContent.includes('Không tải được bộ xử lý GIF'));
+      assert.equal(await page.locator('#editor').isVisible(),true);
+      await page.unroute('**/gif-resize.js');
+      await page.locator('#file').setInputFiles(tinyGif);
+      await page.waitForFunction(()=>document.getElementById('message').textContent.includes('đã thu vừa'));
+      assert.equal(gifAssetRequests,1,'A failed GIF download can be retried without reopening Setting');
+      await page.screenshot({path:fileURLToPath(new URL(`${name}-gif-retry.png`,output)),fullPage:true});
       assert.deepEqual(errors,[]);
       await context.close();
       continue;

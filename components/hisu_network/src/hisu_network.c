@@ -110,7 +110,8 @@ static void internet_worker(void *arg)
     for (;;) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
         xSemaphoreTake(s_lock, portMAX_DELAY);
-        bool connected = s_status.enabled && s_status.connected;
+        /* Keep the local Setting link free of background TLS/DNS traffic. */
+        bool connected = s_status.enabled && s_status.connected && !s_status.setup_enabled;
         uint32_t generation = s_connection_generation;
         xSemaphoreGive(s_lock);
         if (connected) publish_internet(generation, hisu_connectivity_probe());
@@ -419,7 +420,7 @@ static bool roam_without_internet(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool roam = s_auto_join && hisu_network_has_internet_warning(&s_status) &&
-        !s_status.joining && !s_status.scanning && s_internet_failures >= 2;
+        !s_status.setup_enabled && !s_status.joining && !s_status.scanning && s_internet_failures >= 2;
     uint32_t generation = s_connection_generation;
     if (roam) s_internet_failures = 0;
     xSemaphoreGive(s_lock);
@@ -627,7 +628,10 @@ static void worker(void *arg)
                 xSemaphoreGive(s_lock);
             }
         }
-        if (s_want_connection && ((s_deadline && now >= s_deadline) || (s_retry_at && now >= s_retry_at))) {
+        /* Automatic reconnects can move the shared AP/STA radio off channel.
+         * Explicit joins requested through Setting must still be allowed. */
+        if (s_want_connection && (!s_auto_join || !s_status.setup_enabled) &&
+            ((s_deadline && now >= s_deadline) || (s_retry_at && now >= s_retry_at))) {
             if (++s_retries > 6) {
                 s_want_connection = false; s_deadline = 0; s_retry_at = 0;
                 record_join_failure(false);
@@ -639,7 +643,7 @@ static void worker(void *arg)
          * Scan only while idle; a manual join or live connection takes priority. */
         if (now >= next_auto_scan && !s_want_connection) {
             xSemaphoreTake(s_lock, portMAX_DELAY);
-            bool should_scan = s_status.enabled && !s_status.connected &&
+            bool should_scan = s_status.enabled && !s_status.setup_enabled && !s_status.connected &&
                 !s_status.joining && !s_status.scanning;
             xSemaphoreGive(s_lock);
             next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;

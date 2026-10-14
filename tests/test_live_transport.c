@@ -2,6 +2,8 @@
 #include <assert.h>
 #include <stdio.h>
 #include "live_transport_mock.h"
+#undef pdMS_TO_TICKS
+#define pdMS_TO_TICKS(ms) ((ms) / 10)
 #include "../components/hisu_voice/src/hisu_voice_live.c"
 
 static input_t sent[32];
@@ -9,6 +11,16 @@ static output_t output[32];
 static unsigned sent_count, output_count, events[7];
 static uint32_t last_generation;
 static bool full_input, interrupt_on_text;
+static unsigned read_index;
+static int peek_input(QueueHandle_t queue, void *data) {
+    assert(queue == s_input);
+    if (read_index == sent_count) return pdFALSE;
+    *(input_t *)data = sent[read_index]; return pdTRUE;
+}
+static int receive_input(QueueHandle_t queue, void *data) {
+    if (!peek_input(queue, data)) return pdFALSE;
+    ++read_index; return pdTRUE;
+}
 int hisu_settings_get(hisu_setting_t key) { return 1; }
 esp_err_t hisu_settings_get_gemini_key(char out[128]) { strcpy(out, "test-key"); return ESP_OK; }
 esp_err_t hisu_network_set_performance(bool active) { return ESP_OK; }
@@ -32,6 +44,7 @@ static void event(live_event_t kind, uint32_t generation, const char *text) {
 static void reset(void) {
     for (unsigned i = 0; i < output_count; ++i) free(output[i].pcm);
     output_count = sent_count = 0; full_input = interrupt_on_text = false;
+    read_index = 0; mock_queue_peek = peek_input; mock_queue_receive = receive_input;
     memset(events, 0, sizeof(events));
     s_input = (void *)1; s_output = (void *)2; s_callback = event;
     mock_queue_send = save_queue;
@@ -45,6 +58,40 @@ static void receive(const char *wire) {
 }
 static const char *audio_done = "{\"serverContent\":{\"outputTranscription\":{\"text\":\"reply\"},\"modelTurn\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"audio/pcm;rate=24000\",\"data\":\"AAAAAA==\"}}]},\"turnComplete\":true}}";
 int main(void) {
+    int16_t stereo[512] = {0};
+    s_speaker = (void *)1;
+    assert(speaker_write(stereo,sizeof(stereo)));
+    assert(mock_i2s_write_timeout == 100);
+    mock_i2s_short_write = true;
+    assert(!speaker_write(stereo,sizeof(stereo)));
+    mock_i2s_short_write = false;
+    s_speaker = NULL;
+    assert(!speaker_write(stereo,sizeof(stereo)));
+    char wire[SEND_BODY_CAPACITY], encoded[ENCODED_CAPACITY];
+    memset(encoded, 'A', sizeof(encoded));
+    format_audio(wire,encoded,sizeof(encoded)-1);
+    cJSON *json = cJSON_Parse(wire);
+    assert(json);
+    cJSON *audio = cJSON_GetObjectItem(cJSON_GetObjectItem(json,"realtimeInput"),"audio");
+    assert(strcmp(cJSON_GetObjectItem(audio,"mimeType")->valuestring,"audio/pcm;rate=16000") == 0);
+    assert(strlen(cJSON_GetObjectItem(audio,"data")->valuestring) == sizeof(encoded)-1);
+    cJSON_Delete(json);
+    reset();
+    input_t first = {.epoch=s_epoch,.generation=10,.count=640};
+    for (unsigned i = 0; i < 640; ++i) first.pcm[i] = (int16_t)i;
+    sent[0] = first; sent[1] = first; sent_count = 2;
+    int16_t batch[SEND_SAMPLES];
+    assert(collect_audio(&first,batch) == 1280 && read_index == 1);
+    assert(memcmp(batch,first.pcm,sizeof(first.pcm)) == 0);
+    assert(memcmp(batch+640,first.pcm,sizeof(first.pcm)) == 0);
+    reset(); sent[0] = first; sent[0].kind = 2; sent_count = 1;
+    assert(collect_audio(&first,batch) == 640 && read_index == 0);
+    reset(); sent[0] = first; ++sent[0].generation; sent_count = 1;
+    assert(collect_audio(&first,batch) == 640 && read_index == 0);
+    reset(); sent[0] = first; ++sent[0].epoch; sent_count = 1;
+    assert(collect_audio(&first,batch) == 640 && read_index == 0);
+    reset(); first.count = 512; sent[0] = first; sent[1] = first; sent[2] = first; sent_count = 3;
+    assert(collect_audio(&first,batch) == 1536 && read_index == 2);
     reset(); live_turn_start(&s_turn); live_turn_end(&s_turn);
     uint32_t epoch = s_epoch;
     assert(voice_live_interrupt(11) && s_epoch == epoch && voice_live_ready());

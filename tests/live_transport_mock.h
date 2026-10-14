@@ -14,6 +14,8 @@ static size_t heap_caps_get_minimum_free_size(int caps) { return 512 * 1024; }
 static size_t heap_caps_get_largest_free_block(int caps) { return 256 * 1024; }
 static QueueHandle_t xQueueCreateStatic(unsigned count, size_t size, uint8_t *storage, StaticQueue_t *control) { return (void *)1; }
 static unsigned uxQueueMessagesWaiting(QueueHandle_t queue) { return 0; }
+static int (*mock_queue_peek)(QueueHandle_t queue, void *data);
+static int xQueuePeek(QueueHandle_t queue, void *data, int timeout) { return mock_queue_peek ? mock_queue_peek(queue, data) : 0; }
 static void vTaskDelay(unsigned ticks) {}
 typedef void *i2s_chan_handle_t;
 typedef struct { int unused; } i2s_chan_config_t;
@@ -33,7 +35,13 @@ static esp_err_t i2s_channel_init_std_mode(i2s_chan_handle_t channel, const i2s_
 static esp_err_t i2s_channel_enable(i2s_chan_handle_t channel) { return ESP_OK; }
 static esp_err_t i2s_channel_disable(i2s_chan_handle_t channel) { return ESP_OK; }
 static esp_err_t i2s_del_channel(i2s_chan_handle_t channel) { return ESP_OK; }
-static esp_err_t i2s_channel_write(i2s_chan_handle_t channel, const void *data, size_t bytes, size_t *written, unsigned timeout) { *written = bytes; return ESP_OK; }
+static unsigned mock_i2s_write_timeout;
+static bool mock_i2s_short_write;
+static esp_err_t i2s_channel_write(i2s_chan_handle_t channel, const void *data, size_t bytes, size_t *written, unsigned timeout) {
+    mock_i2s_write_timeout = timeout;
+    *written = mock_i2s_short_write ? bytes / 2 : bytes;
+    return ESP_OK;
+}
 typedef void *esp_websocket_client_handle_t;
 typedef struct {
     const char *uri, *headers;

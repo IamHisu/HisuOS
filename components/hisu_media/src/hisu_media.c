@@ -187,7 +187,30 @@ static esp_err_t asset(httpd_req_t *req)
     if (!strcmp(req->uri, "/gif-resize.js")) { start = media_gif_js_start; end = media_gif_js_end; type = "text/javascript; charset=utf-8"; }
     if (!strcmp(req->uri, "/style.css")) { start = media_css_start; end = media_css_end; type = "text/css; charset=utf-8"; }
     httpd_resp_set_type(req, type);
-    return httpd_resp_send(req, (const char *)start, end - start);
+    /* Release asset sockets promptly; phones also open captive-portal probes. */
+    httpd_resp_set_hdr(req, "Connection", "close");
+    size_t length = end - start, sent = 0;
+    int64_t started = esp_timer_get_time();
+    ESP_LOGI("HisuSetting", "GET %s: %u bytes, internal free=%u largest=%u",
+        req->uri, (unsigned)length,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    esp_err_t err = ESP_OK;
+    while (sent < length) {
+        size_t chunk = length - sent;
+        if (chunk > 1024) chunk = 1024;
+        err = httpd_resp_send_chunk(req, (const char *)start + sent, chunk);
+        if (err != ESP_OK) break;
+        sent += chunk;
+    }
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW("HisuSetting", "GET %s failed: %u/%u bytes after %" PRId64 " ms (%s)",
+            req->uri, (unsigned)sent, (unsigned)length,
+            (esp_timer_get_time() - started) / 1000, esp_err_to_name(err));
+    }
+    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+    return err;
 }
 
 static bool setup_authorized(httpd_req_t *req) { return request_allowed(req) && authorized(req); }
@@ -304,11 +327,11 @@ static esp_err_t server_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HISU_SETUP_HTTP_PORT;
     config.ctrl_port = HISU_SETUP_HTTP_CTRL_PORT;
-    config.max_open_sockets = 2;
+    config.max_open_sockets = 4;
     config.max_uri_handlers = 26;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 3;
-    config.send_wait_timeout = 3;
+    config.send_wait_timeout = 10;
     config.uri_match_fn = httpd_uri_match_wildcard;
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) return err;
