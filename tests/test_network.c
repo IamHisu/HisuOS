@@ -45,6 +45,7 @@ static void reset(void) {
     memset(s_ssid, 0, sizeof(s_ssid));
     memset(s_password, 0, sizeof(s_password));
     s_started = s_want_connection = s_save_candidate = s_auto_join = false;
+    s_performance = false; mock_wifi_ps = -1;
     s_deadline = s_retry_at = 0; s_retries = 0;
     s_connection_generation = 0; s_internet_failures = 0;
     s_lock = s_events = (void *)1;
@@ -72,6 +73,8 @@ static void fail_current(bool rejected) {
     failed(rejected ? ESP_ERR_INVALID_ARG : ESP_ERR_TIMEOUT);
 }
 int main(void) {
+    reset(); s_performance = true; assert(radio_start() == ESP_OK && mock_wifi_ps == WIFI_PS_NONE);
+    reset(); assert(radio_start() == ESP_OK && mock_wifi_ps == WIFI_PS_MIN_MODEM);
     reset(); saved("Strong", true, -30); saved("Backup", true, -60);
     scan(); assert(!strcmp(s_ssid, "Strong"));
     fail_current(true); scan();

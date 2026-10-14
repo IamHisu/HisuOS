@@ -1,6 +1,7 @@
 #include "hisu_voice_session.h"
 #include "hisu_voice_sse.h"
 #include "hisu_voice_protocol.h"
+#include "hisu_voice_live_turn.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,21 +43,58 @@ int main(void)
     assert(!voice_session_capture(&session, 100199));
     assert(voice_session_capture(&session, 100200));
     assert(voice_session_finish(&session, session.generation, 101000));
-    assert(session.deadline_ms == 106300);
-    assert(!voice_session_expire(&session, 106299));
-    assert(voice_session_expire(&session, 106300));
+    assert(session.deadline_ms == 161300);
+    assert(!voice_session_expire(&session, 161299));
+    assert(voice_session_expire(&session, 161300));
     assert(session.state == VOICE_IDLE);
-    voice_session_open(&session, 120000);
+    voice_session_open(&session, 180000);
     assert(session.session_id != id);
     old = session.generation;
     voice_session_close(&session);
-    assert(!voice_session_finish(&session, old, 120001));
+    assert(!voice_session_finish(&session, old, 180001));
     assert(!voice_session_current(&session, old));
     assert(voice_session_end_phrase("Thôi nhé!"));
     assert(voice_session_end_phrase("  thoi nhe. "));
     assert(voice_session_end_phrase("Tạm biệt."));
     assert(!voice_session_end_phrase("giải thích câu thôi nhé"));
     assert(!voice_session_end_phrase(""));
+
+    live_turn_t turn;
+    live_turn_reset(&turn);
+    assert(!live_turn_accept_output(&turn));
+    assert(live_turn_start(&turn) == LIVE_TURN_START);
+    assert(live_turn_accept_input(&turn));
+    live_turn_end(&turn);
+    assert(live_turn_accept_output(&turn));
+    live_turn_interrupt(&turn);
+    assert(turn.obsolete_turns == 1 && !live_turn_accept_output(&turn));
+    assert(live_turn_start(&turn) == LIVE_TURN_START);
+    live_turn_end(&turn);
+    assert(!live_turn_accept_output(&turn));
+    assert(!live_turn_complete(&turn)); /* Old turn cannot finish the new response. */
+    assert(live_turn_accept_output(&turn));
+    assert(live_turn_complete(&turn));
+    assert(!live_turn_accept_output(&turn));
+
+    live_turn_reset(&turn);
+    assert(live_turn_start(&turn) == LIVE_TURN_START);
+    live_turn_interrupt(&turn); /* Interrupt while recording, before activityEnd. */
+    assert(live_turn_start(&turn) == (LIVE_TURN_END_OLD | LIVE_TURN_START));
+    live_turn_interrupt(&turn);
+    assert(live_turn_start(&turn) == (LIVE_TURN_END_OLD | LIVE_TURN_START));
+    assert(turn.obsolete_turns == 2);
+    assert(!live_turn_complete(&turn));
+    live_turn_end(&turn);
+    assert(!live_turn_complete(&turn));
+    assert(live_turn_accept_output(&turn));
+    assert(live_turn_complete(&turn));
+
+    live_turn_reset(&turn);
+    live_turn_interrupt(&turn); /* Relisten while idle: no old response to await. */
+    assert(live_turn_start(&turn) == LIVE_TURN_START);
+    assert(live_turn_start(&turn) == 0); /* Speech begins inside the open input activity. */
+    live_turn_end(&turn);
+    assert(live_turn_accept_output(&turn) && live_turn_complete(&turn));
 
     char line[128], data[128];
     voice_sse_t parser;

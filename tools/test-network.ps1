@@ -14,7 +14,7 @@ $stubs = Join-Path $out 'stubs'
 New-Item -ItemType Directory -Force -Path (Join-Path $stubs 'freertos') | Out-Null
 # Generated include shims route hardware APIs to the deterministic host mock.
 foreach ($header in @('esp_err.h', 'hisu_clock.h', 'esp_event.h', 'esp_netif.h', 'esp_timer.h',
-    'esp_wifi.h', 'esp_random.h', 'esp_mac.h', 'esp_http_client.h', 'esp_crt_bundle.h', 'freertos/FreeRTOS.h', 'freertos/task.h',
+    'esp_wifi.h', 'esp_random.h', 'esp_mac.h', 'esp_log.h', 'esp_http_client.h', 'esp_crt_bundle.h', 'freertos/FreeRTOS.h', 'freertos/task.h',
     'freertos/queue.h', 'freertos/semphr.h', 'freertos/event_groups.h')) {
     Set-Content -LiteralPath (Join-Path $stubs $header) -Value '#include "network_mock.h"' -Encoding ascii
 }

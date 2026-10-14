@@ -36,6 +36,8 @@ esp_err_t hisu_network_provision_scan(void);
 esp_err_t hisu_network_join(const char *ssid, const char *password);
 esp_err_t hisu_network_provision(const char *ssid, const char *password);
 esp_err_t hisu_network_enable(bool enabled);
+/* Worker applies Wi-Fi power saving changes; voice tasks never own the radio. */
+esp_err_t hisu_network_set_performance(bool active);
 /* Physical setup portal radio lifecycle; password is for the board screen only. */
 esp_err_t hisu_network_setup(bool enabled);
 bool hisu_network_valid_password(const char *password);

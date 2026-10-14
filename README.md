@@ -15,7 +15,7 @@ GIF nguồn trong suốt là `components/hisu_ui/assets/idle_cat.gif`; firmware 
 Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên editor. BOOT lưu vào NVS; giữ BOOT hủy. Mặc định là Tối. Theme áp dụng cho menu, phụ đề và nền GIF.
 
 - Độ sáng: PWM thật, preview khi chỉnh, lưu NVS khi xác nhận.
-- Hội thoại: gọi “Hi Su” mở Gemini Live qua WSS; mic gửi PCM 16kHz trong lúc thu, loa phát PCM 24kHz từng phần. Chỉ cần Gemini API key. Board lọc mở lượt bằng VAD + năng lượng, kết thúc sau 700ms im lặng; nghe tiếp tối đa 5 giây sau loa. BOOT/ngắt bằng câu gọi mở kết nối mới và reset ngữ cảnh; giữ BOOT đóng phiên. Bản Live đầu cần kiểm chứng API/độ trễ/tiếng nền trên board. Xem [Hội thoại](docs/VOICE_CONVERSATION.md).
+- Hội thoại: gọi “Hi Su” mở Gemini Live qua WSS; mic gửi PCM 16kHz trong lúc thu, loa phát PCM 24kHz từng phần. Chỉ cần Gemini API key. Board lọc mở lượt bằng VAD + năng lượng, kết thúc sau 700ms im lặng; nghe tiếp tối đa 60 giây sau loa. BOOT/ngắt bằng câu gọi dừng audio cũ và nghe lại trong cùng phiên, giữ ngữ cảnh; giữ BOOT hoặc nói tạm biệt đóng phiên. Chưa có chống vọng/ngắt lời tự do như điện thoại; cần kiểm chứng API/độ trễ/tiếng nền trên board. Xem [Hội thoại](docs/VOICE_CONVERSATION.md).
 - Timeout: tắt backlight khi idle, không deep sleep.
 - Wi-Fi: quét/chọn mạng, nhập mật khẩu bằng ba nút, RSSI/IP, bật/tắt radio; lưu mạng kết nối thành công vào NVS và tự quét lại khi mất kết nối.
 - Pin: phần trăm ước tính từ ADC GPIO8 theo profile Muse ZHENGCHEN; hiển thị raw ADC và tín hiệu nguồn ngoài GPIO9. Cần kiểm chứng calibration/polarity trên board thật.

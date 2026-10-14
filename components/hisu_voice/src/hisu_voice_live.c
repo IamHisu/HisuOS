@@ -1,5 +1,7 @@
 #include "hisu_voice_live.h"
 #include "hisu_voice_live_message.h"
+#include "hisu_voice_live_turn.h"
+#include "hisu_network.h"
 #include "hisu_settings.h"
 #include "board_config.h"
 #include "esp_websocket_client.h"
@@ -27,6 +29,8 @@ static const char *TAG = "LIVE";
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_epoch, s_generation;
 static bool s_active, s_ready, s_failed;
+static live_turn_t s_turn;
+static int64_t s_interrupt_deadline;
 static QueueHandle_t s_input, s_output;
 static StaticQueue_t s_input_control;
 static uint8_t *s_input_storage;
@@ -48,6 +52,7 @@ static void fail(uint32_t epoch, uint32_t generation)
 {
     portENTER_CRITICAL(&s_mux);
     bool notify = s_active && epoch == s_epoch && !s_failed;
+    generation = s_generation;
     if (notify) { s_failed = true; s_ready = false; }
     portEXIT_CRITICAL(&s_mux);
     if (notify) s_callback(LIVE_ERROR, generation, "Gemini Live bị ngắt, gọi Hi Su để thử lại");
@@ -56,12 +61,14 @@ void voice_live_open(uint32_t generation)
 {
     portENTER_CRITICAL(&s_mux);
     ++s_epoch; s_generation = generation; s_active = true; s_ready = s_failed = false;
+    live_turn_reset(&s_turn); s_interrupt_deadline = 0;
     portEXIT_CRITICAL(&s_mux);
 }
 void voice_live_close(void)
 {
     portENTER_CRITICAL(&s_mux);
     ++s_epoch; s_active = s_ready = false;
+    live_turn_reset(&s_turn); s_interrupt_deadline = 0;
     portEXIT_CRITICAL(&s_mux);
 }
 bool voice_live_ready(void)
@@ -85,12 +92,31 @@ static bool enqueue(uint32_t generation, unsigned kind, const int16_t *pcm, size
     fail(frame.epoch, generation);
     return false;
 }
+bool voice_live_interrupt(uint32_t generation)
+{
+    input_t frame = {.generation = generation, .kind = 4};
+    portENTER_CRITICAL(&s_mux);
+    bool active = s_active && !s_failed;
+    bool ready = s_ready;
+    if (active) {
+        frame.epoch = s_epoch;
+        s_generation = generation;
+        live_turn_interrupt(&s_turn);
+        if (s_turn.obsolete_turns || s_turn.input_open)
+            s_interrupt_deadline = esp_timer_get_time() + 10000000;
+    }
+    portEXIT_CRITICAL(&s_mux);
+    /* During setup, retain the connection and deliver LIVE_READY to this generation. */
+    return active && (!ready || xQueueSend(s_input, &frame, 0) == pdTRUE);
+}
 bool voice_live_begin(uint32_t generation)
 {
     portENTER_CRITICAL(&s_mux);
-    s_generation = generation;
+    bool ready = s_active && s_ready && !s_failed &&
+        (generation == s_generation || generation == s_generation + 1);
+    if (ready) s_generation = generation;
     portEXIT_CRITICAL(&s_mux);
-    return enqueue(generation, 1, NULL, 0);
+    return ready && enqueue(generation, 1, NULL, 0);
 }
 bool voice_live_feed(uint32_t generation, const int16_t *pcm, size_t samples)
 {
@@ -121,8 +147,17 @@ static void parse_message(connection_t *connection)
         portENTER_CRITICAL(&s_mux);
         if (connection->epoch == s_epoch) s_ready = true;
         portEXIT_CRITICAL(&s_mux);
+        ESP_LOGI(TAG, "RAM internal free=%u min=%u largest=%u; PSRAM free=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         s_callback(LIVE_READY, generation, "Mình đang nghe...");
     } else if (cJSON_GetObjectItem(json, "toolCall")) {
+        portENTER_CRITICAL(&s_mux);
+        bool accept = live_turn_accept_output(&s_turn);
+        portEXIT_CRITICAL(&s_mux);
+        if (!accept) { cJSON_Delete(json); return; }
         cJSON *calls = cJSON_GetObjectItem(cJSON_GetObjectItem(json, "toolCall"), "functionCalls");
         cJSON *call;
         cJSON_ArrayForEach(call, calls) {
@@ -154,13 +189,20 @@ static void parse_message(connection_t *connection)
         }
     } else {
         cJSON *content = cJSON_GetObjectItem(json, "serverContent");
+        portENTER_CRITICAL(&s_mux);
+        bool accept_input = live_turn_accept_input(&s_turn);
+        bool accept_output = live_turn_accept_output(&s_turn);
+        bool interrupted = cJSON_IsTrue(cJSON_GetObjectItem(content, "interrupted"));
+        if (interrupted) accept_input = accept_output = false;
+        portEXIT_CRITICAL(&s_mux);
         cJSON *input = cJSON_GetObjectItem(cJSON_GetObjectItem(content, "inputTranscription"), "text");
-        if (cJSON_IsString(input)) s_callback(LIVE_INPUT, generation, input->valuestring);
+        if (accept_input && cJSON_IsString(input)) s_callback(LIVE_INPUT, generation, input->valuestring);
         cJSON *text = cJSON_GetObjectItem(cJSON_GetObjectItem(content, "outputTranscription"), "text");
-        if (cJSON_IsString(text)) s_callback(LIVE_TEXT, generation, text->valuestring);
+        if (accept_output && cJSON_IsString(text)) s_callback(LIVE_TEXT, generation, text->valuestring);
         cJSON *parts = cJSON_GetObjectItem(cJSON_GetObjectItem(content, "modelTurn"), "parts");
         cJSON *part;
         cJSON_ArrayForEach(part, parts) {
+            if (!accept_output) break;
             cJSON *blob = cJSON_GetObjectItem(part, "inlineData");
             cJSON *encoded = cJSON_GetObjectItem(blob, "data");
             cJSON *mime = cJSON_GetObjectItem(blob, "mimeType");
@@ -184,6 +226,13 @@ static void parse_message(connection_t *connection)
             }
         }
         if (cJSON_IsTrue(cJSON_GetObjectItem(content, "turnComplete"))) {
+            portENTER_CRITICAL(&s_mux);
+            bool completed = connection->epoch == s_epoch && s_active &&
+                (generation == s_generation || s_turn.obsolete_turns) && live_turn_complete(&s_turn);
+            bool done_current = completed && generation == s_generation;
+            if (!s_turn.obsolete_turns) s_interrupt_deadline = 0;
+            portEXIT_CRITICAL(&s_mux);
+            if (!done_current || interrupted) { cJSON_Delete(json); return; }
             output_t done = {.epoch = connection->epoch, .generation = generation, .done = true};
             if (xQueueSend(s_output, &done, 0) != pdTRUE) fail(connection->epoch, generation);
         }
@@ -234,7 +283,7 @@ static void transport_task(void *arg)
     (void)arg;
     input_t frame;
     char *encoded = s_send_storage, *body = s_send_storage + ENCODED_CAPACITY;
-    const char *setup = "{\"setup\":{\"model\":\"models/gemini-3.8-live\",\"generationConfig\":{\"responseModalities\":[\"AUDIO\"]},\"systemInstruction\":{\"parts\":[{\"text\":\"Bạn là Hisu. Trả lời bằng tiếng Việt, ngắn gọn và tự nhiên. Không tự nói khi người dùng chưa hỏi.\"}]},\"realtimeInputConfig\":{\"automaticActivityDetection\":{\"disabled\":true}},\"inputAudioTranscription\":{},\"outputAudioTranscription\":{},\"tools\":[{\"functionDeclarations\":[{\"name\":\"set_flashlight\",\"description\":\"Bật hoặc tắt đèn pin của Hisu theo yêu cầu người dùng\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"enabled\":{\"type\":\"BOOLEAN\"}},\"required\":[\"enabled\"]}}]}]}}";
+    const char *setup = "{\"setup\":{\"model\":\"models/gemini-3.8-live\",\"generationConfig\":{\"responseModalities\":[\"AUDIO\"]},\"systemInstruction\":{\"parts\":[{\"text\":\"Bạn là Hisu. Trả lời bằng tiếng Việt, ngắn gọn và tự nhiên. Không tự nói khi người dùng chưa hỏi.\"}]},\"realtimeInputConfig\":{\"automaticActivityDetection\":{\"disabled\":true},\"activityHandling\":\"START_OF_ACTIVITY_INTERRUPTS\"},\"inputAudioTranscription\":{},\"outputAudioTranscription\":{},\"tools\":[{\"functionDeclarations\":[{\"name\":\"set_flashlight\",\"description\":\"Bật hoặc tắt đèn pin của Hisu theo yêu cầu người dùng\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"enabled\":{\"type\":\"BOOLEAN\"}},\"required\":[\"enabled\"]}}]}]}}";
     for (;;) {
         portENTER_CRITICAL(&s_mux);
         bool active = s_active && !s_failed; uint32_t epoch = s_epoch, generation = s_generation;
@@ -254,6 +303,7 @@ static void transport_task(void *arg)
         esp_websocket_client_handle_t client = connection.message ? esp_websocket_client_init(&config) : NULL;
         memset(headers, 0, sizeof(headers));
         if (!client) { free(connection.message); fail(epoch, generation); continue; }
+        if (hisu_network_set_performance(true) != ESP_OK) ESP_LOGW(TAG, "Cannot request Wi-Fi performance mode");
         esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, websocket_event, &connection);
         if (esp_websocket_client_start(client) != ESP_OK) fail(epoch, generation);
         bool sent_setup = false;
@@ -263,9 +313,12 @@ static void transport_task(void *arg)
             portENTER_CRITICAL(&s_mux);
             active = s_active && !s_failed && epoch == s_epoch;
             generation = s_generation;
+            bool response_pending = s_turn.response_pending;
+            int64_t interrupt_deadline = s_interrupt_deadline;
             portEXIT_CRITICAL(&s_mux);
             if (!active) break;
-            if (response_deadline && esp_timer_get_time() >= response_deadline) {
+            if ((response_pending && response_deadline && esp_timer_get_time() >= response_deadline) ||
+                (interrupt_deadline && esp_timer_get_time() >= interrupt_deadline)) {
                 fail(epoch, generation); break;
             }
             if (!voice_live_ready() && esp_timer_get_time() - started > 15000000) { fail(epoch, generation); break; }
@@ -277,12 +330,25 @@ static void transport_task(void *arg)
             if (xQueueReceive(s_input, &frame, pdMS_TO_TICKS(10)) != pdTRUE) continue;
             if (!current(frame.epoch, frame.generation)) continue;
             bool ok;
-            if (frame.kind == 1) {
+            if (frame.kind == 1 || frame.kind == 4) {
                 response_deadline = 0;
-                ok = send_text(client, "{\"realtimeInput\":{\"activityStart\":{}}}");
+                portENTER_CRITICAL(&s_mux);
+                if (frame.epoch != s_epoch || frame.generation != s_generation) {
+                    portEXIT_CRITICAL(&s_mux); continue;
+                }
+                unsigned action = live_turn_start(&s_turn);
+                s_interrupt_deadline = s_turn.obsolete_turns ? esp_timer_get_time() + 10000000 : 0;
+                portEXIT_CRITICAL(&s_mux);
+                ok = !(action & LIVE_TURN_END_OLD) || send_text(client, "{\"realtimeInput\":{\"activityEnd\":{}}}");
+                if (ok && (action & LIVE_TURN_START)) ok = send_text(client, "{\"realtimeInput\":{\"activityStart\":{}}}");
             }
             else if (frame.kind == 2) {
-                portENTER_CRITICAL(&s_mux); s_end_us = esp_timer_get_time(); portEXIT_CRITICAL(&s_mux);
+                portENTER_CRITICAL(&s_mux);
+                if (frame.epoch != s_epoch || frame.generation != s_generation) {
+                    portEXIT_CRITICAL(&s_mux); continue;
+                }
+                s_end_us = esp_timer_get_time(); live_turn_end(&s_turn);
+                portEXIT_CRITICAL(&s_mux);
                 response_deadline = esp_timer_get_time() + 60000000;
                 ok = send_text(client, "{\"realtimeInput\":{\"activityEnd\":{}}}");
             } else if (frame.kind == 3) {
@@ -301,6 +367,7 @@ static void transport_task(void *arg)
         esp_websocket_client_stop(client);
         esp_websocket_client_destroy(client);
         free(connection.message);
+        if (hisu_network_set_performance(false) != ESP_OK) ESP_LOGW(TAG, "Cannot restore Wi-Fi power saving");
     }
 }
 static esp_err_t speaker_open(void)
@@ -328,8 +395,17 @@ static void playback_task(void *arg)
     (void)arg;
     output_t audio;
     bool first = true;
+    uint32_t playback_epoch = 0, playback_generation = 0;
     int16_t stereo[512];
     for (;;) {
+        portENTER_CRITICAL(&s_mux);
+        uint32_t epoch = s_epoch, generation = s_generation;
+        bool active = s_active && !s_failed;
+        portEXIT_CRITICAL(&s_mux);
+        if (!active || epoch != playback_epoch || generation != playback_generation) {
+            speaker_close(); first = true;
+            playback_epoch = epoch; playback_generation = generation;
+        }
         if (xQueueReceive(s_output, &audio, pdMS_TO_TICKS(20)) != pdTRUE) {
             portENTER_CRITICAL(&s_mux); bool active = s_active && !s_failed; portEXIT_CRITICAL(&s_mux);
             if (!active) { speaker_close(); first = true; }

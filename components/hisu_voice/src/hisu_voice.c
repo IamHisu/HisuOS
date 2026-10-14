@@ -41,7 +41,7 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
     if (!voice_session_current(&s_session, generation)) { xSemaphoreGive(s_lock); return; }
     if (event == LIVE_READY) {
         s_session.ready_ms = now_ms() + 300;
-        s_session.deadline_ms = s_session.ready_ms + 15000;
+        s_session.deadline_ms = s_session.ready_ms + VOICE_LISTEN_TIMEOUT_MS;
         (void)hisu_ui_post_status(HISU_UI_LISTENING, text);
     } else if (event == LIVE_TEXT) {
         size_t used = strlen(s_reply), extra = strlen(text);
@@ -77,13 +77,32 @@ bool hisu_voice_control(bool end_session)
     bool active = s_session.state != VOICE_IDLE;
     if (active) {
         if (end_session) { voice_session_close(&s_session); voice_live_close(); }
-        else { voice_session_open(&s_session, now_ms()); voice_live_open(s_session.generation); }
+        else {
+            voice_session_open(&s_session, now_ms());
+            if (!voice_live_interrupt(s_session.generation)) {
+                voice_session_close(&s_session); voice_live_close();
+                (void)hisu_ui_post_status(HISU_UI_ERROR, "Không ngắt được lượt nói, gọi Hi Su để thử lại");
+                xSemaphoreGive(s_lock);
+                return true;
+            }
+        }
         s_reply[0] = 0;
-        (void)hisu_ui_post_status(end_session ? HISU_UI_IDLE : HISU_UI_THINKING,
-                                  end_session ? "" : "Đang kết nối Gemini Live...");
+        s_utterance[0] = 0;
+        bool ready = !end_session && voice_live_ready();
+        (void)hisu_ui_post_status(end_session ? HISU_UI_IDLE : ready ? HISU_UI_LISTENING : HISU_UI_THINKING,
+                                  end_session ? "" : ready ? "Mình đang nghe..." : "Đang kết nối Gemini Live...");
     }
     xSemaphoreGive(s_lock);
     return active;
+}
+static void cancel_capture(uint32_t generation)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (voice_session_current(&s_session, generation)) {
+        voice_session_close(&s_session); voice_live_close();
+        (void)hisu_ui_post_status(HISU_UI_ERROR, "Không gửi được âm thanh, gọi Hi Su để thử lại");
+    }
+    xSemaphoreGive(s_lock);
 }
 static void microphone_task(void *arg)
 {
@@ -221,7 +240,7 @@ static void detection_task(void *arg)
             size_t frame = s_multinet->get_samp_chunksize(s_multinet_data);
             if (frame > ASR_MAX_SAMPLES - captured) frame = ASR_MAX_SAMPLES - captured;
             if (!voice_live_feed(capture_generation, result->data, frame)) {
-                (void)hisu_voice_control(true);
+                cancel_capture(capture_generation);
                 free(capture); capture = NULL;
                 continue;
             }
@@ -328,7 +347,7 @@ static void detection_task(void *arg)
         if (capture) {
             if (!voice_live_begin(capture_generation) ||
                 !voice_live_feed(capture_generation, capture, captured)) {
-                (void)hisu_voice_control(true);
+                cancel_capture(capture_generation);
                 free(capture); capture = NULL;
             }
         }

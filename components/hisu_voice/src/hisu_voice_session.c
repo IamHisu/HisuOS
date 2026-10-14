@@ -9,7 +9,7 @@ void voice_session_open(voice_session_t *s, int64_t now_ms)
     ++s->generation;
     s->state = VOICE_WAITING;
     s->ready_ms = now_ms + (active ? 200 : 400);
-    s->deadline_ms = s->ready_ms + 15000;
+    s->deadline_ms = s->ready_ms + VOICE_LISTEN_TIMEOUT_MS;
 }
 
 void voice_session_close(voice_session_t *s)
@@ -37,7 +37,7 @@ bool voice_session_finish(voice_session_t *s, uint32_t generation, int64_t now_m
     if (!voice_session_current(s, generation)) return false;
     s->state = VOICE_WAITING;
     s->ready_ms = now_ms + 300;
-    s->deadline_ms = s->ready_ms + 5000;
+    s->deadline_ms = s->ready_ms + VOICE_LISTEN_TIMEOUT_MS;
     return true;
 }
 

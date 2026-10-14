@@ -42,6 +42,10 @@ enum { WIFI_EVENT, IP_EVENT, WIFI_EVENT_AP_STACONNECTED, WIFI_EVENT_AP_STADISCON
        WIFI_AUTH_WPA3_PSK, WIFI_AUTH_WPA2_WPA3_PSK,
        WIFI_REASON_ASSOC_LEAVE, WIFI_REASON_AUTH_FAIL,
        WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT, WIFI_REASON_HANDSHAKE_TIMEOUT };
+enum { WIFI_PS_NONE, WIFI_PS_MIN_MODEM };
+#define ESP_LOGW(...) ((void)0)
+static int mock_wifi_ps;
+static esp_err_t esp_wifi_set_ps(int mode) { mock_wifi_ps = mode; return ESP_OK; }
 static int64_t mock_now = 1000000;
 static wifi_ap_record_t mock_aps[32];
 static uint16_t mock_count;
@@ -98,7 +102,8 @@ static int xSemaphoreTake(SemaphoreHandle_t lock, int timeout) { return 1; }
 static int xSemaphoreGive(SemaphoreHandle_t lock) { return 1; }
 static void vSemaphoreDelete(SemaphoreHandle_t lock) {}
 static QueueHandle_t xQueueCreate(int count, size_t size) { return (void *)1; }
-static int xQueueSend(QueueHandle_t queue, const void *data, int timeout) { return 1; }
+static int (*mock_queue_send)(QueueHandle_t queue, const void *data);
+static int xQueueSend(QueueHandle_t queue, const void *data, int timeout) { return mock_queue_send ? mock_queue_send(queue, data) : 1; }
 static int xQueueReceive(QueueHandle_t queue, void *data, int timeout) { return 0; }
 static void vQueueDelete(QueueHandle_t queue) {}
 static EventGroupHandle_t xEventGroupCreate(void) { return (void *)1; }

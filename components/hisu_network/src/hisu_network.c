@@ -12,13 +12,14 @@
 #include "esp_wifi.h"
 #include "esp_random.h"
 #include "esp_mac.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/event_groups.h"
 
-enum {CMD_SCAN, CMD_JOIN, CMD_ENABLE, CMD_SETUP};
+enum {CMD_SCAN, CMD_JOIN, CMD_ENABLE, CMD_SETUP, CMD_PERFORMANCE};
 enum {EVENT_IP = 1, EVENT_DISCONNECTED = 2};
 typedef struct { int type; bool enabled; char ssid[33], password[65]; } command_t;
 static SemaphoreHandle_t s_lock;
@@ -35,6 +36,7 @@ static char s_ssid[33], s_password[65];
 static int s_retries;
 static int64_t s_deadline, s_retry_at;
 static bool s_auto_join;
+static bool s_performance;
 /* Protected by s_lock; invalidates HTTP results from a previous connection. */
 static uint32_t s_connection_generation;
 static unsigned s_internet_failures;
@@ -155,7 +157,11 @@ static esp_err_t radio_start(void)
 {
     if (s_started) return ESP_OK;
     esp_err_t err = esp_wifi_start();
-    if (err == ESP_OK) s_started = true;
+    if (err == ESP_OK) {
+        s_started = true;
+        esp_err_t power = esp_wifi_set_ps(s_performance ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
+        if (power != ESP_OK) ESP_LOGW("NETWORK", "Wi-Fi power mode: %s", esp_err_to_name(power));
+    }
     return err;
 }
 
@@ -475,7 +481,14 @@ static void worker(void *arg)
     for (;;) {
         command_t command;
         if (xQueueReceive(s_commands, &command, pdMS_TO_TICKS(200)) == pdTRUE) {
-            if (command.type == CMD_SETUP) setup_radio(command.enabled);
+            if (command.type == CMD_PERFORMANCE) {
+                s_performance = command.enabled;
+                if (s_started && s_status.enabled) {
+                    esp_err_t err = esp_wifi_set_ps(s_performance ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
+                    if (err != ESP_OK) ESP_LOGW("NETWORK", "Wi-Fi power mode: %s", esp_err_to_name(err));
+                }
+            }
+            else if (command.type == CMD_SETUP) setup_radio(command.enabled);
             else if (command.type == CMD_SCAN) {
                 xSemaphoreTake(s_lock, portMAX_DELAY);
                 bool enabled = s_status.enabled;
@@ -759,6 +772,12 @@ esp_err_t hisu_network_provision(const char *ssid, const char *password) { retur
 esp_err_t hisu_network_enable(bool enabled)
 {
     command_t command = {.type = CMD_ENABLE, .enabled = enabled};
+    return send_command(&command);
+}
+
+esp_err_t hisu_network_set_performance(bool active)
+{
+    command_t command = {.type = CMD_PERFORMANCE, .enabled = active};
     return send_command(&command);
 }
 
