@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 typedef enum { LIVE_READY, LIVE_TEXT, LIVE_AUDIO, LIVE_DONE, LIVE_ERROR, LIVE_INPUT, LIVE_FLASHLIGHT,
-               LIVE_END, LIVE_DEVICE } live_event_t;
+               LIVE_END, LIVE_DEVICE, LIVE_EXPRESSION, LIVE_MUSIC, LIVE_MUSIC_LOADING, LIVE_MUSIC_ERROR } live_event_t;
 typedef void (*live_event_fn)(live_event_t event, uint32_t generation, const char *text);
 esp_err_t voice_live_init(live_event_fn callback);
 void voice_live_deinit(void);

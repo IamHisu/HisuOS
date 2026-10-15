@@ -8,6 +8,8 @@ typedef struct {
     uint64_t screen_on_seconds, screen_sleep_seconds, battery_seconds;
     bool remaining_valid;
     uint64_t remaining_seconds;
+    bool previous_valid;
+    uint64_t total_active_seconds, previous_battery_seconds;
 } hisu_power_status_t;
 esp_err_t hisu_power_start(void);
 void hisu_power_get(hisu_power_status_t *out);

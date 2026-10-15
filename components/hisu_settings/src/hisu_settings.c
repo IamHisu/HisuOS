@@ -152,16 +152,24 @@ esp_err_t hisu_settings_load_power_usage(hisu_power_usage_record_t *out)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     esp_err_t err = nvs_get_blob(s_nvs, "power_usage", out, &length);
     xSemaphoreGive(s_lock);
-    if (err == ESP_OK && (length != sizeof(*out) || out->version != 1 || out->flags > 7 ||
+    if (err == ESP_OK && out->version == 1 &&
+        length == offsetof(hisu_power_usage_record_t, total_active_us) && out->flags <= 7) {
+        out->version = 2;
+        out->total_active_us = out->battery_us; /* Only previously recorded battery time is known. */
+    } else if (err == ESP_OK && (length != sizeof(*out) || out->version != 2)) err = ESP_ERR_INVALID_SIZE;
+    if (err == ESP_OK && (out->flags > 15 ||
         out->baseline_percent > 100 || out->last_percent > 100 || out->baseline_battery_us > out->battery_us ||
-        out->screen_on_us > out->battery_us || out->screen_sleep_us > out->battery_us)) err = ESP_ERR_INVALID_SIZE;
+        out->screen_on_us > out->battery_us || out->screen_sleep_us > out->battery_us - out->screen_on_us ||
+        out->battery_us > out->total_active_us || out->previous_battery_us > out->total_active_us ||
+        out->previous_screen_on_us > out->previous_battery_us ||
+        out->previous_screen_sleep_us > out->previous_battery_us - out->previous_screen_on_us)) err = ESP_ERR_INVALID_SIZE;
     if (err != ESP_OK) memset(out, 0, sizeof(*out));
     return err == ESP_ERR_NVS_NOT_FOUND ? ESP_ERR_NOT_FOUND : err;
 }
 
 esp_err_t hisu_settings_save_power_usage(const hisu_power_usage_record_t *record)
 {
-    if (!s_lock || !record || record->version != 1) return ESP_ERR_INVALID_ARG;
+    if (!s_lock || !record || record->version != 2) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     esp_err_t err = nvs_set_blob(s_nvs, "power_usage", record, sizeof(*record));
     if (err == ESP_OK) err = nvs_commit(s_nvs);

@@ -35,3 +35,11 @@ $storeExe = Join-Path $out 'wifi-store-test.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Wi-Fi store linking failed.' }
 & $storeExe
 if ($LASTEXITCODE -ne 0) { throw 'Wi-Fi store tests failed.' }
+Set-Content -LiteralPath (Join-Path $stubs 'hisu_board.h') -Value '#include "network_mock.h"' -Encoding ascii
+& $compiler.FullName /nologo /c /std:c11 /MT /GS- /W3 /wd4101 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_settings\include" "/I$root\components\hisu_power\include" "/Fo$out\" (Join-Path $root 'tests\test_power_usage.c') (Join-Path $root 'components\hisu_power\src\hisu_power_model.c')
+if ($LASTEXITCODE -ne 0) { throw 'Power usage compilation failed.' }
+$powerExe = Join-Path $out 'power-usage-test.exe'
+& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$powerExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_power_usage.obj') (Join-Path $out 'hisu_power_model.obj')
+if ($LASTEXITCODE -ne 0) { throw 'Power usage linking failed.' }
+& $powerExe
+if ($LASTEXITCODE -ne 0) { throw 'Power usage tests failed.' }

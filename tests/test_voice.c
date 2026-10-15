@@ -1,4 +1,5 @@
 #include "hisu_voice_session.h"
+#include "hisu_voice_wake.h"
 #include "hisu_voice_sse.h"
 #include "hisu_voice_protocol.h"
 #include "hisu_voice_live_turn.h"
@@ -26,6 +27,14 @@ static bool reject_event(const char *data, size_t length, void *context)
 
 int main(void)
 {
+    assert(!voice_wake_accept(1, 0.16f));
+    assert(!voice_wake_accept(1, 0.1999f));
+    assert(voice_wake_accept(1, 0.20f));
+    assert(voice_wake_accept(1, 0.29f));
+    assert(voice_wake_accept(1, 1.0f));
+    assert(!voice_wake_accept(2, 0.90f));
+    assert(!voice_wake_accept(1, -0.1f));
+    assert(!voice_wake_accept(1, 1.1f));
     voice_session_t session = {0};
     voice_session_open(&session, 1000);
     uint32_t id = session.session_id;

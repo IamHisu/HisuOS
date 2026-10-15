@@ -1,6 +1,9 @@
 #include "hisu_voice.h"
 #include "hisu_voice_session.h"
+#include "hisu_voice_wake.h"
+#include "hisu_voice_music.h"
 #include "hisu_voice_live.h"
+#include "hisu_voice_caption.h"
 #include "hisu_ui.h"
 #include "hisu_network.h"
 #include "hisu_settings.h"
@@ -38,26 +41,34 @@ static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 static void live_event(live_event_t event, uint32_t generation, const char *text)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (event == LIVE_MUSIC || event == LIVE_MUSIC_LOADING || event == LIVE_MUSIC_ERROR) {
+        if (s_session.state == VOICE_IDLE && hisu_music_current(generation))
+            (void)hisu_ui_post_status(event == LIVE_MUSIC_ERROR ? HISU_UI_ERROR :
+                event == LIVE_MUSIC_LOADING ? HISU_UI_MUSIC_LOADING : text[0] ? HISU_UI_MUSIC : HISU_UI_IDLE,text);
+        xSemaphoreGive(s_lock); return;
+    }
     if (!voice_session_current(&s_session, generation)) { xSemaphoreGive(s_lock); return; }
     if (event == LIVE_READY) {
-        s_session.ready_ms = now_ms() + 300;
-        s_session.deadline_ms = s_session.ready_ms + VOICE_LISTEN_TIMEOUT_MS;
-        (void)hisu_ui_post_status(HISU_UI_LISTENING, text);
+        s_reply[0] = s_utterance[0] = 0;
+        s_session.state = VOICE_PROCESSING;
+        (void)hisu_ui_post_status(HISU_UI_THINKING, text);
     } else if (event == LIVE_TEXT) {
-        size_t used = strlen(s_reply), extra = strlen(text);
-        if (extra > sizeof(s_reply) - used - 1) extra = sizeof(s_reply) - used - 1;
-        memcpy(s_reply + used, text, extra); s_reply[used + extra] = 0;
+        voice_caption_append(s_reply, sizeof(s_reply), text);
         (void)hisu_ui_post_status(HISU_UI_SPEAKING, s_reply);
+    } else if (event == LIVE_EXPRESSION) {
+        hisu_face_t face;
+        if (hisu_face_parse(text, &face)) (void)hisu_ui_post_expression(face);
     } else if (event == LIVE_AUDIO) {
         s_session.state = VOICE_SPEAKING;
         (void)hisu_ui_post_status(HISU_UI_SPEAKING, s_reply);
     } else if (event == LIVE_DONE) {
         voice_session_finish_utterance(&s_session, generation, now_ms(), s_utterance);
+        s_reply[0] = 0;
         if (s_session.state == VOICE_IDLE) {
             voice_live_close();
             (void)hisu_ui_post_status(HISU_UI_IDLE, "");
         } else {
-            (void)hisu_ui_post_status(HISU_UI_LISTENING, s_reply);
+            (void)hisu_ui_post_status(HISU_UI_LISTENING, "");
         }
     } else if (event == LIVE_INPUT) {
         size_t used = strlen(s_utterance), extra = strlen(text);
@@ -74,7 +85,8 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         (void)hisu_ui_post_status(status, s_session.state == VOICE_SPEAKING ? s_reply : "Đã cập nhật thiết bị");
     } else if (event == LIVE_ERROR) {
         voice_session_close(&s_session); voice_live_close();
-        (void)hisu_ui_post_status(HISU_UI_ERROR, text);
+        s_reply[0] = s_utterance[0] = 0;
+        (void)hisu_ui_post_status(text[0] ? HISU_UI_ERROR : HISU_UI_IDLE, text);
     }
     xSemaphoreGive(s_lock);
 }
@@ -82,7 +94,12 @@ bool hisu_voice_control(bool end_session)
 {
     if (!s_lock) return false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool music = hisu_music_cancel();
     bool active = s_session.state != VOICE_IDLE;
+    if (music && !active) {
+        (void)hisu_ui_post_status(HISU_UI_IDLE, "");
+        xSemaphoreGive(s_lock); return true;
+    }
     if (active) {
         if (end_session) { voice_session_close(&s_session); voice_live_close(); }
         else {
@@ -98,7 +115,7 @@ bool hisu_voice_control(bool end_session)
         s_utterance[0] = 0;
         bool ready = !end_session && voice_live_ready();
         (void)hisu_ui_post_status(end_session ? HISU_UI_IDLE : ready ? HISU_UI_LISTENING : HISU_UI_THINKING,
-                                  end_session ? "" : ready ? "Mình đang nghe..." : "Đang kết nối Gemini Live...");
+                                  end_session ? "" : ready ? "Mình đang nghe..." : "Đang kết nối...");
     }
     xSemaphoreGive(s_lock);
     return active;
@@ -284,8 +301,11 @@ static void detection_task(void *arg)
             if (recognized && recognized->num > 0)
                 ESP_LOGI(TAG, "MultiNet command=%d text=%s confidence=%.2f",
                          recognized->command_id[0], recognized->string, recognized->prob[0]);
-            if (recognized && recognized->num > 0 && recognized->command_id[0] == 1) {
+            if (recognized && recognized->num > 0 &&
+                voice_wake_accept(recognized->command_id[0], recognized->prob[0])) {
                 ESP_LOGI(TAG, "Offline Hey Hisu detected (confidence %.2f)", recognized->prob[0]);
+                /* Wake cancels playback, then opens the usual voice session. */
+                (void)hisu_music_cancel();
                 hisu_network_status_t network;
                 hisu_network_get(&network);
                 if (hisu_voice_control(false)) {
@@ -296,17 +316,20 @@ static void detection_task(void *arg)
                     (void)hisu_ui_post_status(HISU_UI_ERROR, network.internet == HISU_INTERNET_CAPTIVE
                         ? "Wi-Fi yêu cầu đăng nhập" : "Wi-Fi chưa có Internet");
                 } else if (!hisu_settings_has_gemini_key()) {
-                    (void)hisu_ui_post_status(HISU_UI_ERROR, "Cần Gemini API key trong Setting");
+                    (void)hisu_ui_post_status(HISU_UI_ERROR, "Cần API key trong Setting");
                 } else {
                     xSemaphoreTake(s_lock, portMAX_DELAY);
                     voice_session_open(&s_session, now_ms());
                     voice_live_open(s_session.generation);
-                    (void)hisu_ui_post_status(HISU_UI_THINKING, "Đang kết nối Gemini Live...");
+                    (void)hisu_ui_post_status(HISU_UI_THINKING, "Đang kết nối...");
                     xSemaphoreGive(s_lock);
                 }
                 s_multinet->clean(s_multinet_data);
                 continue;
             }
+            if (recognized && recognized->num > 0 && recognized->command_id[0] == 1)
+                ESP_LOGI(TAG, "Wake rejected: confidence %.3f, minimum %.2f",
+                         recognized->prob[0], HISU_WAKE_MIN_CONFIDENCE);
             s_multinet->clean(s_multinet_data);
         } else if (state == ESP_MN_STATE_TIMEOUT) {
             esp_mn_results_t *candidate = s_multinet->get_results(s_multinet_data);

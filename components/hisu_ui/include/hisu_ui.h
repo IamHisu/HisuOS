@@ -2,6 +2,7 @@
 
 #include "esp_err.h"
 #include <stdbool.h>
+#include "hisu_ui_face.h"
 
 typedef enum {
     HISU_UI_IDLE,
@@ -9,6 +10,8 @@ typedef enum {
     HISU_UI_THINKING,
     HISU_UI_SPEAKING,
     HISU_UI_ERROR,
+    HISU_UI_MUSIC,
+    HISU_UI_MUSIC_LOADING,
 } hisu_ui_status_t;
 
 esp_err_t hisu_ui_start(void);
@@ -20,3 +23,5 @@ void hisu_ui_set_voice_control(hisu_ui_voice_control_fn control);
 esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle);
 // Uses the UI task's existing flashlight state; safe for worker tasks.
 esp_err_t hisu_ui_post_flashlight(bool enabled);
+/* Ephemeral expression for the current reply; never persisted to flash. */
+esp_err_t hisu_ui_post_expression(hisu_face_t face);

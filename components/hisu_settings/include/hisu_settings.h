@@ -36,6 +36,7 @@ esp_err_t hisu_settings_find_wifi(const char *ssid, char password[65]);
 typedef struct {
     uint32_t version, flags, baseline_percent, last_percent;
     uint64_t screen_on_us, screen_sleep_us, battery_us, baseline_battery_us;
+    uint64_t total_active_us, previous_battery_us, previous_screen_on_us, previous_screen_sleep_us;
 } hisu_power_usage_record_t;
 esp_err_t hisu_settings_load_power_usage(hisu_power_usage_record_t *out);
 esp_err_t hisu_settings_save_power_usage(const hisu_power_usage_record_t *record);

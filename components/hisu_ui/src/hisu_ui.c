@@ -62,11 +62,12 @@ static uint32_t theme_color(uint32_t dark)
     }
 }
 
-typedef enum { UI_EVENT_STATUS, UI_EVENT_FLASHLIGHT } ui_event_kind_t;
+typedef enum { UI_EVENT_STATUS, UI_EVENT_FLASHLIGHT, UI_EVENT_EXPRESSION } ui_event_kind_t;
 typedef struct {
     ui_event_kind_t kind;
     hisu_ui_status_t status;
     bool flashlight_enabled;
+    hisu_face_t expression;
     char text[256];
 } status_event_t;
 static QueueHandle_t s_events;
@@ -87,6 +88,10 @@ static int s_applied_brightness = -1;
 static int64_t s_activity_ms;
 static const char *s_error;
 static lv_obj_t *s_subtitle_body;
+static lv_obj_t *s_face_eyes[2], *s_face_cuts[2], *s_face_caption;
+static lv_timer_t *s_face_timer;
+static hisu_face_t s_expression;
+static int s_face_state;
 static hisu_network_status_t s_network;
 static hisu_power_status_t s_power;
 static lv_obj_t *s_battery_body, *s_battery_bars[5], *s_battery_tip, *s_battery_charge;
@@ -114,7 +119,7 @@ static const char *const s_items[] = {
     "Độ sáng", "Âm lượng", "Loa", "Thời gian chờ", "Theme", "Wi-Fi",
     "Pin", "Lịch", "Setting", "Tắt màn hình", "Đóng menu",
 };
-static const char *const s_states[] = {"", "Đang nghe", "Đang suy nghĩ", "Đang nói", "Lỗi"};
+static const char *const s_states[] = {"", "Đang nghe", "Đang suy nghĩ", "Đang nói", "Lỗi", "Đang phát nhạc", "Đang tải nhạc"};
 _Static_assert(sizeof(s_items)/sizeof(s_items[0]) == UI_ITEM_COUNT, "Menu labels must match model");
 static const char *const s_demo[] = {
     "Hôm nay bạn muốn làm gì?",
@@ -769,17 +774,80 @@ static void render_edit(void)
     if (s_error) label(lv_screen_active(), s_error, 12, 188, 216, 0xf0a0a0);
 }
 
+static bool face_status(int state)
+{
+    return state >= HISU_UI_LISTENING && state <= HISU_UI_ERROR;
+}
+
+static void animate_face(lv_timer_t *timer)
+{
+    (void)timer;
+    hisu_face_t face = s_expression;
+    if (s_face_state == HISU_UI_ERROR) face = HISU_FACE_SAD;
+    else if (face == HISU_FACE_AUTO)
+        face = s_face_state == HISU_UI_SPEAKING ? HISU_FACE_HAPPY : HISU_FACE_NEUTRAL;
+    hisu_eye_t eyes[2];
+    hisu_face_frame(face, s_face_state == HISU_UI_THINKING,
+                    s_face_state == HISU_UI_SPEAKING, tick_ms(), eyes);
+    for (int i = 0; i < 2; ++i) {
+        lv_obj_set_pos(s_face_eyes[i], eyes[i].x, eyes[i].y);
+        lv_obj_set_size(s_face_eyes[i], eyes[i].width, eyes[i].height);
+        lv_obj_set_style_radius(s_face_eyes[i], eyes[i].radius, 0);
+        if (face == HISU_FACE_HAPPY && eyes[i].height > 16) lv_obj_remove_flag(s_face_cuts[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_face_cuts[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void update_face_subtitle(int state, const char *text)
+{
+    s_face_state = state;
+    lv_label_set_text(s_face_caption, text);
+    lv_obj_update_layout(s_subtitle_body);
+    lv_obj_scroll_to_y(s_subtitle_body, LV_COORD_MAX, LV_ANIM_OFF);
+    animate_face(NULL);
+}
+
 static void render_subtitle(int state, const char *text)
 {
-    header(s_states[state]);
+    bool face = face_status(state);
+    lv_obj_t *root = lv_screen_active();
+    if (face) {
+        /* Keep the face black/cyan in either system theme, without a GIF decoder. */
+        lv_obj_set_style_bg_color(root, lv_color_hex(0x000000), 0);
+        lv_obj_t *title = label(root, s_states[state], 12, 16, 216, 0x8c9690);
+        lv_obj_set_style_text_color(title, lv_color_hex(0x8c9690), 0);
+        lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+        for (int i = 0; i < 2; ++i) {
+            s_face_eyes[i] = lv_obj_create(root);
+            lv_obj_remove_style_all(s_face_eyes[i]);
+            lv_obj_remove_flag(s_face_eyes[i], LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_style_bg_opa(s_face_eyes[i], LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(s_face_eyes[i], lv_color_hex(0x20e5e2), 0);
+            s_face_cuts[i] = lv_obj_create(s_face_eyes[i]);
+            lv_obj_remove_style_all(s_face_cuts[i]);
+            lv_obj_remove_flag(s_face_cuts[i], LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_pos(s_face_cuts[i], -2, 14);
+            lv_obj_set_size(s_face_cuts[i], 52, 40);
+            lv_obj_set_style_radius(s_face_cuts[i], 24, 0);
+            lv_obj_set_style_bg_opa(s_face_cuts[i], LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(s_face_cuts[i], lv_color_hex(0x000000), 0);
+        }
+    } else header(s_states[state]);
     s_subtitle_body = lv_obj_create(lv_screen_active());
     lv_obj_remove_style_all(s_subtitle_body);
-    lv_obj_set_pos(s_subtitle_body, 12, 58);
-    lv_obj_set_size(s_subtitle_body, 216, 162);
+    lv_obj_set_pos(s_subtitle_body, 12, face ? 166 : 58);
+    lv_obj_set_size(s_subtitle_body, 216, face ? 66 : 162);
     lv_obj_set_scroll_dir(s_subtitle_body, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_subtitle_body, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_t *subtitle = label(s_subtitle_body, text, 0, 0, 216, 0xeeeeee);
     lv_label_set_long_mode(subtitle, LV_LABEL_LONG_WRAP);
+    if (face) {
+        lv_obj_set_style_text_color(subtitle, lv_color_hex(0xeeeeee), 0);
+        lv_obj_set_style_text_align(subtitle, LV_TEXT_ALIGN_CENTER, 0);
+        s_face_caption = subtitle;
+        update_face_subtitle(state, text);
+        s_face_timer = lv_timer_create(animate_face, 50, NULL);
+    }
 }
 
 static const char *network_state(void)
@@ -971,6 +1039,9 @@ static void render(void)
     lv_obj_t *root = lv_screen_active();
     s_light_theme = (s_model.page == UI_EDIT && s_model.selected == UI_THEME)
         ? s_model.value != 0 : hisu_settings_get(HISU_SETTING_THEME) == 1;
+    if (s_face_timer) { lv_timer_delete(s_face_timer); s_face_timer = NULL; }
+    s_face_caption = NULL;
+    s_face_eyes[0] = s_face_eyes[1] = NULL;
     lv_obj_clean(root);
     refresh_wallpaper();
     s_idle_gif = NULL;
@@ -993,13 +1064,14 @@ static void render(void)
         break;
     case UI_INFO:
         header(s_items[s_model.selected]);
-        if (s_model.selected == UI_BATTERY && s_power.valid) {
+        if (s_model.selected == UI_BATTERY) {
             char text[64];
-            snprintf(text, sizeof(text), "Pin: ~%d%%", s_power.percent);
+            if (s_power.valid) snprintf(text, sizeof(text), "Pin: ~%d%%", s_power.percent);
+            else snprintf(text, sizeof(text), "Pin: Đang đo");
             label(root, text, 12, 48, 216, 0x86dbaf);
-            snprintf(text, sizeof(text), "ADC: %d", s_power.raw_adc);
+            usage_text(text, sizeof(text), "Dùng pin", s_power.battery_seconds);
             label(root, text, 12, 71, 216, 0xeeeeee);
-            snprintf(text, sizeof(text), "Nguồn ngoài: %s", s_power.external_power ? "Có" : "Không");
+            snprintf(text, sizeof(text), "Nguồn ngoài: %s", !s_power.valid ? "Đang đo" : s_power.external_power ? "Có" : "Không");
             label(root, text, 12, 94, 216, 0xeeeeee);
             if (s_power.external_power) snprintf(text, sizeof(text), "Còn lại: Cắm sạc");
             else if (s_power.remaining_valid)
@@ -1009,10 +1081,9 @@ static void render(void)
             label(root, text, 12, 117, 216, 0x86dbaf);
             usage_text(text, sizeof(text), "MH sáng", s_power.screen_on_seconds);
             label(root, text, 12, 140, 216, 0xeeeeee);
-            usage_text(text, sizeof(text), "Dùng pin", s_power.battery_seconds);
+            if (s_power.previous_valid) usage_text(text, sizeof(text), "Pin trước", s_power.previous_battery_seconds);
+            else snprintf(text, sizeof(text), "Pin trước: Chưa có");
             label(root, text, 12, 163, 216, 0xeeeeee);
-            usage_text(text, sizeof(text), "Sleep", s_power.screen_sleep_seconds);
-            label(root, text, 12, 186, 216, 0xeeeeee);
         } else label(root, "Không khả dụng", 12, 83, 216, 0xa1a9a5);
         footer("back", "", "");
         break;
@@ -1307,7 +1378,12 @@ static void ui_task(void *arg)
                 s_flashlight_mode = 0;
                 s_flashlight_start_ms = esp_timer_get_time() / 1000;
                 s_model.page = event.flashlight_enabled ? UI_FLASHLIGHT_PAGE : UI_IDLE;
+            } else if (event.kind == UI_EVENT_EXPRESSION) {
+                if (face_status(s_status.status)) s_expression = event.expression;
             } else {
+                if (event.status == HISU_UI_IDLE || event.status == HISU_UI_LISTENING ||
+                    (event.status == HISU_UI_THINKING && s_status.status != HISU_UI_THINKING))
+                    s_expression = HISU_FACE_AUTO;
                 s_status.status = event.status;
                 s_status_shown_ms = esp_timer_get_time() / 1000;
                 memcpy(s_status.text, event.text, sizeof(s_status.text));
@@ -1322,7 +1398,9 @@ static void ui_task(void *arg)
         if (changed) {
             s_asleep = false;
             s_activity_ms = esp_timer_get_time() / 1000;
-            if (s_model.page == UI_IDLE || s_model.page == UI_FLASHLIGHT_PAGE) render();
+            if (s_model.page == UI_IDLE && s_face_caption && s_face_state == s_status.status)
+                update_face_subtitle(s_status.status, s_status.text);
+            else if (s_model.page == UI_IDLE || s_model.page == UI_FLASHLIGHT_PAGE) render();
         }
         int timeout = hisu_settings_get(HISU_SETTING_TIMEOUT);
         int64_t now = esp_timer_get_time() / 1000;
@@ -1401,7 +1479,7 @@ esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle)
     if (!s_events || !s_startup || !(xEventGroupGetBits(s_startup) & 1) || s_startup_result != ESP_OK) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (status < HISU_UI_IDLE || status > HISU_UI_ERROR || !hisu_ui_valid_utf8(subtitle, 255)) {
+    if (status < HISU_UI_IDLE || status > HISU_UI_MUSIC_LOADING || !hisu_ui_valid_utf8(subtitle, 255)) {
         return ESP_ERR_INVALID_ARG;
     }
     status_event_t event = {.kind = UI_EVENT_STATUS, .status = status};
@@ -1414,5 +1492,14 @@ esp_err_t hisu_ui_post_flashlight(bool enabled)
     if (!s_events || !s_startup || !(xEventGroupGetBits(s_startup) & 1) || s_startup_result != ESP_OK)
         return ESP_ERR_INVALID_STATE;
     status_event_t event = {.kind = UI_EVENT_FLASHLIGHT, .flashlight_enabled = enabled};
+    return xQueueSend(s_events, &event, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t hisu_ui_post_expression(hisu_face_t face)
+{
+    if (face < HISU_FACE_AUTO || face >= HISU_FACE_COUNT) return ESP_ERR_INVALID_ARG;
+    if (!s_events || !s_startup || !(xEventGroupGetBits(s_startup) & 1) || s_startup_result != ESP_OK)
+        return ESP_ERR_INVALID_STATE;
+    status_event_t event = {.kind = UI_EVENT_EXPRESSION, .expression = face};
     return xQueueSend(s_events, &event, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }

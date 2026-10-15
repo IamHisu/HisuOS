@@ -38,6 +38,13 @@ if ($LASTEXITCODE -ne 0) { throw 'UI timing compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'UI timing linking failed.' }
 & $timing
 if ($LASTEXITCODE -ne 0) { throw 'UI timing tests failed.' }
+$face = Join-Path $out 'ui-face-test.exe'
+& $compiler.FullName /nologo /c /std:c11 /MT /GS- /W4 /WX "/I$include" "/I$($sdk.FullName)\ucrt" "/I$root\components\hisu_ui\include" "/Fo$out\" (Join-Path $root 'tests\test_ui_face.c')
+if ($LASTEXITCODE -ne 0) { throw 'UI face compilation failed.' }
+& $linker /nologo /subsystem:console "/out:$face" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_ui_face.obj')
+if ($LASTEXITCODE -ne 0) { throw 'UI face linking failed.' }
+& $face
+if ($LASTEXITCODE -ne 0) { throw 'UI face tests failed.' }
 $calendar = Join-Path $out 'calendar-test.exe'
 $calendarObject = Join-Path $out 'hisu_calendar.obj'
 $calendarTestObject = Join-Path $out 'test_calendar.obj'

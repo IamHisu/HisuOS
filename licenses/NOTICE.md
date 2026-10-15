@@ -1,5 +1,14 @@
 # Third-Party Notices
 
+Experimental Zing MP3 playback uses `espressif/esp_audio_codec` 2.6.2, provided by
+Espressif Systems under the Espressif Modified MIT License. The complete license
+is in `Espressif-Audio-Codec-LICENSE.txt`; upstream component:
+https://components.espressif.com/components/espressif/esp_audio_codec/versions/2.6.2
+
+The Zing MP3 HTTP adapter is a HisuOS implementation of the public web-client
+request format researched from https://github.com/nvhung9/mp3-api. It is unofficial,
+does not bypass account/paid-track restrictions, and can break when the source changes.
+
 Pin và luồng bàn phím Wi-Fi tham khảo Muse Gadget SDK, nhánh `feature/zhengchen-board`, commit `a69273db94d94590e72198688c4f897f78c9e57b`:
 
 - Nguồn: https://github.com/IamHisu/muse-gadget-sdk/tree/a69273db94d94590e72198688c4f897f78c9e57b
