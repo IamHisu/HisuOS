@@ -52,18 +52,26 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         s_session.state = VOICE_SPEAKING;
         (void)hisu_ui_post_status(HISU_UI_SPEAKING, s_reply);
     } else if (event == LIVE_DONE) {
-        voice_session_finish(&s_session, generation, now_ms());
-        (void)hisu_ui_post_status(HISU_UI_LISTENING, s_reply);
+        voice_session_finish_utterance(&s_session, generation, now_ms(), s_utterance);
+        if (s_session.state == VOICE_IDLE) {
+            voice_live_close();
+            (void)hisu_ui_post_status(HISU_UI_IDLE, "");
+        } else {
+            (void)hisu_ui_post_status(HISU_UI_LISTENING, s_reply);
+        }
     } else if (event == LIVE_INPUT) {
         size_t used = strlen(s_utterance), extra = strlen(text);
         if (extra > sizeof(s_utterance) - used - 1) extra = sizeof(s_utterance) - used - 1;
         memcpy(s_utterance + used, text, extra); s_utterance[used + extra] = 0;
-        if (voice_session_end_phrase(s_utterance)) {
-            voice_session_close(&s_session); voice_live_close();
-            (void)hisu_ui_post_status(HISU_UI_IDLE, "");
-        }
     } else if (event == LIVE_FLASHLIGHT) {
         (void)hisu_ui_post_flashlight(strcmp(text, "on") == 0);
+    } else if (event == LIVE_END) {
+        voice_session_close(&s_session); voice_live_close();
+        (void)hisu_ui_post_status(HISU_UI_IDLE, "");
+    } else if (event == LIVE_DEVICE) {
+        hisu_ui_status_t status = s_session.state == VOICE_SPEAKING ? HISU_UI_SPEAKING :
+            s_session.state == VOICE_WAITING ? HISU_UI_LISTENING : HISU_UI_THINKING;
+        (void)hisu_ui_post_status(status, s_session.state == VOICE_SPEAKING ? s_reply : "Đã cập nhật thiết bị");
     } else if (event == LIVE_ERROR) {
         voice_session_close(&s_session); voice_live_close();
         (void)hisu_ui_post_status(HISU_UI_ERROR, text);

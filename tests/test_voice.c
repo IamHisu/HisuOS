@@ -58,6 +58,18 @@ int main(void)
     assert(voice_session_end_phrase("Tạm biệt."));
     assert(!voice_session_end_phrase("giải thích câu thôi nhé"));
     assert(!voice_session_end_phrase(""));
+    assert(voice_session_end_phrase("Kết thúc cuộc trò chuyện."));
+    assert(voice_session_end_phrase("kết thúc cuộc trò chuyện nhé"));
+    assert(!voice_session_end_phrase("giải thích kết thúc cuộc trò chuyện nghĩa là gì"));
+    voice_session_open(&session,200000);
+    old=session.generation;
+    assert(voice_session_finish_utterance(&session,old,201000,"kết thúc cuộc trò chuyện"));
+    assert(session.state==VOICE_IDLE);
+    assert(!voice_session_finish_utterance(&session,old,201001,""));
+    assert(session.state==VOICE_IDLE);
+    voice_session_open(&session,202000);
+    assert(voice_session_finish_utterance(&session,session.generation,203000,"giải thích câu tạm biệt"));
+    assert(session.state==VOICE_WAITING);
 
     live_turn_t turn;
     live_turn_reset(&turn);

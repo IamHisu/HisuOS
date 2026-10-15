@@ -1,8 +1,12 @@
 #include "hisu_voice_live.h"
 #include "hisu_voice_live_message.h"
 #include "hisu_voice_live_turn.h"
+#include "hisu_voice_live_setup.h"
 #include "hisu_network.h"
 #include "hisu_settings.h"
+#include "hisu_media.h"
+#include "esp_app_desc.h"
+#include "esp_system.h"
 #include "board_config.h"
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
@@ -42,6 +46,24 @@ static live_event_fn s_callback;
 static i2s_chan_handle_t s_speaker;
 static int64_t s_end_us;
 static size_t s_queued_audio_bytes;
+static bool s_reboot_pending;
+static uint32_t s_reboot_generation;
+static int64_t s_reboot_deadline;
+static char s_confirmation[160];
+
+/* Compare the entire user transcription, never a model-generated argument. */
+static bool reboot_confirmed(void)
+{
+    const char *start = s_confirmation;
+    while (*start && strchr(" \r\n\t", *start)) ++start;
+    size_t length = strlen(start);
+    while (length && strchr(" .!?\r\n\t", start[length - 1])) --length;
+    static const char *const phrases[] = {"xác nhận khởi động lại", "Xác nhận khởi động lại",
+        "xac nhan khoi dong lai", "Xac nhan khoi dong lai"};
+    for (unsigned i = 0; i < sizeof(phrases) / sizeof(phrases[0]); ++i)
+        if (strlen(phrases[i]) == length && !memcmp(start, phrases[i], length)) return true;
+    return false;
+}
 
 static bool current(uint32_t epoch, uint32_t generation)
 {
@@ -63,6 +85,7 @@ void voice_live_open(uint32_t generation)
 {
     portENTER_CRITICAL(&s_mux);
     ++s_epoch; s_generation = generation; s_active = true; s_ready = s_failed = false;
+    s_reboot_pending = false; s_confirmation[0] = 0;
     live_turn_reset(&s_turn); s_interrupt_deadline = 0;
     portEXIT_CRITICAL(&s_mux);
 }
@@ -70,6 +93,7 @@ void voice_live_close(void)
 {
     portENTER_CRITICAL(&s_mux);
     ++s_epoch; s_active = s_ready = false;
+    s_reboot_pending = false; s_confirmation[0] = 0;
     live_turn_reset(&s_turn); s_interrupt_deadline = 0;
     portEXIT_CRITICAL(&s_mux);
 }
@@ -116,7 +140,7 @@ bool voice_live_begin(uint32_t generation)
     portENTER_CRITICAL(&s_mux);
     bool ready = s_active && s_ready && !s_failed &&
         (generation == s_generation || generation == s_generation + 1);
-    if (ready) s_generation = generation;
+    if (ready) { s_generation = generation; s_confirmation[0] = 0; }
     portEXIT_CRITICAL(&s_mux);
     return ready && enqueue(generation, 1, NULL, 0);
 }
@@ -164,25 +188,12 @@ static void parse_message(connection_t *connection)
         cJSON *call;
         cJSON_ArrayForEach(call, calls) {
             cJSON *name = cJSON_GetObjectItem(call, "name"), *id = cJSON_GetObjectItem(call, "id");
-            cJSON *enabled = cJSON_GetObjectItem(cJSON_GetObjectItem(call, "args"), "enabled");
-            if (!cJSON_IsString(name) || !cJSON_IsString(id) || strcmp(name->valuestring, "set_flashlight") || !cJSON_IsBool(enabled)) {
+            if (!cJSON_IsString(name) || !cJSON_IsString(id)) {
                 fail(connection->epoch, generation); break;
             }
-            s_callback(LIVE_FLASHLIGHT, generation, cJSON_IsTrue(enabled) ? "on" : "off");
-            cJSON *response = cJSON_CreateObject();
-            cJSON *tool = cJSON_AddObjectToObject(response, "toolResponse");
-            cJSON *results = cJSON_AddArrayToObject(tool, "functionResponses");
-            cJSON *result = cJSON_CreateObject();
-            if (!response || !tool || !results || !result || !cJSON_AddItemToArray(results, result)) {
-                cJSON_Delete(result); cJSON_Delete(response); fail(connection->epoch, generation); break;
-            }
-            cJSON_AddStringToObject(result, "id", id->valuestring);
-            cJSON_AddStringToObject(result, "name", "set_flashlight");
-            cJSON *value = cJSON_AddObjectToObject(result, "response");
-            cJSON_AddBoolToObject(value, "enabled", cJSON_IsTrue(enabled));
-            char *body = cJSON_PrintUnformatted(response);
-            cJSON_Delete(response);
-            input_t frame = {.epoch = connection->epoch, .generation = generation, .kind = 3};
+            /* NVS writes run on the transport worker, never the WebSocket callback. */
+            char *body = cJSON_PrintUnformatted(call);
+            input_t frame = {.epoch = connection->epoch, .generation = generation, .kind = 5};
             if (!body || strlen(body) >= sizeof(frame.pcm)) {
                 cJSON_free(body); fail(connection->epoch, generation); break;
             }
@@ -198,7 +209,17 @@ static void parse_message(connection_t *connection)
         if (interrupted) accept_input = accept_output = false;
         portEXIT_CRITICAL(&s_mux);
         cJSON *input = cJSON_GetObjectItem(cJSON_GetObjectItem(content, "inputTranscription"), "text");
-        if (accept_input && cJSON_IsString(input)) s_callback(LIVE_INPUT, generation, input->valuestring);
+        if (accept_input && cJSON_IsString(input)) {
+            portENTER_CRITICAL(&s_mux);
+            if (connection->epoch == s_epoch && generation == s_generation) {
+                size_t used = strlen(s_confirmation), extra = strlen(input->valuestring);
+                if (extra >= sizeof(s_confirmation) - used) {
+                    s_reboot_pending = false; /* Truncation must never create a confirmation. */
+                } else memcpy(s_confirmation + used, input->valuestring, extra + 1);
+            }
+            portEXIT_CRITICAL(&s_mux);
+            s_callback(LIVE_INPUT, generation, input->valuestring);
+        }
         cJSON *text = cJSON_GetObjectItem(cJSON_GetObjectItem(content, "outputTranscription"), "text");
         if (accept_output && cJSON_IsString(text)) s_callback(LIVE_TEXT, generation, text->valuestring);
         cJSON *parts = cJSON_GetObjectItem(cJSON_GetObjectItem(content, "modelTurn"), "parts");
@@ -305,6 +326,180 @@ static void format_audio(char *body, const char *encoded, size_t length)
     memcpy(body + sizeof(prefix) - 1, encoded, length);
     memcpy(body + sizeof(prefix) - 1 + length, suffix, sizeof(suffix));
 }
+static bool tool_integer(const cJSON *args, const char *key, int minimum, int maximum, int *value)
+{
+    const cJSON *number = cJSON_GetObjectItemCaseSensitive(args, key);
+    if (!cJSON_IsObject(args) || cJSON_GetArraySize(args) != 1 || !cJSON_IsNumber(number) ||
+        number->valuedouble < minimum || number->valuedouble > maximum ||
+        number->valuedouble != number->valueint) return false;
+    *value = number->valueint;
+    return true;
+}
+
+static char *execute_tool(const input_t *frame, bool *end_session)
+{
+    *end_session = false;
+    if (!current(frame->epoch, frame->generation)) return NULL;
+    cJSON *call = cJSON_Parse((const char *)frame->pcm);
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(call, "name");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(call, "id");
+    const cJSON *args = cJSON_GetObjectItemCaseSensitive(call, "args");
+    if (!cJSON_IsString(name) || !cJSON_IsString(id)) { cJSON_Delete(call); return NULL; }
+    cJSON *response = cJSON_CreateObject();
+    cJSON *tool = cJSON_AddObjectToObject(response, "toolResponse");
+    cJSON *results = cJSON_AddArrayToObject(tool, "functionResponses");
+    cJSON *result = cJSON_CreateObject();
+    if (!response || !tool || !results || !result || !cJSON_AddItemToArray(results, result)) {
+        cJSON_Delete(result); cJSON_Delete(response); cJSON_Delete(call); return NULL;
+    }
+    cJSON *value = cJSON_AddObjectToObject(result, "response");
+    if (!value || !cJSON_AddStringToObject(result,"id",id->valuestring) ||
+        !cJSON_AddStringToObject(result,"name",name->valuestring)) {
+        cJSON_Delete(response); cJSON_Delete(call); return NULL;
+    }
+    bool no_args = !args || (cJSON_IsObject(args) && cJSON_GetArraySize(args) == 0);
+    bool valid = false, changed = false;
+    int setting_value = 0;
+    hisu_setting_t setting = HISU_SETTING_COUNT;
+    esp_err_t err = ESP_OK;
+    if (!strcmp(name->valuestring,"get_network_status") && no_args) {
+        hisu_network_status_t network;
+        hisu_network_get(&network);
+        static const char *const states[] = {"unknown", "checking", "online", "captive_portal", "offline"};
+        valid = true;
+        cJSON_AddBoolToObject(value,"enabled",network.enabled);
+        cJSON_AddBoolToObject(value,"connected",network.connected);
+        cJSON_AddBoolToObject(value,"joining",network.joining);
+        cJSON_AddStringToObject(value,"ssid",network.connected ? network.ssid : "");
+        cJSON_AddStringToObject(value,"ip",network.connected ? network.ip : "");
+        if (network.connected) cJSON_AddNumberToObject(value,"rssi_dbm",network.rssi);
+        cJSON_AddStringToObject(value,"internet",!network.connected ? "disconnected" :
+            network.internet >= HISU_INTERNET_UNKNOWN && network.internet <= HISU_INTERNET_OFFLINE ?
+            states[network.internet] : "unknown");
+        cJSON_AddStringToObject(value,"note","Last observed state; connectivity probes pause during voice calls");
+    } else if (!strcmp(name->valuestring,"get_system_info") && no_args) {
+        const esp_app_desc_t *app = esp_app_get_description();
+        valid = true;
+        cJSON_AddStringToObject(value,"firmware",app->version);
+        cJSON_AddStringToObject(value,"project",app->project_name);
+        cJSON_AddStringToObject(value,"idf",app->idf_ver);
+        cJSON_AddNumberToObject(value,"uptime_seconds",(double)(esp_timer_get_time() / 1000000));
+        cJSON_AddNumberToObject(value,"internal_free_bytes",(double)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        cJSON_AddNumberToObject(value,"internal_largest_bytes",(double)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        cJSON_AddNumberToObject(value,"psram_free_bytes",(double)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        cJSON_AddNumberToObject(value,"screen_width",HISU_MEDIA_WIDTH);
+        cJSON_AddNumberToObject(value,"screen_height",HISU_MEDIA_HEIGHT);
+    } else if (!strcmp(name->valuestring,"get_wallpaper") && no_args) {
+        hisu_media_status_t media;
+        hisu_media_get(&media);
+        valid = true;
+        cJSON_AddBoolToObject(value,"uploaded_available",media.has_image);
+        cJSON_AddStringToObject(value,"source",media.has_image &&
+            hisu_settings_get(HISU_SETTING_WALLPAPER_DEFAULT) != 1 ? "uploaded" : "default");
+        if (media.has_image) cJSON_AddStringToObject(value,"uploaded_type",media.gif ? "gif" : "image");
+    } else if (!strcmp(name->valuestring,"set_wallpaper")) {
+        const cJSON *source = cJSON_GetObjectItemCaseSensitive(args,"source");
+        valid = cJSON_IsObject(args) && cJSON_GetArraySize(args) == 1 && cJSON_IsString(source) &&
+            (!strcmp(source->valuestring,"default") || !strcmp(source->valuestring,"uploaded"));
+        if (valid) {
+            hisu_media_status_t media;
+            hisu_media_get(&media);
+            setting = HISU_SETTING_WALLPAPER_DEFAULT;
+            setting_value = !strcmp(source->valuestring,"default");
+            if (!setting_value && !media.has_image) {
+                err = ESP_ERR_NOT_FOUND;
+                cJSON_AddStringToObject(value,"detail","No uploaded wallpaper is stored");
+            }
+        }
+    } else if (!strcmp(name->valuestring,"request_reboot") && no_args) {
+        portENTER_CRITICAL(&s_mux);
+        valid = s_active && frame->epoch == s_epoch && frame->generation == s_generation;
+        if (valid) {
+            s_reboot_pending = true; s_reboot_generation = frame->generation;
+            s_reboot_deadline = esp_timer_get_time() + 60000000;
+        }
+        portEXIT_CRITICAL(&s_mux);
+        cJSON_AddBoolToObject(value,"confirmation_required",true);
+        cJSON_AddStringToObject(value,"confirmation_phrase","xác nhận khởi động lại");
+    } else if (!strcmp(name->valuestring,"confirm_reboot") && no_args) {
+        portENTER_CRITICAL(&s_mux);
+        valid = s_reboot_pending && s_active && frame->epoch == s_epoch &&
+            frame->generation == s_generation && frame->generation != s_reboot_generation &&
+            esp_timer_get_time() <= s_reboot_deadline && reboot_confirmed();
+        portEXIT_CRITICAL(&s_mux);
+        if (valid) *end_session = true;
+        else cJSON_AddStringToObject(value,"detail","A pending request and a new explicit user confirmation are required");
+    } else if (!strcmp(name->valuestring,"get_device_settings") && no_args) {
+        valid = true;
+        cJSON_AddNumberToObject(value,"volume",hisu_settings_get(HISU_SETTING_VOLUME));
+        cJSON_AddNumberToObject(value,"brightness",hisu_settings_get(HISU_SETTING_BRIGHTNESS));
+        cJSON_AddBoolToObject(value,"speaker",hisu_settings_get(HISU_SETTING_SPEAKER) == 1);
+        cJSON_AddStringToObject(value,"theme",hisu_settings_get(HISU_SETTING_THEME) == 1 ? "light" : "dark");
+        cJSON_AddNumberToObject(value,"screen_timeout",hisu_settings_get(HISU_SETTING_TIMEOUT));
+    } else if (!strcmp(name->valuestring,"end_conversation") && no_args) {
+        valid = true;
+        *end_session = true;
+    } else if (!strcmp(name->valuestring,"set_volume")) {
+        setting = HISU_SETTING_VOLUME;
+        valid = tool_integer(args,"percent",0,100,&setting_value);
+    } else if (!strcmp(name->valuestring,"set_brightness")) {
+        setting = HISU_SETTING_BRIGHTNESS;
+        valid = tool_integer(args,"percent",10,100,&setting_value);
+    } else if (!strcmp(name->valuestring,"set_screen_timeout")) {
+        setting = HISU_SETTING_TIMEOUT;
+        valid = tool_integer(args,"seconds",0,600,&setting_value) &&
+            (setting_value == 0 || setting_value == 30 || setting_value == 60 ||
+             setting_value == 120 || setting_value == 300 || setting_value == 600);
+    } else if (!strcmp(name->valuestring,"set_theme")) {
+        const cJSON *theme = cJSON_GetObjectItemCaseSensitive(args,"theme");
+        setting = HISU_SETTING_THEME;
+        valid = cJSON_IsObject(args) && cJSON_GetArraySize(args) == 1 && cJSON_IsString(theme) &&
+            (!strcmp(theme->valuestring,"light") || !strcmp(theme->valuestring,"dark"));
+        if (valid) setting_value = !strcmp(theme->valuestring,"light");
+    } else if (!strcmp(name->valuestring,"set_speaker") || !strcmp(name->valuestring,"set_flashlight")) {
+        const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(args,"enabled");
+        valid = cJSON_IsObject(args) && cJSON_GetArraySize(args) == 1 && cJSON_IsBool(enabled);
+        if (valid && !strcmp(name->valuestring,"set_flashlight")) {
+            s_callback(LIVE_FLASHLIGHT,frame->generation,cJSON_IsTrue(enabled) ? "on" : "off");
+            cJSON_AddBoolToObject(value,"enabled",cJSON_IsTrue(enabled));
+        } else if (valid) {
+            setting = HISU_SETTING_SPEAKER;
+            setting_value = cJSON_IsTrue(enabled);
+        }
+    }
+    if (valid && err == ESP_OK && setting != HISU_SETTING_COUNT) {
+        err = hisu_settings_set(setting,setting_value);
+        changed = err == ESP_OK;
+        if (changed) cJSON_AddNumberToObject(value,"value",hisu_settings_get(setting));
+    }
+    cJSON_AddBoolToObject(value,"ok",valid && err == ESP_OK);
+    ESP_LOGI(TAG,"Device tool %s: %s",name->valuestring, valid && err == ESP_OK ? "ok" : "rejected");
+    if (!valid) cJSON_AddStringToObject(value,"error","Unsupported function or invalid arguments");
+    else if (err != ESP_OK) cJSON_AddStringToObject(value,"error","Device could not apply the request");
+    char *body = cJSON_PrintUnformatted(response);
+    if (changed) s_callback(LIVE_DEVICE,frame->generation,"");
+    cJSON_Delete(response); cJSON_Delete(call);
+    return body;
+}
+
+static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
+{
+    bool end_session;
+    char *response = execute_tool(frame,&end_session);
+    if (!response && !current(frame->epoch,frame->generation)) return true;
+    bool ok = response && send_text(client,response);
+    cJSON_free(response);
+    /* Reboot only after acknowledging a confirmed request on this still-current turn. */
+    cJSON *call = end_session ? cJSON_Parse((const char *)frame->pcm) : NULL;
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(call,"name");
+    bool reboot = ok && current(frame->epoch,frame->generation) && cJSON_IsString(name) &&
+        !strcmp(name->valuestring,"confirm_reboot");
+    cJSON_Delete(call);
+    if (end_session) s_callback(LIVE_END,frame->generation,"");
+    if (reboot) { vTaskDelay(pdMS_TO_TICKS(500)); esp_restart(); }
+    return ok;
+}
+
 static void transport_task(void *arg)
 {
     (void)arg;
@@ -312,7 +507,7 @@ static void transport_task(void *arg)
     int16_t *pcm = (int16_t *)s_send_storage;
     char *encoded = s_send_storage + SEND_SAMPLES * sizeof(*pcm);
     char *body = encoded + ENCODED_CAPACITY;
-    const char *setup = "{\"setup\":{\"model\":\"models/gemini-3.8-live\",\"generationConfig\":{\"responseModalities\":[\"AUDIO\"]},\"systemInstruction\":{\"parts\":[{\"text\":\"Bạn là Hisu. Trả lời bằng tiếng Việt, ngắn gọn và tự nhiên. Không tự nói khi người dùng chưa hỏi.\"}]},\"realtimeInputConfig\":{\"automaticActivityDetection\":{\"disabled\":true},\"activityHandling\":\"START_OF_ACTIVITY_INTERRUPTS\"},\"inputAudioTranscription\":{},\"outputAudioTranscription\":{},\"tools\":[{\"functionDeclarations\":[{\"name\":\"set_flashlight\",\"description\":\"Bật hoặc tắt đèn pin của Hisu theo yêu cầu người dùng\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"enabled\":{\"type\":\"BOOLEAN\"}},\"required\":[\"enabled\"]}}]}]}}";
+    const char *setup = voice_live_setup;
     for (;;) {
         portENTER_CRITICAL(&s_mux);
         bool active = s_active && !s_failed; uint32_t epoch = s_epoch, generation = s_generation;
@@ -380,6 +575,8 @@ static void transport_task(void *arg)
                 portEXIT_CRITICAL(&s_mux);
                 response_deadline = esp_timer_get_time() + 60000000;
                 ok = send_text(client, "{\"realtimeInput\":{\"activityEnd\":{}}}");
+            } else if (frame.kind == 5) {
+                ok = run_tool(client,&frame);
             } else if (frame.kind == 3) {
                 ok = send_text(client, (char *)frame.pcm);
             } else {
@@ -403,6 +600,8 @@ static esp_err_t speaker_open(void)
 {
     if (s_speaker) return ESP_OK;
     i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+    /* Do not replay old DMA samples when streamed audio arrives late. */
+    channel.auto_clear_after_cb = true;
     esp_err_t err = i2s_new_channel(&channel, &s_speaker, NULL);
     if (err != ESP_OK) return err;
     i2s_std_config_t config = {

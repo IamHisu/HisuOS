@@ -5,6 +5,7 @@
 #include "../components/hisu_network/src/hisu_network.c"
 #include "../components/hisu_network/src/hisu_connectivity.c"
 static bool mock_recover_during_lookup, mock_manual_during_lookup;
+static bool mock_saved_hidden[HISU_WIFI_SAVED_MAX];
 static void mock_lookup_event(void) {
     if (mock_recover_during_lookup) {
         mock_recover_during_lookup = false;
@@ -38,14 +39,23 @@ esp_err_t hisu_settings_find_wifi(const char *ssid, char password[65]) {
     password[0] = 0; return ESP_ERR_NVS_NOT_FOUND;
 }
 esp_err_t hisu_settings_save_wifi(const char *ssid, const char *password) { return ESP_OK; }
+esp_err_t hisu_settings_save_wifi_ex(const char *ssid, const char *password, bool hidden) { return ESP_OK; }
+bool hisu_settings_wifi_hidden(const char *ssid) {
+    for (unsigned i = 0; i < mock_saved_count; ++i)
+        if (!strcmp(ssid, mock_saved_ssids[i])) return mock_saved_hidden[i];
+    return false;
+}
 
 static void reset(void) {
     s_status = (hisu_network_status_t){.ready = true, .enabled = true};
     memset(s_failures, 0, sizeof(s_failures));
+    memset(s_roam_tried, 0, sizeof(s_roam_tried));
+    memset(mock_saved_hidden, 0, sizeof(mock_saved_hidden));
     memset(s_ssid, 0, sizeof(s_ssid));
     memset(s_password, 0, sizeof(s_password));
     s_started = s_want_connection = s_save_candidate = s_auto_join = false;
-    s_performance = false; mock_wifi_ps = -1;
+    s_performance = s_performance_requested = false; mock_wifi_ps = -1;
+    s_had_connection = false;
     s_deadline = s_retry_at = 0; s_retries = 0;
     s_connection_generation = 0; s_internet_failures = 0;
     s_lock = s_events = (void *)1;
@@ -83,11 +93,14 @@ int main(void) {
     fail_current(false); mock_now += 60000000; scan();
     assert(!strcmp(s_ssid, "Backup")); /* Rejected password stays blocked. */
 
-    reset(); saved("Hidden", false, 0); scan();
+    reset(); saved("Cafe", false, 0); scan();
+    assert(!s_want_connection && mock_connects == 0);
+    reset(); saved("Hidden", false, 0); mock_saved_hidden[0] = true; scan();
     assert(s_want_connection && !strcmp(s_ssid, "Hidden"));
     assert(mock_config.sta.threshold.authmode == WIFI_AUTH_WPA2_PSK);
 
     reset(); saved("Hidden first", false, 0); saved("Visible", true, -80);
+    mock_saved_hidden[0] = true;
     scan(); assert(!strcmp(s_ssid, "Visible"));
     fail_current(true); scan(); assert(!strcmp(s_ssid, "Hidden first"));
 
@@ -194,6 +207,57 @@ int main(void) {
     assert(!roam_without_internet() && s_status.connected && s_status.internet == HISU_INTERNET_ONLINE);
     s_status.internet = HISU_INTERNET_OFFLINE; s_internet_failures = 2; mock_manual_during_lookup = true;
     assert(!roam_without_internet() && !strcmp(s_ssid, "Current"));
+
+    reset(); saved("Home",true,-30); saved("Backup",true,-60); scan();
+    s_status.connected=true; s_status.joining=false; s_status.internet=HISU_INTERNET_OFFLINE;
+    s_internet_failures=2; s_performance=true;
+    assert(!roam_without_internet() && mock_connects==1 && mock_scans==1);
+    s_performance=false;
+    assert(hisu_network_set_performance(true)==ESP_OK && s_performance_requested);
+    assert(!roam_without_internet()); /* Protected even before the worker applies power mode. */
+    assert(hisu_network_scan()==ESP_ERR_INVALID_STATE);
+    assert(hisu_network_set_performance(false)==ESP_OK);
+    s_performance=true;
+    publish_internet(s_connection_generation,HISU_INTERNET_OFFLINE);
+    assert(s_internet_failures==2); /* In-flight probes cannot change a live session. */
+    s_performance=false; s_status.setup_enabled=true;
+    assert(!roam_without_internet() && mock_connects==1);
+
+    reset(); saved("Home",true,-30); scan_for(false);
+    assert(mock_connects==0 && s_status.count==1);
+    s_status.setup_enabled=true; scan();
+    assert(mock_connects==0); /* Even an automatic scan cannot join during Setting. */
+
+    reset(); saved("A",true,-30); saved("B",true,-50); saved("C",true,-70); scan();
+    for (int i=0; i<2; ++i) {
+        mock_now += 60000000;
+        s_status.connected=true; s_status.joining=false; s_status.internet=HISU_INTERNET_OFFLINE;
+        s_internet_failures=2;
+        assert(roam_without_internet());
+    }
+    assert(!strcmp(s_ssid,"C"));
+    mock_now += 300000000;
+    s_status.connected=true; s_status.joining=false; s_status.internet=HISU_INTERNET_OFFLINE;
+    s_internet_failures=2;
+    int connects = mock_connects;
+    assert(!roam_without_internet() && mock_connects==connects && s_status.connected);
+    assert(!auto_join_allowed("A") && !auto_join_allowed("B"));
+    s_status.connected=false; s_want_connection=false; scan();
+    assert(!strcmp(s_ssid,"C")); /* Reconnect fallback cannot bypass the outage history. */
+
+    reset(); saved("Cafe",true,-30); saved("Home",true,-60); scan();
+    s_had_connection=true;
+    mock_aps[0]=mock_aps[1]; mock_count=1; /* Board moved away from Cafe. */
+    retry_join();
+    assert(!strcmp(s_ssid,"Home") && mock_connects==2 && mock_scans==2);
+    reset(); saved("Cafe",true,-30); scan(); mock_count=0;
+    retry_join();
+    assert(!s_want_connection && mock_connects==1 && !s_status.ssid[0]);
+    reset(); saved("Home",true,-30); scan(); s_retries=4;
+    retry_join(); assert(s_retries==4 && mock_connects==2);
+    s_status.setup_enabled=true; retry_join(); assert(mock_connects==2 && s_retry_at>mock_now);
+    reset(); saved("Hidden",false,0); mock_saved_hidden[0]=true; scan();
+    retry_join(); assert(mock_connects==2 && mock_scans==1);
 
     puts("Network tests passed: saved/hidden fallback, auth history, connectivity probes, captive portals, stale results, warning recovery and visible-only offline roaming.");
     return 0;

@@ -160,6 +160,8 @@ if (typeof document !== 'undefined') {
   function openWifiDialog(ssid = '') {
     el('wifi-ssid').value = ssid; el('wifi-ssid').readOnly = Boolean(ssid);
     el('wifi-password').value = ''; el('wifi-password').required = Boolean(ssid);
+    el('wifi-is-hidden').checked = false;
+    el('wifi-hidden-option').hidden = Boolean(ssid);
     el('wifi-dialog-title').textContent = ssid || 'Thêm mạng';
     el('wifi-dialog').showModal();
     el(ssid ? 'wifi-password' : 'wifi-ssid').focus();
@@ -197,8 +199,9 @@ if (typeof document !== 'undefined') {
     const ssid = el('wifi-ssid').value, password = el('wifi-password').value;
     el('wifi-password').value = '';
     const saved = wifiState?.aps.find(ap => ap.ssid === ssid)?.saved;
+    const hidden = !el('wifi-ssid').readOnly && el('wifi-is-hidden').checked;
     el('wifi-dialog').close();
-    await wifiAction('/wifi/join',{ssid,password,...(saved && !password ? {saved:true} : {})});
+    await wifiAction('/wifi/join',{ssid,password,...(hidden ? {hidden:true} : saved && !password ? {saved:true} : {})});
   };
   async function loadSettings() {
     const state = await request('/settings');

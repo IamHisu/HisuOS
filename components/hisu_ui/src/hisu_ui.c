@@ -336,7 +336,8 @@ static void create_theme_icon(lv_obj_t *parent, bool light, bool selected)
 
 static lv_color_t overlay_color(unsigned index, int x, int y, int w, int h)
 {
-    const lv_image_dsc_t *image = s_wallpaper_available ? &s_wallpaper_image : NULL;
+    const lv_image_dsc_t *image = s_wallpaper_available &&
+        hisu_settings_get(HISU_SETTING_WALLPAPER_DEFAULT) != 1 ? &s_wallpaper_image : NULL;
     if (s_idle_gif && lv_gif_is_loaded(s_idle_gif)) image = lv_image_get_src(s_idle_gif);
     if (image && image->header.cf == LV_COLOR_FORMAT_RGB565) {
         int left = (HISU_DISPLAY_WIDTH - (int)image->header.w) / 2;
@@ -1021,7 +1022,7 @@ static void render(void)
     case UI_IDLE:
         if (s_status.status != HISU_UI_IDLE) render_subtitle(s_status.status, s_status.text);
         else {
-            if (s_wallpaper_available) {
+            if (s_wallpaper_available && hisu_settings_get(HISU_SETTING_WALLPAPER_DEFAULT) != 1) {
                 if (s_wallpaper_image.header.cf == LV_COLOR_FORMAT_RAW) {
                     s_idle_gif = lv_gif_create(root);
                     lv_gif_set_color_format(s_idle_gif,LV_COLOR_FORMAT_RGB565);

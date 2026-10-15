@@ -1,6 +1,15 @@
 #pragma once
 #include "network_mock.h"
 #include <stdlib.h>
+enum { ESP_ERR_NOT_FOUND = 100 };
+
+typedef struct { char version[32], project_name[32], idf_ver[32]; } esp_app_desc_t;
+static const esp_app_desc_t *esp_app_get_description(void) {
+    static const esp_app_desc_t app = {"test-version", "HisuOS", "test-idf"};
+    return &app;
+}
+static unsigned mock_reboots;
+static void esp_restart(void) { ++mock_reboots; }
 typedef int portMUX_TYPE;
 typedef int StaticQueue_t;
 #define portMUX_INITIALIZER_UNLOCKED 0
@@ -18,7 +27,7 @@ static int (*mock_queue_peek)(QueueHandle_t queue, void *data);
 static int xQueuePeek(QueueHandle_t queue, void *data, int timeout) { return mock_queue_peek ? mock_queue_peek(queue, data) : 0; }
 static void vTaskDelay(unsigned ticks) {}
 typedef void *i2s_chan_handle_t;
-typedef struct { int unused; } i2s_chan_config_t;
+typedef struct { bool auto_clear_after_cb; } i2s_chan_config_t;
 typedef struct { int unused; } mock_i2s_clock_t;
 typedef struct { int unused; } mock_i2s_slots_t;
 typedef struct {
@@ -30,7 +39,11 @@ enum { I2S_NUM_1, I2S_ROLE_MASTER, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STERE
 #define I2S_CHANNEL_DEFAULT_CONFIG(port, role) ((i2s_chan_config_t){0})
 #define I2S_STD_CLK_DEFAULT_CONFIG(rate) ((mock_i2s_clock_t){0})
 #define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(bits, mode) ((mock_i2s_slots_t){0})
-static esp_err_t i2s_new_channel(const i2s_chan_config_t *config, i2s_chan_handle_t *tx, i2s_chan_handle_t *rx) { *tx = (void *)1; return ESP_OK; }
+static i2s_chan_config_t mock_i2s_channel_config;
+static esp_err_t i2s_new_channel(const i2s_chan_config_t *config, i2s_chan_handle_t *tx, i2s_chan_handle_t *rx) {
+    mock_i2s_channel_config = *config;
+    *tx = (void *)1; return ESP_OK;
+}
 static esp_err_t i2s_channel_init_std_mode(i2s_chan_handle_t channel, const i2s_std_config_t *config) { return ESP_OK; }
 static esp_err_t i2s_channel_enable(i2s_chan_handle_t channel) { return ESP_OK; }
 static esp_err_t i2s_channel_disable(i2s_chan_handle_t channel) { return ESP_OK; }
@@ -63,7 +76,8 @@ static esp_err_t esp_websocket_register_events(esp_websocket_client_handle_t cli
 static esp_err_t esp_websocket_client_start(esp_websocket_client_handle_t client) { return ESP_OK; }
 static esp_err_t esp_websocket_client_stop(esp_websocket_client_handle_t client) { return ESP_OK; }
 static esp_err_t esp_websocket_client_destroy(esp_websocket_client_handle_t client) { return ESP_OK; }
-static int esp_websocket_client_send_text(esp_websocket_client_handle_t client, const char *text, size_t length, int timeout) { return (int)length; }
+static bool mock_send_failure;
+static int esp_websocket_client_send_text(esp_websocket_client_handle_t client, const char *text, size_t length, int timeout) { return mock_send_failure ? -1 : (int)length; }
 static int mbedtls_base64_decode(unsigned char *out, size_t capacity, size_t *length, const unsigned char *input, size_t count) {
     if (capacity < 4) return -1;
     memset(out, 0, 4); *length = 4; return 0;

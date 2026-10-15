@@ -12,6 +12,7 @@ typedef enum {
     HISU_SETTING_THEME, /* 0: dark, 1: light */
     HISU_SETTING_WIFI_ENABLED,
     HISU_SETTING_TIMEZONE, /* Minutes east of UTC; default UTC+7. */
+    HISU_SETTING_WALLPAPER_DEFAULT, /* 0: uploaded image if available, 1: built-in */
     HISU_SETTING_COUNT,
 } hisu_setting_t;
 
@@ -28,6 +29,8 @@ bool hisu_settings_has_gemini_key(void);
 esp_err_t hisu_settings_get_wifi(char ssid[33], char password[65]);
 esp_err_t hisu_settings_get_wifi_at(unsigned index, char ssid[33], char password[65]);
 esp_err_t hisu_settings_save_wifi(const char *ssid, const char *password);
+esp_err_t hisu_settings_save_wifi_ex(const char *ssid, const char *password, bool hidden);
+bool hisu_settings_wifi_hidden(const char *ssid);
 #define HISU_WIFI_SAVED_MAX 8
 esp_err_t hisu_settings_find_wifi(const char *ssid, char password[65]);
 typedef struct {

@@ -1,6 +1,7 @@
 #include "hisu_settings.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -8,10 +9,10 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on", "tz_minutes"};
-static const int s_min[] = {10, 0, 0, 0, 0, 0, -720};
-static const int s_max[] = {100, 100, 1, 600, 1, 1, 840};
-static int s_values[] = {75, 55, 1, 0, 0, 1, 420};
+static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on", "tz_minutes", "wall_default"};
+static const int s_min[] = {10, 0, 0, 0, 0, 0, -720, 0};
+static const int s_max[] = {100, 100, 1, 600, 1, 1, 840, 1};
+static int s_values[] = {75, 55, 1, 0, 0, 1, 420, 0};
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
 
@@ -167,7 +168,11 @@ esp_err_t hisu_settings_save_power_usage(const hisu_power_usage_record_t *record
     xSemaphoreGive(s_lock);
     return err;
 }
-typedef struct { uint32_t version, count; wifi_credentials_t entries[HISU_WIFI_SAVED_MAX]; } wifi_store_t;
+typedef struct {
+    uint32_t version, count;
+    wifi_credentials_t entries[HISU_WIFI_SAVED_MAX];
+    uint32_t hidden_mask;
+} wifi_store_t;
 
 static bool valid_credentials(const wifi_credentials_t *entry)
 {
@@ -188,11 +193,15 @@ static esp_err_t read_wifi_store(wifi_store_t *store)
         if (err == ESP_OK && (length != sizeof(old) || !valid_credentials(&old))) err = ESP_ERR_INVALID_SIZE;
         if (err == ESP_OK) { store->entries[0] = old; store->count = 1; }
         memset(&old, 0, sizeof(old));
-        store->version = 1;
+        store->version = 2;
         return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
     }
     if (err != ESP_OK) return err;
-    if (length != sizeof(*store) || store->version != 1 || store->count > HISU_WIFI_SAVED_MAX)
+    if (store->version == 1 && length == offsetof(wifi_store_t, hidden_mask)) {
+        store->version = 2;
+        store->hidden_mask = 0;
+    } else if (length != sizeof(*store) || store->version != 2) return ESP_ERR_INVALID_SIZE;
+    if (store->count > HISU_WIFI_SAVED_MAX || (store->hidden_mask >> store->count) != 0)
         return ESP_ERR_INVALID_SIZE;
     for (uint32_t i = 0; i < store->count; ++i) {
         if (!valid_credentials(&store->entries[i])) return ESP_ERR_INVALID_SIZE;
@@ -245,6 +254,27 @@ esp_err_t hisu_settings_find_wifi(const char *ssid, char password[65])
 
 esp_err_t hisu_settings_save_wifi(const char *ssid, const char *password)
 {
+    return hisu_settings_save_wifi_ex(ssid, password, false);
+}
+
+bool hisu_settings_wifi_hidden(const char *ssid)
+{
+    if (!s_lock || !ssid) return false;
+    wifi_store_t store;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = read_wifi_store(&store);
+    xSemaphoreGive(s_lock);
+    bool hidden = false;
+    if (err == ESP_OK) {
+        for (uint32_t i = 0; i < store.count; ++i)
+            if (!strcmp(ssid, store.entries[i].ssid)) hidden = (store.hidden_mask & (1U << i)) != 0;
+    }
+    memset(&store, 0, sizeof(store));
+    return hidden;
+}
+
+esp_err_t hisu_settings_save_wifi_ex(const char *ssid, const char *password, bool hidden)
+{
     if (!s_lock || !ssid || !password || !ssid[0] || strlen(ssid) > 32 || strlen(password) > 64)
         return ESP_ERR_INVALID_ARG;
     wifi_store_t store;
@@ -255,7 +285,12 @@ esp_err_t hisu_settings_save_wifi(const char *ssid, const char *password)
         while (index < store.count && strcmp(store.entries[index].ssid, ssid)) ++index;
         if (index == store.count && store.count < HISU_WIFI_SAVED_MAX) ++store.count;
         if (index >= HISU_WIFI_SAVED_MAX) index = HISU_WIFI_SAVED_MAX - 1;
-        for (uint32_t i = index; i > 0; --i) store.entries[i] = store.entries[i - 1];
+        for (uint32_t i = index; i > 0; --i) {
+            store.entries[i] = store.entries[i - 1];
+            store.hidden_mask = (store.hidden_mask & ~(1U << i)) |
+                (((store.hidden_mask >> (i - 1)) & 1U) << i);
+        }
+        store.hidden_mask = (store.hidden_mask & ~1U) | (hidden ? 1U : 0U);
         memset(&store.entries[0], 0, sizeof(store.entries[0]));
         memcpy(store.entries[0].ssid, ssid, strlen(ssid));
         memcpy(store.entries[0].password, password, strlen(password));

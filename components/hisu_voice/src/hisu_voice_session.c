@@ -48,6 +48,16 @@ bool voice_session_expire(voice_session_t *s, int64_t now_ms)
     return true;
 }
 
+bool voice_session_finish_utterance(voice_session_t *s, uint32_t generation, int64_t now_ms, const char *text)
+{
+    if (!voice_session_current(s, generation)) return false;
+    if (voice_session_end_phrase(text)) {
+        voice_session_close(s);
+        return true;
+    }
+    return voice_session_finish(s, generation, now_ms);
+}
+
 bool voice_session_end_phrase(const char *text)
 {
     char normalized[128];
@@ -62,5 +72,14 @@ bool voice_session_end_phrase(const char *text)
            strcmp(normalized, "thoi nhe") == 0 || strcmp(normalized, "tạm biệt") == 0 ||
            strcmp(normalized, "Tạm biệt") == 0 || strcmp(normalized, "tam biet") == 0 ||
            strcmp(normalized, "kết thúc hội thoại") == 0 || strcmp(normalized, "Kết thúc hội thoại") == 0 ||
-           strcmp(normalized, "ket thuc hoi thoai") == 0;
+           strcmp(normalized, "ket thuc hoi thoai") == 0 ||
+           strcmp(normalized, "kết thúc cuộc trò chuyện") == 0 ||
+           strcmp(normalized, "Kết thúc cuộc trò chuyện") == 0 ||
+           strcmp(normalized, "kết thúc cuộc trò chuyện nhé") == 0 ||
+           strcmp(normalized, "Kết thúc cuộc trò chuyện nhé") == 0 ||
+           strcmp(normalized, "kết thúc cuộc trò chuyện đi") == 0 ||
+           strcmp(normalized, "Kết thúc cuộc trò chuyện đi") == 0 ||
+           strcmp(normalized, "ket thuc cuoc tro chuyen") == 0 ||
+           strcmp(normalized, "dừng trò chuyện") == 0 || strcmp(normalized, "Dừng trò chuyện") == 0 ||
+           strcmp(normalized, "dừng cuộc trò chuyện") == 0 || strcmp(normalized, "Dừng cuộc trò chuyện") == 0;
 }

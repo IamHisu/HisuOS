@@ -17,5 +17,6 @@ void voice_session_close(voice_session_t *session);
 bool voice_session_current(const voice_session_t *session, uint32_t generation);
 bool voice_session_capture(voice_session_t *session, int64_t now_ms);
 bool voice_session_finish(voice_session_t *session, uint32_t generation, int64_t now_ms);
+bool voice_session_finish_utterance(voice_session_t *session, uint32_t generation, int64_t now_ms, const char *text);
 bool voice_session_expire(voice_session_t *session, int64_t now_ms);
 bool voice_session_end_phrase(const char *text);

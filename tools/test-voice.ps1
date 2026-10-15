@@ -25,12 +25,12 @@ foreach ($directory in @('', 'driver', 'freertos', 'mbedtls')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $stubs $directory) | Out-Null
 }
 # Generated include shims replace SDK hardware APIs for the actual Live transport source.
-foreach ($header in @('esp_err.h', 'esp_websocket_client.h', 'esp_crt_bundle.h', 'esp_heap_caps.h',
+foreach ($header in @('esp_err.h', 'esp_app_desc.h', 'esp_system.h', 'esp_websocket_client.h', 'esp_crt_bundle.h', 'esp_heap_caps.h',
     'esp_timer.h', 'esp_log.h', 'driver/spi_master.h', 'driver/i2s_std.h', 'freertos/FreeRTOS.h',
     'freertos/task.h', 'freertos/queue.h', 'mbedtls/base64.h')) {
     Set-Content -LiteralPath (Join-Path $stubs $header) -Value '#include "live_transport_mock.h"' -Encoding ascii
 }
-& $compiler.FullName /nologo /c /std:c11 /MT /utf-8 /GS- /W3 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_network\include" "/I$root\components\hisu_settings\include" "/I$root\components\hisu_voice\src" "/I$root\boards\zhengchen_154" "/I$root\managed_components\espressif__cjson\cJSON" "/Fo$out\" (Join-Path $root 'tests\test_live_transport.c') (Join-Path $root 'components\hisu_voice\src\hisu_voice_live_message.c')
+& $compiler.FullName /nologo /c /std:c11 /MT /utf-8 /GS- /W3 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_media\include" "/I$root\components\hisu_network\include" "/I$root\components\hisu_settings\include" "/I$root\components\hisu_voice\src" "/I$root\boards\zhengchen_154" "/I$root\managed_components\espressif__cjson\cJSON" "/Fo$out\" (Join-Path $root 'tests\test_live_transport.c') (Join-Path $root 'components\hisu_voice\src\hisu_voice_live_message.c')
 if ($LASTEXITCODE -ne 0) { throw 'Live transport host compilation failed.' }
 $liveExe = Join-Path $out 'live-transport-test.exe'
 & (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$liveExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_live_transport.obj') (Join-Path $out 'hisu_voice_live_message.obj') (Join-Path $out 'hisu_voice_live_turn.obj') (Join-Path $out 'cJSON.obj')

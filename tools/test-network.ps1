@@ -25,3 +25,13 @@ $exe = Join-Path $out 'network-test.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Network host linking failed.' }
 & $exe
 if ($LASTEXITCODE -ne 0) { throw 'Network host tests failed.' }
+foreach ($header in @('nvs.h','nvs_flash.h')) {
+    Set-Content -LiteralPath (Join-Path $stubs $header) -Value '#include "settings_mock.h"' -Encoding ascii
+}
+& $compiler.FullName /nologo /c /std:c11 /MT /GS- /W3 /wd4101 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_settings\include" "/Fo$out\" (Join-Path $root 'tests\test_wifi_store.c')
+if ($LASTEXITCODE -ne 0) { throw 'Wi-Fi store compilation failed.' }
+$storeExe = Join-Path $out 'wifi-store-test.exe'
+& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$storeExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_wifi_store.obj')
+if ($LASTEXITCODE -ne 0) { throw 'Wi-Fi store linking failed.' }
+& $storeExe
+if ($LASTEXITCODE -ne 0) { throw 'Wi-Fi store tests failed.' }

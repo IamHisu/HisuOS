@@ -142,6 +142,26 @@ try {
     await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('<img'));
     assert.deepEqual(wifiRequests.filter(request=>request.path==='/wifi/join').at(-1).data,{ssid:'<img src=x onerror=alert(1)>',password:'password123'});
     assert.equal(await page.locator('#wifi-password').inputValue(),'');
+    assert.equal(await page.locator('#wifi-hidden-option').isVisible(),false);
+    await page.locator('#wifi-hidden').click();
+    assert.equal(await page.locator('#wifi-hidden-option').isVisible(),true);
+    assert.equal(await page.locator('#wifi-is-hidden').isChecked(),false);
+    await page.locator('#wifi-ssid').fill('Private hidden');
+    await page.locator('#wifi-password').fill('hiddenpass');
+    await page.locator('#wifi-is-hidden').check();
+    await page.screenshot({path:fileURLToPath(new URL(`${name}-wifi-hidden.png`,output)),fullPage:true});
+    await page.locator('#wifi-connect').click();
+    await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('Private hidden'));
+    assert.deepEqual(wifiRequests.filter(request=>request.path==='/wifi/join').at(-1).data,
+      {ssid:'Private hidden',password:'hiddenpass',hidden:true});
+    await page.locator('#wifi-hidden').click();
+    assert.equal(await page.locator('#wifi-is-hidden').isChecked(),false);
+    await page.locator('#wifi-ssid').fill('Normal network');
+    await page.locator('#wifi-password').fill('normalpass');
+    await page.locator('#wifi-connect').click();
+    await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('Normal network'));
+    assert.deepEqual(wifiRequests.filter(request=>request.path==='/wifi/join').at(-1).data,
+      {ssid:'Normal network',password:'normalpass'});
     if (wifiOnly) {
       await page.locator('#tab-wallpaper').click();
       const tinyGif = {name:'test.gif',mimeType:'image/gif',

@@ -21,7 +21,7 @@
 
 enum {CMD_SCAN, CMD_JOIN, CMD_ENABLE, CMD_SETUP, CMD_PERFORMANCE};
 enum {EVENT_IP = 1, EVENT_DISCONNECTED = 2};
-typedef struct { int type; bool enabled; char ssid[33], password[65]; } command_t;
+typedef struct { int type; bool enabled, hidden; char ssid[33], password[65]; } command_t;
 static SemaphoreHandle_t s_lock;
 static QueueHandle_t s_commands;
 static EventGroupHandle_t s_events;
@@ -37,6 +37,28 @@ static int s_retries;
 static int64_t s_deadline, s_retry_at;
 static bool s_auto_join;
 static bool s_performance;
+static bool s_performance_requested; /* Protected by s_lock, including queued requests. */
+static bool s_candidate_hidden;
+static bool s_had_connection;
+/* Worker-owned history: one pass per Internet outage, not a timed rotation. */
+static char s_roam_tried[HISU_WIFI_SAVED_MAX][33];
+
+static bool roam_tried(const char *ssid)
+{
+    for (unsigned i = 0; i < HISU_WIFI_SAVED_MAX; ++i)
+        if (!strcmp(s_roam_tried[i], ssid)) return true;
+    return false;
+}
+
+static void remember_roam(const char *ssid)
+{
+    for (unsigned i = 0; i < HISU_WIFI_SAVED_MAX; ++i) {
+        if (!s_roam_tried[i][0] || !strcmp(s_roam_tried[i], ssid)) {
+            memcpy(s_roam_tried[i], ssid, strlen(ssid) + 1);
+            return;
+        }
+    }
+}
 /* Protected by s_lock; invalidates HTTP results from a previous connection. */
 static uint32_t s_connection_generation;
 static unsigned s_internet_failures;
@@ -69,7 +91,7 @@ static join_failure_t *join_failure(const char *ssid, bool create)
 static bool auto_join_allowed(const char *ssid)
 {
     join_failure_t *failure = join_failure(ssid, false);
-    return !failure || (!failure->password_rejected && esp_timer_get_time() >= failure->retry_after);
+    return !roam_tried(ssid) && (!failure || (!failure->password_rejected && esp_timer_get_time() >= failure->retry_after));
 }
 
 static void record_join_failure(bool password_rejected)
@@ -95,7 +117,9 @@ static void reset_internet(hisu_internet_state_t state)
 static void publish_internet(uint32_t generation, hisu_internet_state_t result)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (s_status.enabled && s_status.connected && generation == s_connection_generation) {
+    if (s_status.enabled && s_status.connected && !s_status.setup_enabled &&
+        !s_performance && !s_performance_requested &&
+        generation == s_connection_generation) {
         s_status.internet = result;
         if (result == HISU_INTERNET_ONLINE) s_internet_failures = 0;
         else if (s_internet_failures < 2) ++s_internet_failures;
@@ -111,7 +135,8 @@ static void internet_worker(void *arg)
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
         xSemaphoreTake(s_lock, portMAX_DELAY);
         /* Keep the local Setting link free of background TLS/DNS traffic. */
-        bool connected = s_status.enabled && s_status.connected && !s_status.setup_enabled;
+        bool connected = s_status.enabled && s_status.connected && !s_status.setup_enabled &&
+            !s_performance && !s_performance_requested;
         uint32_t generation = s_connection_generation;
         xSemaphoreGive(s_lock);
         if (connected) publish_internet(generation, hisu_connectivity_probe());
@@ -283,7 +308,7 @@ static void sort_access_points(void)
     }
 }
 
-static void scan(void)
+static void scan_for(bool auto_connect)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool enabled = s_status.enabled;
@@ -356,7 +381,10 @@ static void scan(void)
     s_status.error = ESP_OK;
     ++s_status.revision;
     xSemaphoreGive(s_lock);
-    if (!connected && !resume_connection) {
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool may_connect = auto_connect && !s_status.setup_enabled && !s_performance && !s_performance_requested;
+    xSemaphoreGive(s_lock);
+    if (may_connect && !connected && !resume_connection) {
         /* The list is ordered by signal strength within the saved group.
          * Never replace an explicit join, roam a connected station, or use
          * credentials from an unsuccessful provisioning attempt. */
@@ -392,7 +420,7 @@ static void scan(void)
             bool visible = false;
             for (int j = 0; j < s_status.count; ++j)
                 if (!strcmp(s_status.aps[j].ssid, ssid)) visible = true;
-            bool usable = saved == ESP_OK && !visible && auto_join_allowed(ssid) &&
+            bool usable = saved == ESP_OK && !visible && hisu_settings_wifi_hidden(ssid) && auto_join_allowed(ssid) &&
                 hisu_wifi_password_is_valid(password);
             if (usable) {
                 memcpy(s_ssid, ssid, sizeof(s_ssid));
@@ -416,18 +444,50 @@ done:
     }
 }
 
+static void scan(void) { scan_for(true); }
+
+static void retry_join(void)
+{
+    bool automatic = s_auto_join || s_had_connection;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool protected_link = s_status.setup_enabled || s_performance || s_performance_requested;
+    xSemaphoreGive(s_lock);
+    if (automatic && protected_link) {
+        s_deadline = 0;
+        s_retry_at = esp_timer_get_time() + 1000000;
+        return;
+    }
+    if (!automatic || hisu_settings_wifi_hidden(s_ssid)) {
+        begin_join();
+        return;
+    }
+    /* A dropped visible AP may be out of range now. Refresh before retrying,
+     * without losing the retry budget if the same AP is selected again. */
+    char previous[33]; memcpy(previous, s_ssid, sizeof(previous));
+    int retries = s_retries;
+    s_want_connection = false;
+    s_deadline = s_retry_at = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_status.joining = false;
+    s_status.ssid[0] = 0;
+    xSemaphoreGive(s_lock);
+    scan();
+    if (s_want_connection && !strcmp(previous, s_ssid)) s_retries = retries;
+}
+
 static bool roam_without_internet(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool roam = s_auto_join && hisu_network_has_internet_warning(&s_status) &&
-        !s_status.setup_enabled && !s_status.joining && !s_status.scanning && s_internet_failures >= 2;
+        !s_performance && !s_performance_requested && !s_status.setup_enabled &&
+        !s_status.joining && !s_status.scanning && s_internet_failures >= 2;
     uint32_t generation = s_connection_generation;
     if (roam) s_internet_failures = 0;
     xSemaphoreGive(s_lock);
     if (!roam) return false;
     /* Refresh while still connected; saved credentials alone do not prove
      * that a replacement router is present. A failed scan keeps this link. */
-    scan();
+    scan_for(false);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool scanned = s_status.error == ESP_OK && !s_status.scanning;
     xSemaphoreGive(s_lock);
@@ -447,7 +507,7 @@ static bool roam_without_internet(void)
     if (!alternative) return false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (generation != s_connection_generation || !hisu_network_has_internet_warning(&s_status) ||
-        s_status.joining || s_status.scanning) {
+        s_performance || s_performance_requested || s_status.setup_enabled || s_status.joining || s_status.scanning) {
         xSemaphoreGive(s_lock);
         memset(next_password, 0, sizeof(next_password));
         return false;
@@ -456,6 +516,7 @@ static bool roam_without_internet(void)
     reset_internet(HISU_INTERNET_UNKNOWN);
     ++s_status.revision;
     xSemaphoreGive(s_lock);
+    remember_roam(s_ssid);
     record_join_failure(false);
     join_failure(s_ssid, false)->retry_after = esp_timer_get_time() + 120000000;
     memcpy(s_ssid, next_ssid, sizeof(s_ssid));
@@ -483,7 +544,14 @@ static void worker(void *arg)
         command_t command;
         if (xQueueReceive(s_commands, &command, pdMS_TO_TICKS(200)) == pdTRUE) {
             if (command.type == CMD_PERFORMANCE) {
+                xSemaphoreTake(s_lock, portMAX_DELAY);
                 s_performance = command.enabled;
+                ++s_connection_generation;
+                s_internet_failures = 0;
+                bool recheck = !s_performance && s_status.connected;
+                if (recheck) s_status.internet = HISU_INTERNET_CHECKING;
+                xSemaphoreGive(s_lock);
+                if (recheck) xTaskNotifyGive(s_probe_task);
                 if (s_started && s_status.enabled) {
                     esp_err_t err = esp_wifi_set_ps(s_performance ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
                     if (err != ESP_OK) ESP_LOGW("NETWORK", "Wi-Fi power mode: %s", esp_err_to_name(err));
@@ -502,7 +570,7 @@ static void worker(void *arg)
                     s_status.enabled = true;
                     xSemaphoreGive(s_lock);
                 }
-                scan();
+                scan_for(false);
                 next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
             }
             else if (command.type == CMD_JOIN) {
@@ -525,7 +593,10 @@ static void worker(void *arg)
                 memcpy(s_ssid, command.ssid, sizeof(s_ssid));
                 memcpy(s_password, command.password, sizeof(s_password));
                 s_save_candidate = true;
+                s_candidate_hidden = command.hidden;
+                s_had_connection = false;
                 s_auto_join = false;
+                memset(s_roam_tried, 0, sizeof(s_roam_tried));
                 s_retries = 0;
                 s_want_connection = true;
                 begin_join();
@@ -538,6 +609,8 @@ static void worker(void *arg)
                 if (err == ESP_OK) {
                     s_want_connection = false; s_deadline = s_retry_at = 0;
                     s_save_candidate = false;
+                    s_had_connection = false;
+                    memset(s_roam_tried, 0, sizeof(s_roam_tried));
                     err = radio_mode(command.enabled, s_status.setup_enabled);
                     if (err == ESP_OK && !command.enabled && s_started && !s_status.setup_enabled) {
                         err = esp_wifi_stop();
@@ -568,7 +641,7 @@ static void worker(void *arg)
             esp_err_t err = esp_netif_get_ip_info(s_netif, &ip);
             bool saved = false;
             if (err == ESP_OK && s_save_candidate) {
-                err = hisu_settings_save_wifi(s_ssid, s_password);
+                err = hisu_settings_save_wifi_ex(s_ssid, s_password, s_candidate_hidden);
                 s_save_candidate = err != ESP_OK;
                 saved = err == ESP_OK;
             }
@@ -593,6 +666,7 @@ static void worker(void *arg)
             ++s_status.revision;
             xSemaphoreGive(s_lock);
             s_retries = 0; s_deadline = 0; s_retry_at = 0;
+            s_had_connection = true;
             hisu_clock_network_connected();
             xTaskNotifyGive(s_probe_task);
             events &= ~EVENT_DISCONNECTED;
@@ -618,6 +692,10 @@ static void worker(void *arg)
             } else if (!s_retry_at) s_retry_at = esp_timer_get_time() + (1000000LL << (s_retries < 5 ? s_retries : 5));
         }
         int64_t now = esp_timer_get_time();
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        bool online = s_status.connected && s_status.internet == HISU_INTERNET_ONLINE;
+        xSemaphoreGive(s_lock);
+        if (online) memset(s_roam_tried, 0, sizeof(s_roam_tried));
         if (roam_without_internet()) next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
         static int64_t next_signal_poll;
         if (now >= next_signal_poll) {
@@ -630,20 +708,27 @@ static void worker(void *arg)
         }
         /* Automatic reconnects can move the shared AP/STA radio off channel.
          * Explicit joins requested through Setting must still be allowed. */
-        if (s_want_connection && (!s_auto_join || !s_status.setup_enabled) &&
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        bool retry_protected = s_status.setup_enabled || s_performance || s_performance_requested;
+        xSemaphoreGive(s_lock);
+        if (s_want_connection && (!(s_auto_join || s_had_connection) || !retry_protected) &&
             ((s_deadline && now >= s_deadline) || (s_retry_at && now >= s_retry_at))) {
             if (++s_retries > 6) {
                 s_want_connection = false; s_deadline = 0; s_retry_at = 0;
                 record_join_failure(false);
                 esp_wifi_disconnect(); failed(ESP_ERR_TIMEOUT);
                 if (s_auto_join) next_auto_scan = 0;
-            } else begin_join();
+            } else {
+                retry_join();
+                next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
+            }
         }
         /* A saved AP may come online after boot or after reconnect attempts end.
          * Scan only while idle; a manual join or live connection takes priority. */
         if (now >= next_auto_scan && !s_want_connection) {
             xSemaphoreTake(s_lock, portMAX_DELAY);
-            bool should_scan = s_status.enabled && !s_status.setup_enabled && !s_status.connected &&
+            bool should_scan = s_status.enabled && !s_performance && !s_performance_requested &&
+                !s_status.setup_enabled && !s_status.connected &&
                 !s_status.joining && !s_status.scanning;
             xSemaphoreGive(s_lock);
             next_auto_scan = esp_timer_get_time() + auto_scan_interval_us;
@@ -690,11 +775,9 @@ esp_err_t hisu_network_start(void)
     if (err == ESP_OK) err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, NULL, &s_wifi_handler);
     if (err == ESP_OK) err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL, &s_ip_handler);
     if (err != ESP_OK) goto fail;
-    hisu_settings_get_wifi(s_ssid, s_password);
     s_status.enabled = hisu_settings_get(HISU_SETTING_WIFI_ENABLED) == 1;
     s_status.ready = true;
     s_status.scanning = s_status.enabled;
-    memcpy(s_status.ssid, s_ssid, sizeof(s_ssid));
     if (xTaskCreate(internet_worker, "hisu_internet", 8192, NULL, 2, &s_probe_task) != pdPASS) {
         err = ESP_ERR_NO_MEM; goto fail;
     }
@@ -739,7 +822,7 @@ static esp_err_t request_scan(bool enable)
 {
     if (!s_lock) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (!s_status.ready || (!s_status.enabled && !enable) || s_status.scanning) {
+    if (!s_status.ready || (!s_status.enabled && !enable) || s_performance || s_performance_requested || s_status.scanning) {
         xSemaphoreGive(s_lock); return ESP_ERR_INVALID_STATE;
     }
     s_status.scanning = true; ++s_status.revision;
@@ -752,7 +835,7 @@ static esp_err_t request_scan(bool enable)
 esp_err_t hisu_network_scan(void) { return request_scan(false); }
 esp_err_t hisu_network_provision_scan(void) { return request_scan(true); }
 
-static esp_err_t submit_join(const char *ssid, const char *password, bool provision)
+static esp_err_t submit_join(const char *ssid, const char *password, bool provision, bool hidden)
 {
     if (!ssid || !ssid[0] || strlen(ssid) > 32 || !hisu_network_valid_password(password)) return ESP_ERR_INVALID_ARG;
     if (!s_lock) return ESP_ERR_INVALID_STATE;
@@ -762,7 +845,7 @@ static esp_err_t submit_join(const char *ssid, const char *password, bool provis
     }
     s_status.joining = true; ++s_status.revision;
     xSemaphoreGive(s_lock);
-    command_t command = {.type = CMD_JOIN, .enabled = provision};
+    command_t command = {.type = CMD_JOIN, .enabled = provision, .hidden = hidden};
     memcpy(command.ssid, ssid, strlen(ssid)); memcpy(command.password, password, strlen(password));
     esp_err_t err = send_command(&command);
     memset(&command, 0, sizeof(command));
@@ -770,8 +853,9 @@ static esp_err_t submit_join(const char *ssid, const char *password, bool provis
     return err;
 }
 
-esp_err_t hisu_network_join(const char *ssid, const char *password) { return submit_join(ssid, password, false); }
-esp_err_t hisu_network_provision(const char *ssid, const char *password) { return submit_join(ssid, password, true); }
+esp_err_t hisu_network_join(const char *ssid, const char *password) { return submit_join(ssid, password, false, false); }
+esp_err_t hisu_network_provision(const char *ssid, const char *password) { return submit_join(ssid, password, true, false); }
+esp_err_t hisu_network_provision_ex(const char *ssid, const char *password, bool hidden) { return submit_join(ssid, password, true, hidden); }
 
 esp_err_t hisu_network_enable(bool enabled)
 {
@@ -781,8 +865,15 @@ esp_err_t hisu_network_enable(bool enabled)
 
 esp_err_t hisu_network_set_performance(bool active)
 {
+    if (!s_lock) return ESP_ERR_INVALID_STATE;
     command_t command = {.type = CMD_PERFORMANCE, .enabled = active};
-    return send_command(&command);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool previous = s_performance_requested;
+    s_performance_requested = active;
+    esp_err_t err = send_command(&command);
+    if (err != ESP_OK) s_performance_requested = previous;
+    xSemaphoreGive(s_lock);
+    return err;
 }
 
 esp_err_t hisu_network_setup(bool enabled)

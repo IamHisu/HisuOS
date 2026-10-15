@@ -179,13 +179,16 @@ static esp_err_t wifi_action(httpd_req_t *req)
             cJSON *ssid = cJSON_GetObjectItemCaseSensitive(json, "ssid");
             cJSON *password = cJSON_GetObjectItemCaseSensitive(json, "password");
             cJSON *saved = cJSON_GetObjectItemCaseSensitive(json, "saved");
+            cJSON *hidden = cJSON_GetObjectItemCaseSensitive(json, "hidden");
             if (json && cJSON_IsString(ssid) && cJSON_IsString(password)) {
                 if (cJSON_GetArraySize(json) == 2 && !saved)
                     result = hisu_network_provision(ssid->valuestring, password->valuestring);
-                else if (cJSON_GetArraySize(json) == 3 && cJSON_IsTrue(saved) && !password->valuestring[0]) {
+                else if (cJSON_GetArraySize(json) == 3 && !saved && cJSON_IsBool(hidden))
+                    result = hisu_network_provision_ex(ssid->valuestring, password->valuestring, cJSON_IsTrue(hidden));
+                else if (cJSON_GetArraySize(json) == 3 && !hidden && cJSON_IsTrue(saved) && !password->valuestring[0]) {
                     char stored[65] = {0};
                     if (hisu_settings_find_wifi(ssid->valuestring, stored) == ESP_OK)
-                        result = hisu_network_provision(ssid->valuestring, stored);
+                        result = hisu_network_provision_ex(ssid->valuestring, stored, hisu_settings_wifi_hidden(ssid->valuestring));
                     memset(stored, 0, sizeof(stored));
                 }
             }
