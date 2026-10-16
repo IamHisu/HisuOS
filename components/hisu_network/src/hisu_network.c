@@ -840,6 +840,17 @@ void hisu_network_get(hisu_network_status_t *out)
     xSemaphoreTake(s_lock, portMAX_DELAY); *out = s_status; xSemaphoreGive(s_lock);
 }
 
+void hisu_network_get_link(hisu_network_link_t *out)
+{
+    if (!out) return;
+    *out = (hisu_network_link_t){0};
+    if (!s_lock) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    out->connected=s_status.connected; out->setup_enabled=s_status.setup_enabled;
+    out->internet=s_status.internet;
+    xSemaphoreGive(s_lock);
+}
+
 static esp_err_t send_command(command_t *command)
 {
     if (!s_lock || !s_status.ready) return ESP_ERR_INVALID_STATE;

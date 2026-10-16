@@ -15,6 +15,8 @@ for (const [route,file,type] of [['/','index.html','text/html'],['/app.js','app.
 let state, uploaded, uploadType, wifi, device, wifiRequests, sessionRequests, leaveRequests = 0;
 let gifAssetRequests = 0;
 let memory, batteryAudio;
+let keyStates, keyRequests;
+let holdImageSave = false;
 const token = 'a'.repeat(64);
 const wifiOnly = process.argv.includes('--wifi-only');
 const server = createServer(async(req,res)=>{
@@ -59,7 +61,11 @@ const server = createServer(async(req,res)=>{
       return;
     }
     if (req.url==='/wifi') {send(200,wifi);return;}
-    if (req.method==='GET' && ['/asr-key','/gemini-key'].includes(req.url)) {send(200,{configured:false});return;}
+    if (['/asr-key','/gemini-key','/gemini-backup-key','/gemini-reader-key','/gemini-translate-key'].includes(req.url)) {
+      if (req.method==='GET') send(200,{configured:!!keyStates[req.url]});
+      else { const data=JSON.parse(body); assert.deepEqual(Object.keys(data),['key']); keyStates[req.url]=!!data.key; keyRequests.push(req.url); send(200,{saved:true}); }
+      return;
+    }
     if (req.url==='/time') {assert.ok(Number.isInteger(JSON.parse(body).utc));send(200,{saved:true});return;}
     if (req.url.startsWith('/wifi/')) {
       const data=body.length ? JSON.parse(body) : null; wifiRequests.push({path:req.url,data});
@@ -71,7 +77,8 @@ const server = createServer(async(req,res)=>{
       uploadType=req.headers['content-type'];
       if (uploadType==='image/gif') assert.equal(body.subarray(0,3).toString(),'GIF');
       else assert.equal(body.length,115200);uploaded=body;state.saving=true;send(200,{saving:true});
-      setTimeout(()=>{state.saving=false;++state.revision;},500);return;
+      if (!holdImageSave) setTimeout(()=>{state.saving=false;++state.revision;},500);
+      return;
     }
     if (req.url==='/status') {send(200,state);return;}
     if (req.url==='/logout') {state.expired=true;send(200,{closed:true});return;}
@@ -85,6 +92,7 @@ try {
   for (const [name,width,height] of [['desktop',1280,800],['mobile',390,844],['small-mobile',320,720]]) {
     state={pending:false,saving:false,revision:1,error:0,seconds:299,expired:false};uploaded=null;sessionRequests=0;gifAssetRequests=0;
     device={brightness:75,volume:55,speaker:1,timeout:0,theme:0,timezone:420};wifiRequests=[];
+    keyStates={}; keyRequests=[];
     memory={enabled:true,pending:false,capacity:24,facts:[{id:1,fact:'Thích nghe nhạc nhẹ vào buổi tối.'},{id:2,fact:'<img src=x onerror=alert(1)>'}]};
     batteryAudio={ready:0,count:5,current:0,requested:false,busy:false,error:0,http_status:0,charging:true,connected:true,configured:true};
     wifi={enabled:true,scanning:false,joining:false,connected:false,internet:'unknown',error:0,ssid:'',ip:'',aps:[
@@ -238,6 +246,57 @@ try {
     await page.locator('#brightness').fill('42');await page.locator('#brightness').dispatchEvent('change');
     await page.waitForFunction(()=>document.getElementById('message').textContent.includes('Đã lưu thiết lập'));
     assert.equal(device.brightness,42);
+    assert.equal(await page.locator('header span').count(),0);
+    assert.equal(await page.title(),'HisuOS');
+    for (const keyName of ['asr','gemini','gemini-backup','gemini-reader','gemini-translate']) {
+      const name=keyName;
+      const input=page.locator(`#${name}-key`), form=page.locator(`#${name}-key-form`);
+      assert.equal(await form.getAttribute('class'),'key-form');
+      assert.equal(await form.getAttribute('aria-labelledby'),`${name}-key-title`);
+      assert.equal(await form.locator('fieldset > legend').count(),1);
+      const groupBounds=await form.locator('fieldset').boundingBox();
+      const titleBounds=await form.locator('legend').boundingBox();
+      assert.ok(Math.abs((titleBounds.x+titleBounds.width/2)-(groupBounds.x+groupBounds.width/2))<2);
+      assert.ok(titleBounds.y<=groupBounds.y+2 && titleBounds.y+titleBounds.height>groupBounds.y);
+      assert.equal(await input.getAttribute('type'),'password');
+      await input.fill('mock-only-secret'); await page.locator(`#${name}-key-save`).click();
+      await page.waitForFunction(id=>document.getElementById(id).value==='',`${name}-key`);
+      assert.equal(keyRequests.at(-1),`/${name}-key`);
+      assert.equal(keyStates[`/${name}-key`],true);
+      assert.equal((await page.locator(`#${name}-key-status`).textContent()).includes('mock-only-secret'),false);
+      await input.fill('replacement-mock-secret');
+      let before=keyRequests.length;
+      await page.locator(`#${name}-key-save`).click();
+      await page.locator('#key-confirm').waitFor({state:'visible'});
+      assert.ok((await page.locator('#key-confirm-title').textContent()).includes(await form.locator('legend').textContent()));
+      assert.ok((await page.locator('#key-confirm-title').textContent()).includes('Ghi đè'));
+      assert.equal(keyRequests.length,before);
+      await page.locator('#key-confirm-no').click();
+      await page.waitForFunction(id=>!document.getElementById(id).disabled,`${name}-key`);
+      assert.equal(keyRequests.length,before);
+      assert.equal(await input.inputValue(),'replacement-mock-secret');
+      await page.locator(`#${name}-key-save`).click();
+      await page.locator('#key-confirm').waitFor({state:'visible'});
+      await page.locator('#key-confirm-yes').click();
+      await page.waitForFunction(id=>document.getElementById(id).value==='',`${name}-key`);
+      assert.equal(keyRequests.length,before+1);
+      before=keyRequests.length;
+      await page.locator(`#${name}-key-clear`).click();
+      await page.locator('#key-confirm').waitFor({state:'visible'});
+      assert.ok((await page.locator('#key-confirm-title').textContent()).includes('Xóa'));
+      assert.equal(keyRequests.length,before);
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(id=>!document.getElementById(id).disabled,`${name}-key-clear`);
+      assert.equal(keyRequests.length,before);
+      assert.equal(keyStates[`/${name}-key`],true);
+      await page.locator(`#${name}-key-clear`).click();
+      await page.locator('#key-confirm').waitFor({state:'visible'});
+      if (name==='gemini-backup') await page.screenshot({path:fileURLToPath(new URL(`${page.viewportSize().width}-${keyName}-confirm.png`,output)),fullPage:true});
+      await page.locator('#key-confirm-yes').click();
+      await page.waitForFunction(id=>document.getElementById(id).textContent.includes('Chưa có'),`${name}-key-status`);
+      assert.equal(keyStates[`/${name}-key`],false);
+      assert.equal(keyRequests.length,before+1);
+    }
     await page.locator('#time-sync').click();
     await page.waitForFunction(()=>document.getElementById('message').textContent.includes('Đã đồng bộ giờ'));
     await page.screenshot({path:fileURLToPath(new URL(`${name}-device.png`,output)),fullPage:true});
@@ -266,10 +325,12 @@ try {
     const top=await page.evaluate(()=>[...document.getElementById('preview').getContext('2d').getImageData(120,10,1,1).data]);
     assert.deepEqual(top,[0,0,0,255]);
     await page.locator('#fit').selectOption('cover');
+    holdImageSave=true;
     await page.locator('#send').click();
-    await page.waitForFunction(()=>document.getElementById('message').textContent.includes('Đang lưu'));
+    await page.waitForFunction(()=>document.getElementById('loading-text').textContent.includes('Đang lưu'));
     assert.ok(uploaded);assert.equal(uploaded.readUInt16LE((120*240+120)*2),0x07e0);
     assert.equal(await page.locator('#send').isDisabled(),true);
+    holdImageSave=false;state.saving=false;++state.revision;
     await page.waitForFunction(()=>document.getElementById('message').textContent.includes('đã cập nhật'));
     assert.equal(await page.locator('#send').isDisabled(),false);
     const gif=await readFile(new URL('../components/hisu_ui/assets/boot_windows_xp_source.gif',import.meta.url));

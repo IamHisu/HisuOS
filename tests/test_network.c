@@ -84,6 +84,12 @@ static void fail_current(bool rejected) {
     failed(rejected ? ESP_ERR_INVALID_ARG : ESP_ERR_TIMEOUT);
 }
 int main(void) {
+    hisu_network_link_t link;
+    s_lock=NULL; hisu_network_get_link(&link);
+    assert(!link.connected && !link.setup_enabled && link.internet==HISU_INTERNET_UNKNOWN);
+    reset(); s_status.connected=true; s_status.setup_enabled=true; s_status.internet=HISU_INTERNET_CAPTIVE;
+    hisu_network_get_link(&link);
+    assert(link.connected && link.setup_enabled && link.internet==HISU_INTERNET_CAPTIVE);
     reset(); strcpy(s_ssid,"New home");
     begin_join();
     assert(!strcmp(s_status.ssid,"New home"));

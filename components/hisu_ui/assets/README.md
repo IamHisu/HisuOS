@@ -22,5 +22,6 @@ Windows XP artwork and Microsoft branding belong to their respective owners;
 this user-supplied asset is not covered by HisuOS's source code license.
 Review redistribution rights before publishing firmware containing it.
 
-The idle GIFs remain separate from this boot-only animation. Saved wallpaper,
-settings, menu navigation and subtitles are not replaced by the splash.
+There are no bundled idle wallpapers. The idle screen uses the uploaded media
+or a solid black/white theme background on missing/invalid media. This boot-only
+animation does not replace saved wallpaper, settings, navigation or subtitles.

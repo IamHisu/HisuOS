@@ -1,5 +1,9 @@
 # AI Schedules and Spoken Reminders
 
+Online reminder speech uses the separate Reader key in Setting. Missing or failed
+Reader access leaves the existing offline reminder fallback available. See
+[key routing](GEMINI_KEYS.md).
+
 ## Use
 
 Ask Hi Su to set a one-time reminder or alarm, read plans, move a plan, or cancel
@@ -34,7 +38,12 @@ The clock must be synchronized after power loss (Wi-Fi SNTP or phone Setting).
 No reminder can run while the board is off, and no powered-off auto-wake is
 implemented. With an invalid clock nothing is delivered. Overdue entries within
 24 hours are delivered when idle; older entries remain viewable but are not
-automatically spoken. Conversation, music and Setting postpone delivery. This
+automatically spoken. Past entries (claimed or missed) older than seven days
+are removed in RAM during idle maintenance or creation of a new event, then
+persisted with the usual A/B snapshot. Future events and the exact seven-day
+boundary are retained. Cleanup requires a valid clock. Failed flush/claim saves
+back off for five seconds; the idle poll no longer allocates unless an event is due.
+Conversation, music and Setting postpone delivery. This
 is a personal reminder feature, not a guaranteed safety-critical alarm clock.
 
 ## Speech and Fallback
@@ -46,6 +55,11 @@ and two-second transport timeout, no automatic retry or model fallback. A new
 wake cancels preparation. HTTP/quota/invalid/silent/too-long audio results fall
 back to immutable Kore clip 5: a generic reminder with the event text on-screen.
 Only the current event text is sent, never the list, memory or conversation.
+The online model is configurable under menuconfig -> Hi Su voice; the default
+is `gemini-2.5-flash-preview-tts`. The offline clip remains the fallback, not
+another online model. Network checks use a small link snapshot rather than a
+copy of the scan list. Stack minima are logged after reminder TTS and WSS cleanup,
+with a warning below 1536 bytes. Stack remains 8192 bytes pending board measurements.
 
 Prepare that fifth clip with `tools/prepare-battery-audio.py`; the first four
 battery clips are reused. `idf.py reconfigure build` then full `idf.py flash`

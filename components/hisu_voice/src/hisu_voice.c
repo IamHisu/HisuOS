@@ -21,6 +21,7 @@
 #include "freertos/semphr.h"
 #include "model_path.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
 static const char *TAG = "VOICE";
@@ -46,6 +47,13 @@ static atomic_bool s_audio_fault;
 #define ASR_START_SAMPLES (ASR_SAMPLE_RATE / 5)
 #define ASR_PREROLL_SAMPLES (ASR_SAMPLE_RATE * 6 / 10)
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+static void post_listening(void)
+{
+    const char *language=voice_live_interpreter_language();
+    char label[48]="";
+    if (language) snprintf(label,sizeof(label),"Phiên dịch vi-%s",language);
+    (void)hisu_ui_post_status(HISU_UI_LISTENING,label);
+}
 static void live_event(live_event_t event, uint32_t generation, const char *text)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -56,12 +64,17 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         xSemaphoreGive(s_lock); return;
     }
     if (!voice_session_current(&s_session, generation)) { xSemaphoreGive(s_lock); return; }
-    if (event == LIVE_READY) {
+    if (event == LIVE_REKEY) {
+        ++s_session.generation;
+        s_session.state=VOICE_PROCESSING;
+        s_reply[0]=s_utterance[0]=0;
+        (void)hisu_ui_post_status(HISU_UI_THINKING,text);
+    } else if (event == LIVE_READY) {
         s_reply[0] = s_utterance[0] = 0;
         s_session.state = VOICE_PROCESSING;
         (void)hisu_ui_post_status(HISU_UI_THINKING, text);
     } else if (event == LIVE_TEXT) {
-        hisu_memory_recent(false, text);
+        if (!voice_live_interpreter_language()) hisu_memory_recent(false, text);
         voice_caption_append(s_reply, sizeof(s_reply), text);
         (void)hisu_ui_post_status(HISU_UI_SPEAKING, s_reply);
     } else if (event == LIVE_EXPRESSION) {
@@ -71,24 +84,29 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         s_session.state = VOICE_SPEAKING;
         (void)hisu_ui_post_status(HISU_UI_SPEAKING, s_reply);
     } else if (event == LIVE_DONE) {
-        voice_session_finish_utterance(&s_session, generation, now_ms(), s_utterance);
+        if (voice_live_interpreter_language()) voice_session_finish(&s_session,generation,now_ms());
+        else voice_session_finish_utterance(&s_session, generation, now_ms(), s_utterance);
         s_reply[0] = 0;
         if (s_session.state == VOICE_IDLE) {
             voice_live_close();
             (void)hisu_ui_post_status(HISU_UI_IDLE, "");
         } else {
-            (void)hisu_ui_post_status(HISU_UI_LISTENING, "");
+            post_listening();
         }
     } else if (event == LIVE_INPUT) {
-        hisu_memory_recent(true, text);
+        if (!voice_live_interpreter_language()) hisu_memory_recent(true, text);
         size_t used = strlen(s_utterance), extra = strlen(text);
         if (extra > sizeof(s_utterance) - used - 1) extra = sizeof(s_utterance) - used - 1;
         memcpy(s_utterance + used, text, extra); s_utterance[used + extra] = 0;
     } else if (event == LIVE_FLASHLIGHT) {
         (void)hisu_ui_post_flashlight(strcmp(text, "on") == 0);
-    } else if (event == LIVE_END) {
+    } else if (event == LIVE_STORY_NEXT) {
+        s_session.state=VOICE_PROCESSING;
+        s_reply[0]=s_utterance[0]=0;
+        (void)hisu_ui_post_status(HISU_UI_THINKING, "");
+    } else if (event == LIVE_END || event == LIVE_SLEEP) {
         voice_session_close(&s_session); voice_live_close();
-        (void)hisu_ui_post_status(HISU_UI_IDLE, "");
+        (void)hisu_ui_post_status(event==LIVE_SLEEP ? HISU_UI_SLEEP : HISU_UI_IDLE, "");
     } else if (event == LIVE_DEVICE) {
         hisu_ui_status_t status = s_session.state == VOICE_SPEAKING ? HISU_UI_SPEAKING :
             s_session.state == VOICE_WAITING ? HISU_UI_LISTENING : HISU_UI_THINKING;

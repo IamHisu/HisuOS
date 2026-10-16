@@ -37,6 +37,7 @@ static unsigned uxQueueMessagesWaiting(QueueHandle_t queue) { return 0; }
 static int (*mock_queue_peek)(QueueHandle_t queue, void *data);
 static int xQueuePeek(QueueHandle_t queue, void *data, int timeout) { return mock_queue_peek ? mock_queue_peek(queue, data) : 0; }
 static void (*mock_delay_hook)(void);
+static unsigned uxTaskGetStackHighWaterMark(void *task) { return 4096; }
 static void vTaskDelay(unsigned ticks) {
     mock_now+=(int64_t)ticks*10000;
     if (mock_delay_hook) {

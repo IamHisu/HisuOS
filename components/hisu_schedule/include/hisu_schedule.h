@@ -16,6 +16,8 @@ esp_err_t hisu_schedule_delete(uint32_t id);
 bool hisu_schedule_at(unsigned index, hisu_schedule_event_t *out);
 bool hisu_schedule_due(int64_t now, hisu_schedule_event_t *out);
 esp_err_t hisu_schedule_flush(void);
+/* Retain past entries for seven days; never remove future events. RAM-only. */
+unsigned hisu_schedule_prune(int64_t now);
 /* Persist the delivery claim before playback, preventing duplicates after reboot. */
 esp_err_t hisu_schedule_claim(uint32_t id);
 uint32_t hisu_schedule_revision(void);

@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include <string.h>
+#include <stdatomic.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -27,15 +28,10 @@ _Static_assert((int)UI_THEME == (int)HISU_SETTING_THEME, "Editable menu items mu
 
 LV_FONT_DECLARE(hisu_font_vi_semibold_16);
 /* ESP-IDF EMBED_FILES symbols use the filename, without its directory. */
-extern const uint8_t idle_cat_dark_start[] asm("_binary_idle_cat_dark_gif_start");
-extern const uint8_t idle_cat_dark_end[] asm("_binary_idle_cat_dark_gif_end");
-extern const uint8_t idle_cat_light_start[] asm("_binary_idle_cat_light_gif_start");
-extern const uint8_t idle_cat_light_end[] asm("_binary_idle_cat_light_gif_end");
 extern const uint8_t boot_windows_xp_start[] asm("_binary_boot_windows_xp_gif_start");
 extern const uint8_t boot_windows_xp_end[] asm("_binary_boot_windows_xp_gif_end");
 static lv_image_dsc_t s_boot_image;
 #define HISU_BOOT_SPLASH_MS 3000
-static lv_image_dsc_t s_idle_cat[2];
 static lv_obj_t *s_idle_gif;
 static lv_obj_t *s_idle_clock;
 static lv_obj_t *s_clock_outline[8];
@@ -85,6 +81,7 @@ static hisu_ui_model_t s_model;
 static status_event_t s_status;
 static int64_t s_status_shown_ms;
 static bool s_asleep;
+static atomic_bool s_sleep_requested;
 static int s_applied_brightness = -1;
 static int64_t s_activity_ms;
 static const char *s_error;
@@ -345,8 +342,7 @@ static void create_theme_icon(lv_obj_t *parent, bool light, bool selected)
 
 static lv_color_t overlay_color(unsigned index, int x, int y, int w, int h)
 {
-    const lv_image_dsc_t *image = s_wallpaper_available &&
-        hisu_settings_get(HISU_SETTING_WALLPAPER_DEFAULT) != 1 ? &s_wallpaper_image : NULL;
+    const lv_image_dsc_t *image = s_wallpaper_available ? &s_wallpaper_image : NULL;
     if (s_idle_gif && lv_gif_is_loaded(s_idle_gif)) image = lv_image_get_src(s_idle_gif);
     if (image && image->header.cf == LV_COLOR_FORMAT_RGB565) {
         int left = (HISU_DISPLAY_WIDTH - (int)image->header.w) / 2;
@@ -1126,29 +1122,24 @@ static void render(void)
     case UI_IDLE:
         if (s_status.status != HISU_UI_IDLE) render_subtitle(s_status.status, s_status.text);
         else {
-            if (s_wallpaper_available && hisu_settings_get(HISU_SETTING_WALLPAPER_DEFAULT) != 1) {
+            if (s_wallpaper_available) {
                 if (s_wallpaper_image.header.cf == LV_COLOR_FORMAT_RAW) {
                     s_idle_gif = lv_gif_create(root);
-                    lv_gif_set_color_format(s_idle_gif,LV_COLOR_FORMAT_RGB565);
-                    lv_gif_set_src(s_idle_gif,&s_wallpaper_image);
-                    lv_obj_center(s_idle_gif);
-                    if (lv_gif_is_loaded(s_idle_gif)) lv_gif_set_loop_count(s_idle_gif,-1);
-                    else {
-                        ESP_LOGE("UI","Uploaded GIF could not be decoded; using default");
-                        lv_gif_set_src(s_idle_gif,&s_idle_cat[s_light_theme ? 1 : 0]);
+                    if (s_idle_gif) {
+                        lv_gif_set_color_format(s_idle_gif,LV_COLOR_FORMAT_RGB565);
+                        lv_gif_set_src(s_idle_gif,&s_wallpaper_image);
+                        lv_obj_center(s_idle_gif);
                         if (lv_gif_is_loaded(s_idle_gif)) lv_gif_set_loop_count(s_idle_gif,-1);
+                        else {
+                            ESP_LOGE("UI","Uploaded GIF could not be decoded; using theme background");
+                            lv_obj_delete(s_idle_gif);
+                            s_idle_gif=NULL;
+                        }
                     }
                 } else {
                     lv_obj_t *image = lv_image_create(root);
-                    lv_image_set_src(image,&s_wallpaper_image); lv_obj_center(image);
+                    if (image) { lv_image_set_src(image,&s_wallpaper_image); lv_obj_center(image); }
                 }
-            } else {
-                s_idle_gif = lv_gif_create(root);
-                lv_gif_set_color_format(s_idle_gif, LV_COLOR_FORMAT_RGB565);
-                lv_gif_set_src(s_idle_gif, &s_idle_cat[s_light_theme ? 1 : 0]);
-                lv_obj_center(s_idle_gif);
-                if (lv_gif_is_loaded(s_idle_gif)) lv_gif_set_loop_count(s_idle_gif, -1);
-                else ESP_LOGE("UI", "Idle GIF could not be loaded");
             }
             render_idle_status(root);
         }
@@ -1315,14 +1306,6 @@ static void ui_task(void *arg)
 {
     (void)arg;
     lv_init();
-    s_idle_cat[0] = (lv_image_dsc_t) {
-        .header = {.magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RAW, .w = 240, .h = 240},
-        .data_size = (uint32_t)(idle_cat_dark_end - idle_cat_dark_start),
-        .data = idle_cat_dark_start,
-    };
-    s_idle_cat[1] = s_idle_cat[0];
-    s_idle_cat[1].data_size = (uint32_t)(idle_cat_light_end - idle_cat_light_start);
-    s_idle_cat[1].data = idle_cat_light_start;
     lv_tick_set_cb(tick_ms);
     lv_display_t *display = lv_display_create(HISU_DISPLAY_WIDTH, HISU_DISPLAY_HEIGHT);
     size_t buffer_size = HISU_DISPLAY_WIDTH * 40 * 2;
@@ -1443,6 +1426,12 @@ static void ui_task(void *arg)
                 update_face_subtitle(s_status.status, s_status.text);
             else if (s_model.page == UI_IDLE || s_model.page == UI_FLASHLIGHT_PAGE) render();
         }
+        /* A sleep request must survive a full subtitle/event queue. New status cancels it. */
+        if (atomic_exchange(&s_sleep_requested,false)) {
+            s_status.status=HISU_UI_IDLE; s_status.text[0]=0;
+            s_model.page=UI_IDLE; s_flashlight_enabled=false;
+            s_asleep=true; render();
+        }
         int timeout = hisu_settings_get(HISU_SETTING_TIMEOUT);
         int64_t now = esp_timer_get_time() / 1000;
         if (s_status.status==HISU_UI_REMINDER && now-s_status_shown_ms>=20000) {
@@ -1524,12 +1513,15 @@ esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle)
     if (!s_events || !s_startup || !(xEventGroupGetBits(s_startup) & 1) || s_startup_result != ESP_OK) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (status < HISU_UI_IDLE || status > HISU_UI_REMINDER || !hisu_ui_valid_utf8(subtitle, 255)) {
+    if (status < HISU_UI_IDLE || status > HISU_UI_SLEEP || !hisu_ui_valid_utf8(subtitle, 255)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (status==HISU_UI_SLEEP) { atomic_store(&s_sleep_requested,true); return ESP_OK; }
     status_event_t event = {.kind = UI_EVENT_STATUS, .status = status};
     memcpy(event.text, subtitle, strlen(subtitle) + 1);
-    return xQueueSend(s_events, &event, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+    atomic_store(&s_sleep_requested,false);
+    if (xQueueSend(s_events, &event, 0)!=pdTRUE) return ESP_ERR_TIMEOUT;
+    return ESP_OK;
 }
 
 esp_err_t hisu_ui_post_flashlight(bool enabled)

@@ -9,10 +9,10 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on", "tz_minutes", "wall_default"};
-static const int s_min[] = {10, 0, 0, 0, 0, 0, -720, 0};
-static const int s_max[] = {100, 100, 1, 600, 1, 1, 840, 1};
-static int s_values[] = {75, 55, 1, 0, 0, 1, 420, 0};
+static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on", "tz_minutes"};
+static const int s_min[] = {10, 0, 0, 0, 0, 0, -720};
+static const int s_max[] = {100, 100, 1, 600, 1, 1, 840};
+static int s_values[] = {75, 55, 1, 0, 0, 1, 420};
 static portMUX_TYPE s_values_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
@@ -113,11 +113,24 @@ esp_err_t hisu_settings_set_asr_key(const char *key)
 
 esp_err_t hisu_settings_get_gemini_key(char out[128])
 {
+    return hisu_settings_get_gemini_profile(HISU_GEMINI_CHAT,out);
+}
+static const char *const gemini_slots[]={"gemini_key","gemini_backup","gemini_reader","gemini_trans"};
+static uint32_t s_gemini_revision;
+uint32_t hisu_settings_gemini_revision(void)
+{
+    portENTER_CRITICAL(&s_values_mux); uint32_t revision=s_gemini_revision; portEXIT_CRITICAL(&s_values_mux);
+    return revision;
+}
+esp_err_t hisu_settings_get_gemini_profile(hisu_gemini_key_t profile, char out[128])
+{
+    if (out) out[0]=0;
+    if ((unsigned)profile>=HISU_GEMINI_KEY_COUNT) return ESP_ERR_INVALID_ARG;
     if (!s_lock || !out) return ESP_ERR_INVALID_ARG;
     out[0] = 0;
     size_t length = 128;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    esp_err_t err = nvs_get_str(s_nvs, "gemini_key", out, &length);
+    esp_err_t err = nvs_get_str(s_nvs, gemini_slots[profile], out, &length);
     xSemaphoreGive(s_lock);
     if (err != ESP_OK) memset(out, 0, 128);
     return err;
@@ -125,25 +138,37 @@ esp_err_t hisu_settings_get_gemini_key(char out[128])
 
 bool hisu_settings_has_gemini_key(void)
 {
-    if (!s_lock) return false;
+    return hisu_settings_has_gemini_profile(HISU_GEMINI_CHAT) ||
+        hisu_settings_has_gemini_profile(HISU_GEMINI_CHAT_BACKUP);
+}
+bool hisu_settings_has_gemini_profile(hisu_gemini_key_t profile)
+{
+    if (!s_lock || (unsigned)profile>=HISU_GEMINI_KEY_COUNT) return false;
     size_t length = 0;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    bool exists = nvs_get_str(s_nvs, "gemini_key", NULL, &length) == ESP_OK && length > 1;
+    bool exists = nvs_get_str(s_nvs, gemini_slots[profile], NULL, &length) == ESP_OK && length > 1 && length<=128;
     xSemaphoreGive(s_lock);
     return exists;
 }
 
 esp_err_t hisu_settings_set_gemini_key(const char *key)
 {
-    if (!s_lock || !key) return ESP_ERR_INVALID_ARG;
+    return hisu_settings_set_gemini_profile(HISU_GEMINI_CHAT,key);
+}
+esp_err_t hisu_settings_set_gemini_profile(hisu_gemini_key_t profile, const char *key)
+{
+    if (!s_lock || !key || (unsigned)profile>=HISU_GEMINI_KEY_COUNT) return ESP_ERR_INVALID_ARG;
     size_t length = strlen(key);
     if (length >= 128) return ESP_ERR_INVALID_ARG;
     for (size_t i = 0; i < length; ++i)
         if ((unsigned char)key[i] < 33 || (unsigned char)key[i] > 126) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    esp_err_t err = length ? nvs_set_str(s_nvs, "gemini_key", key) : nvs_erase_key(s_nvs, "gemini_key");
+    esp_err_t err = length ? nvs_set_str(s_nvs, gemini_slots[profile], key) : nvs_erase_key(s_nvs, gemini_slots[profile]);
     if (err == ESP_ERR_NVS_NOT_FOUND && !length) err = ESP_OK;
     if (err == ESP_OK) err = nvs_commit(s_nvs);
+    if (err==ESP_OK) {
+        portENTER_CRITICAL(&s_values_mux); ++s_gemini_revision; portEXIT_CRITICAL(&s_values_mux);
+    }
     xSemaphoreGive(s_lock);
     return err;
 }

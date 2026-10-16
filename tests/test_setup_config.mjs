@@ -43,6 +43,17 @@ assert.match(media,/uri="\/leave", .method=HTTP_POST, .handler=leave/);
 assert.match(media,/!strcmp\(page,expected\) && !s_leave_deadline/);
 const api = await readFile(new URL('hisu_setup_api.c',root),'utf8');
 assert.doesNotMatch(api,/hisu_media_refresh_window/);
+for (const route of ['gemini-key','gemini-backup-key','gemini-reader-key','gemini-translate-key']) {
+  for (const method of ['GET','POST']) {
+    assert.ok(api.includes(`.uri="/${route}", .method=HTTP_${method}, .handler=asr_key_api`));
+  }
+}
+const keyApi=api.split('static esp_err_t asr_key_api(')[1].split('static esp_err_t')[0];
+assert.match(keyApi,/if \(!s_guard\(req\)\)/);
+const keyGet=keyApi.split('if (req->method == HTTP_GET)')[1].split('cJSON *json = body(req)')[0];
+assert.match(keyGet,/"configured"/);
+assert.doesNotMatch(keyGet,/get_gemini|valuestring|"key"/);
+assert.match(media,/config.max_uri_handlers = 40/);
 assert.match(ui,/"http:\/\/%s\/"/);
 const open = media.split('if (cmd == CMD_OPEN)')[1].split('else if (cmd == CMD_DEFAULT)')[0];
 assert.match(open,/hisu_network_setup\(true\)/);

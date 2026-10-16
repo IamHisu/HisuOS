@@ -80,8 +80,9 @@ if (typeof document !== 'undefined') {
     el('connection').textContent = 'Đã ngắt kết nối';
     el('wifi-password').value = ''; el('wifi-ssid').value = '';
     el('asr-key').value = '';
-    el('gemini-key').value = '';
+    for (const name of ['gemini','gemini-backup','gemini-reader','gemini-translate']) el(`${name}-key`).value = '';
     el('wifi-dialog').close();
+    el('key-confirm').close('no');
     controls();
   }
   async function request(path, options = {}) {
@@ -217,7 +218,7 @@ if (typeof document !== 'undefined') {
       }
       if (el(`${input.id}-value`)) el(`${input.id}-value`).value = `${value}%`;
     }
-    for (const name of ['asr','gemini']) {
+    for (const name of ['asr','gemini','gemini-backup','gemini-reader','gemini-translate']) {
       const state = await request(`/${name}-key`);
       el(`${name}-key-status`).textContent = state.configured ? 'Đã lưu key trên thiết bị' : 'Chưa có API key';
     }
@@ -269,27 +270,46 @@ if (typeof document !== 'undefined') {
   el('memory-refresh').onclick = () => { if (!memoryBusy) void loadMemory().catch(error => message(error.message,true)); };
   el('memory-clear').onclick = () => { if (confirm('Xóa toàn bộ điều Hi Su đã ghi nhớ?')) void changeMemory({action:'clear'}); };
   el('memory-clear-recent').onclick = () => void changeMemory({action:'clear_recent'});
-  for (const name of ['asr','gemini']) {
-    el(`${name}-key-form`).onsubmit = async event => {
-      event.preventDefault();
-      const key = el(`${name}-key`).value.trim();
-      if (!key || !token) return;
-      el(`${name}-key-save`).disabled = true;
+  function confirmKey(name, clear) {
+    const dialog = el('key-confirm');
+    if (dialog.open) return Promise.resolve(false);
+    const title = el(`${name}-key-title`).textContent;
+    el('key-confirm-title').textContent = `${clear ? 'Xóa' : 'Ghi đè'} key · ${title}`;
+    el('key-confirm-message').textContent = clear ? `Bạn có muốn xóa key của “${title}” không?` :
+      `Bạn có muốn thay key đã lưu của “${title}” bằng key mới không?`;
+    dialog.returnValue = 'no';
+    return new Promise(resolve => {
+      dialog.addEventListener('close', () => resolve(dialog.returnValue === 'yes'), {once:true});
+      dialog.showModal();
+    });
+  }
+  for (const name of ['asr','gemini','gemini-backup','gemini-reader','gemini-translate']) {
+    const input = el(`${name}-key`), save = el(`${name}-key-save`), remove = el(`${name}-key-clear`);
+    async function changeKey(clear) {
+      const key = clear ? '' : input.value.trim();
+      if ((!clear && !key) || !token || save.disabled) return;
+      save.disabled = remove.disabled = input.disabled = true;
+      let submitted = false;
       try {
+        const state = clear ? null : await request(`/${name}-key`);
+        if (!token || closed) return;
+        if ((clear || state.configured) && !await confirmKey(name,clear)) return;
+        if (!token || closed) return;
+        submitted = true;
         await request(`/${name}-key`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
-        el(`${name}-key-status`).textContent = 'Đã lưu key trên thiết bị';
-        message('Đã lưu API key.');
+        el(`${name}-key-status`).textContent = clear ? 'Chưa có API key' : 'Đã lưu key trên thiết bị';
+        message(`${clear ? 'Đã xóa' : 'Đã lưu'} API key · ${el(`${name}-key-title`).textContent}.`);
       } catch (error) { message(error.message,true); }
-      finally { el(`${name}-key`).value = ''; el(`${name}-key-save`).disabled = false; }
+      finally {
+        if (submitted) input.value = '';
+        save.disabled = remove.disabled = input.disabled = false;
+      }
+    }
+    el(`${name}-key-form`).onsubmit = event => {
+      event.preventDefault();
+      void changeKey(false);
     };
-    el(`${name}-key-clear`).onclick = async () => {
-      if (!token) return;
-      try {
-        await request(`/${name}-key`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:''})});
-        el(`${name}-key`).value = ''; el(`${name}-key-status`).textContent = 'Chưa có API key';
-        message('Đã xóa API key.');
-      } catch (error) { message(error.message,true); }
-    };
+    remove.onclick = () => void changeKey(true);
   }
   el('time-sync').onclick = async () => {
     if (!token) return;

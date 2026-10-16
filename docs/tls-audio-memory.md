@@ -124,3 +124,20 @@ The normal batch target stays consistent with Google's [Live API guidance](https
 Host tests cover certificate/header/path retention, control-frame configuration,
 socket option, cleanup on each initialization failure, timeout conversion and
 no retry on failed/short writes. Real throughput and delay need a board test.
+
+## Bounded Downlink Backpressure
+
+Reply PCM retains the 512 KiB/96-item limits. When the byte budget or output
+queue is temporarily full, the receive path retries every 10 ms for at most
+100 ms, releasing reservations after failed enqueue and checking epoch/turn
+cancellation each time. There is no indefinite socket pause and no dropping
+old samples or moving subtitle/control markers. Prolonged overload still fails
+the current session explicitly; this is not lossless recovery from sustained
+overload. Control/caption enqueue failures retain their existing failure policy.
+Host tests cover byte/slot pressure, recovery, timeout, cancellation and accounting.
+
+The reminder TLS path uses a small atomic network-link snapshot, not `aps[12]`
+on each nested stack frame. Logs report stack low-water marks after TTS and WSS
+cleanup and flash-save duration for correlation with mic fetch gaps. A worker
+change alone cannot guarantee flash operations will not delay audio. No extra
+task or stack allocation was added; real stack headroom still requires hardware.

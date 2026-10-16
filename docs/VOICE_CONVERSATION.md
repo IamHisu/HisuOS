@@ -61,3 +61,20 @@ Host tests: tools/test-live.ps1 -Clang <host LLVM clang> biên dịch parser C t
 `tools/test-voice.ps1` chạy test quản lý lượt và mã Live transport C thật với SDK/queue/audio/API giả lập: giữ epoch khi ngắt, setup đang kết nối, bỏ phản hồi cũ, lỗi queue không gọi callback đồng bộ khi caller giữ khóa, và ngắt trong lúc đang xử lý phản hồi cuối. Không xác nhận model/quota của Gemini key hoặc chất lượng audio trên thiết bị.
 
 WebSocket cần CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y để task nhận không giữ chung khóa với sender mic. Log Slow WSS send (>100ms) và pending cho biết mạng/khóa đang chặn gửi; queue tràn vẫn đóng phiên để tránh gửi audio thiếu.
+
+## Reliability Checks Without Sound
+
+Opt-in, session-only two-way translation is described in
+[Interpreter Mode](INTERPRETER_MODE.md), including its control boundary and font limits.
+
+Timed bedtime narration and its limitations are documented in
+[Bedtime Stories](BEDTIME_STORIES.md). This uses Gemini Live, not a separate
+STT/LLM/TTS pipeline or the short online reminder TTS endpoint.
+
+The play-music gate waits up to one second for a late input transcription only
+when a spoken offer, exact track, next user turn, epoch and offer deadline already
+match. After waiting it rechecks all gates, including overflow and cancellation.
+This does not infer approval from keywords; Gemini still interprets the user's
+answer. Missing transcription is rejected after the bounded wait, not bypassed.
+Host tests exercise late/missing transcription and closing a session while waiting.
+No microphone, speaker, API request or board flash is needed for these tests.

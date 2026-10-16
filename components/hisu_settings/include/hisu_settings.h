@@ -12,7 +12,6 @@ typedef enum {
     HISU_SETTING_THEME, /* 0: dark, 1: light */
     HISU_SETTING_WIFI_ENABLED,
     HISU_SETTING_TIMEZONE, /* Minutes east of UTC; default UTC+7. */
-    HISU_SETTING_WALLPAPER_DEFAULT, /* 0: uploaded image if available, 1: built-in */
     HISU_SETTING_COUNT,
 } hisu_setting_t;
 
@@ -26,6 +25,12 @@ bool hisu_settings_has_asr_key(void);
 esp_err_t hisu_settings_get_gemini_key(char out[128]);
 esp_err_t hisu_settings_set_gemini_key(const char *key);
 bool hisu_settings_has_gemini_key(void);
+typedef enum { HISU_GEMINI_CHAT, HISU_GEMINI_CHAT_BACKUP, HISU_GEMINI_READER,
+    HISU_GEMINI_TRANSLATE, HISU_GEMINI_KEY_COUNT } hisu_gemini_key_t;
+esp_err_t hisu_settings_get_gemini_profile(hisu_gemini_key_t profile, char out[128]);
+esp_err_t hisu_settings_set_gemini_profile(hisu_gemini_key_t profile, const char *key);
+bool hisu_settings_has_gemini_profile(hisu_gemini_key_t profile);
+uint32_t hisu_settings_gemini_revision(void);
 esp_err_t hisu_settings_get_wifi(char ssid[33], char password[65]);
 esp_err_t hisu_settings_get_wifi_at(unsigned index, char ssid[33], char password[65]);
 esp_err_t hisu_settings_save_wifi(const char *ssid, const char *password);

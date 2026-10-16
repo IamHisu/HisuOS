@@ -1,5 +1,10 @@
 # HisuOS
 
+Setting → Thiết bị có bốn key Gemini riêng: Chat chính, một Chat dự phòng,
+Reader và Translate. Chat chỉ tự chuyển dự phòng khi có lỗi xác thực hoặc hết
+hạn mức được nhận diện, không mượn key Reader/Translate. Key Chat đã lưu vẫn
+được giữ. Chi tiết: [Phân luồng key Gemini](docs/GEMINI_KEYS.md).
+
 Firmware ESP32-S3 cho ZHENGCHEN 1.54 TFT WiFi, xây dựng lại theo [System Design](docs/SYSTEM_DESIGN.md).
 
 Nguồn và đánh giá tái sử dụng: [Tài liệu tham khảo](docs/REFERENCES.md), gồm XiaoClaw (voice Xiaozhi + agent MimiClaw), điều kiện tương thích và các giới hạn chưa kiểm chứng.
@@ -10,9 +15,9 @@ Bước đầu là UI LVGL 9.4.0: GIF mèo 240×240 ở màn hình chờ, menu H
 
 Màn hình chờ có icon Wi-Fi theo mức sóng và pin nằm ngang chia 5 vạch ở góc trên bên phải, không hiện số phần trăm. Khi GPIO9 báo nguồn ngoài, pin hiện tia sét thay các vạch; đây không phải tín hiệu xác nhận sạc đầy. Pin còn 20% trở xuống chuyển đỏ khi không cắm sạc. Tắt Wi-Fi sẽ ẩn icon; bật nhưng chưa kết nối hiển thị icon mờ. Danh sách mạng dùng cùng icon, với các vòng ngoài mờ theo tín hiệu. Cụm trạng thái cập nhật mỗi giây mà không khởi động lại GIF.
 
-GIF nguồn trong suốt là `components/hisu_ui/assets/idle_cat.gif`; firmware nhúng hai bản `idle_cat_dark.gif` và `idle_cat_light.gif`, ghép vùng trong suốt lên màu nền đen/trắng tương ứng. GIF lặp khi idle và tạm dừng khi backlight tắt. Menu và phụ đề thay thế GIF. LVGL dùng heap ESP-IDF (có PSRAM) để chứa framebuffer GIF thay cho pool 96 KiB.
+Màn hình chờ chỉ dùng ảnh/GIF tải lên từ Setting, không nhúng hình nền mặc định. Chưa có ảnh hoặc ảnh lỗi thì dùng nền đen/trắng theo theme, vẫn giữ đồng hồ và biểu tượng trạng thái. GIF đã tải lên lặp khi idle và tạm dừng khi backlight tắt. Menu và phụ đề thay thế GIF. LVGL dùng heap ESP-IDF (có PSRAM) để chứa framebuffer GIF thay cho pool 96 KiB. Lựa chọn hình nền mặc định từ firmware cũ được bỏ qua, không xóa ảnh người dùng.
 
-Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên editor. BOOT lưu vào NVS; giữ BOOT hủy. Mặc định là Tối. Theme áp dụng cho menu, phụ đề và nền GIF.
+Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên editor. BOOT lưu vào NVS; giữ BOOT hủy. Mặc định là Tối. Theme áp dụng cho menu, phụ đề và nền trống khi không có ảnh hợp lệ; không đổi màu ảnh đã tải lên.
 
 - Độ sáng: PWM thật, preview khi chỉnh, lưu NVS khi xác nhận.
 - Hội thoại: gọi “Hi Su” mở Gemini Live qua WSS; mic gửi PCM 16kHz trong lúc thu, loa phát PCM 24kHz từng phần. Chỉ cần Gemini API key. Board lọc mở lượt bằng VAD + năng lượng, kết thúc sau 700ms im lặng; nghe tiếp tối đa 60 giây sau loa. BOOT/ngắt bằng câu gọi dừng audio cũ và nghe lại trong cùng phiên, giữ ngữ cảnh; giữ BOOT hoặc nói tạm biệt đóng phiên. Chưa có chống vọng/ngắt lời tự do như điện thoại; cần kiểm chứng API/độ trễ/tiếng nền trên board. Xem [Hội thoại](docs/VOICE_CONVERSATION.md).

@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
 #include "cJSON.h"
+#include "hisu_voice_tts_config.h"
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -22,13 +23,13 @@ typedef struct { char *body; size_t used; bool overflow, reminder; bool (*idle)(
 static bool reminder_allowed(bool (*idle)(void))
 {
     hisu_power_status_t power; hisu_power_get(&power);
-    hisu_network_status_t network; hisu_network_get(&network);
+    hisu_network_link_t network; hisu_network_get_link(&network);
     return idle() && power.valid && (power.external_power || power.percent > 2) && network.connected && !network.setup_enabled;
 }
 static bool allowed(bool (*idle)(void))
 {
     hisu_power_status_t power; hisu_power_get(&power);
-    hisu_network_status_t network; hisu_network_get(&network);
+    hisu_network_link_t network; hisu_network_get_link(&network);
     return idle() && power.valid && power.external_power && network.connected;
 }
 static esp_err_t receive_data(esp_http_client_event_t *event)
@@ -107,14 +108,14 @@ bool hisu_voice_alert_prepare(bool (*idle)(void))
     esp_http_client_handle_t http = NULL;
     int16_t *pcm = NULL; size_t bytes = 0;
     if (!allowed(idle)) goto done;
-    err = hisu_settings_get_gemini_key(key);
+    err = hisu_settings_get_gemini_profile(HISU_GEMINI_READER,key);
     if (err != ESP_OK) goto done;
     body = make_body(index);
     request.body = heap_caps_malloc(RESPONSE_LIMIT + 1,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!body || !request.body) { err = ESP_ERR_NO_MEM; goto done; }
     request.body[0] = 0;
     esp_http_client_config_t config = {
-        .url="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent",
+        .url=HISU_VOICE_TTS_URL,
         .method=HTTP_METHOD_POST,.timeout_ms=5000,.is_async=true,.disable_auto_redirect=true,
         .crt_bundle_attach=esp_crt_bundle_attach,.event_handler=receive_data,.user_data=&request,
         .buffer_size=2048,.buffer_size_tx=2048
@@ -153,7 +154,7 @@ esp_err_t hisu_voice_reminder_tts(const char *text, bool (*idle)(void), int16_t 
     *pcm=NULL; *bytes=0;
     if (!text || strlen(text)>240 || !reminder_allowed(idle)) return ESP_ERR_INVALID_STATE;
     char key[128]={0};
-    esp_err_t err=hisu_settings_get_gemini_key(key);
+    esp_err_t err=hisu_settings_get_gemini_profile(HISU_GEMINI_READER,key);
     if (err!=ESP_OK) return err;
     char *body=make_text_body(text);
     tts_request_t request={.idle=idle,.reminder=true};
@@ -161,7 +162,7 @@ esp_err_t hisu_voice_reminder_tts(const char *text, bool (*idle)(void), int16_t 
     if (!body || !request.body) { memset(key,0,sizeof(key)); free(body); free(request.body); return ESP_ERR_NO_MEM; }
     request.body[0]=0;
     esp_http_client_config_t config={
-        .url="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent",
+        .url=HISU_VOICE_TTS_URL,
         .method=HTTP_METHOD_POST,.timeout_ms=2000,.is_async=true,.disable_auto_redirect=true,
         .crt_bundle_attach=esp_crt_bundle_attach,.event_handler=receive_data,.user_data=&request,
         .buffer_size=2048,.buffer_size_tx=2048

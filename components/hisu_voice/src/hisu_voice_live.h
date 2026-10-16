@@ -4,7 +4,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 typedef enum { LIVE_READY, LIVE_TEXT, LIVE_AUDIO, LIVE_DONE, LIVE_ERROR, LIVE_INPUT, LIVE_FLASHLIGHT,
-               LIVE_END, LIVE_DEVICE, LIVE_EXPRESSION, LIVE_MUSIC, LIVE_MUSIC_LOADING, LIVE_MUSIC_ERROR } live_event_t;
+               LIVE_END, LIVE_DEVICE, LIVE_EXPRESSION, LIVE_MUSIC, LIVE_MUSIC_LOADING, LIVE_MUSIC_ERROR,
+               LIVE_STORY_NEXT, LIVE_SLEEP, LIVE_REKEY } live_event_t;
 typedef void (*live_event_fn)(live_event_t event, uint32_t generation, const char *text);
 esp_err_t voice_live_init(live_event_fn callback);
 void voice_live_deinit(void);
@@ -15,3 +16,5 @@ bool voice_live_ready(void);
 bool voice_live_begin(uint32_t generation);
 bool voice_live_feed(uint32_t generation, const int16_t *pcm, size_t samples);
 bool voice_live_end(uint32_t generation);
+/* NULL in ordinary conversation; otherwise an immutable target-language code. */
+const char *voice_live_interpreter_language(void);

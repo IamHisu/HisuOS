@@ -57,6 +57,24 @@ int main(void) {
     for (unsigned i=0; i<HISU_SCHEDULE_COUNT; ++i) assert(hisu_schedule_set(0,NOW+1+i,"Plan",NOW,&id)==ESP_OK);
     assert(hisu_schedule_set(0,NOW+99,"Full",NOW,&id)==ESP_ERR_NO_MEM);
     assert(hisu_schedule_flush()==ESP_OK); reboot(); assert(s_data->count==32);
+    assert(!hisu_schedule_prune(0) && s_data->count==32);
+    assert(!hisu_schedule_prune(NOW-86400) && s_data->count==32);
+    assert(!hisu_schedule_prune(NOW+7*86400+1)); /* Exact retention boundary stays. */
+    assert(hisu_schedule_prune(NOW+7*86400+2)==1 && s_data->count==31);
+    assert(hisu_schedule_flush()==ESP_OK); reboot(); assert(s_data->count==31);
+    assert(hisu_schedule_set(0,NOW+9*86400,"Future",NOW+8*86400,&id)==ESP_OK);
+    assert(s_data->count==1); /* New entry reclaims expired slots before capacity check. */
+    assert(!hisu_schedule_prune(NOW+8*86400));
+    assert(hisu_schedule_flush()==ESP_OK); reboot(); assert(s_data->count==1);
+    reset();
+    assert(hisu_schedule_set(0,NOW+1,"Delivered",NOW,&id)==ESP_OK);
+    assert(hisu_schedule_claim(id)==ESP_OK);
+    assert(!hisu_schedule_prune(NOW+7*86400+1));
+    assert(hisu_schedule_prune(NOW+7*86400+2)==1);
+    mock_budget=0; assert(hisu_schedule_flush()!=ESP_OK);
+    mock_budget=-1; reboot(); assert(s_data->count==1); /* Failed cleanup preserves old durable snapshot. */
+    assert(hisu_schedule_prune(NOW+8*86400)==1 && hisu_schedule_flush()==ESP_OK);
+    reboot(); assert(!s_data->count);
     puts("Schedule tests passed: strict time/UTF-8, CRUD, limits, range, due/catch-up, claim/reboot, torn writes and concurrent revision.");
     return 0;
 }

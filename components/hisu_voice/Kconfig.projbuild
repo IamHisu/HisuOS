@@ -1,0 +1,8 @@
+menu "Hi Su voice"
+    config HISU_VOICE_TTS_MODEL
+        string "Gemini model for online reminder speech"
+        default "gemini-2.5-flash-preview-tts"
+        help
+            TTS model identifier only, not a URL. Offline reminder audio is used
+            when online synthesis fails. No automatic model fallback.
+endmenu

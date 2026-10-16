@@ -31,6 +31,12 @@ static inline bool hisu_network_has_internet_warning(const hisu_network_status_t
 }
 esp_err_t hisu_network_start(void);
 void hisu_network_get(hisu_network_status_t *out);
+/* Small atomic snapshot for nested audio/TLS paths; no scan list on their stack. */
+typedef struct {
+    bool connected, setup_enabled;
+    hisu_internet_state_t internet;
+} hisu_network_link_t;
+void hisu_network_get_link(hisu_network_link_t *out);
 esp_err_t hisu_network_scan(void);
 esp_err_t hisu_network_provision_scan(void);
 esp_err_t hisu_network_join(const char *ssid, const char *password);

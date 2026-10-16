@@ -47,6 +47,24 @@ static bool valid_text(const char *text)
 {
     return text && strlen(text) <= HISU_SCHEDULE_TEXT && hisu_memory_fact_valid(text);
 }
+static unsigned prune_locked(int64_t now)
+{
+    if (!valid_time(now)) return 0;
+    unsigned before=s_data->count, kept=0;
+    for (unsigned i=0; i<before; ++i) {
+        if (s_data->events[i].utc < now - 7LL*86400) continue;
+        s_data->events[kept++]=s_data->events[i];
+    }
+    if (kept==before) return 0;
+    memset(s_data->events+kept,0,(before-kept)*sizeof(s_data->events[0]));
+    s_data->count=kept; s_dirty=true; ++s_revision;
+    return before-kept;
+}
+unsigned hisu_schedule_prune(int64_t now)
+{
+    if (!s_lock) return 0;
+    lock(); unsigned removed=prune_locked(now); unlock(); return removed;
+}
 static bool valid(const header_t *header, const data_t *data)
 {
     header_t copy = *header; copy.header_crc = 0;
@@ -92,6 +110,7 @@ esp_err_t hisu_schedule_set(uint32_t id, int64_t utc, const char *text, int64_t 
     if (!s_lock) return ESP_ERR_INVALID_STATE;
     if (!result || !valid_time(now) || !valid_time(utc) || utc <= now || !valid_text(text)) return ESP_ERR_INVALID_ARG;
     lock();
+    if (!id) (void)prune_locked(now);
     unsigned index = s_data->count;
     if (id) {
         for (unsigned i=0; i<s_data->count; ++i) if (s_data->events[i].id==id) { index=i; break; }

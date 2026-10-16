@@ -24,12 +24,32 @@ int main(void)
     mock_during_commit = NULL;
     assert(hisu_settings_set(HISU_SETTING_VOLUME, 60) == ESP_OK);
     assert(hisu_settings_get(HISU_SETTING_VOLUME) == 60);
-    assert(hisu_settings_get(HISU_SETTING_WALLPAPER_DEFAULT)==0);
-    assert(hisu_settings_set(HISU_SETTING_WALLPAPER_DEFAULT,2)==ESP_ERR_INVALID_ARG);
-    assert(hisu_settings_set(HISU_SETTING_WALLPAPER_DEFAULT,1)==ESP_OK);
-    s_lock=NULL; s_values[HISU_SETTING_WALLPAPER_DEFAULT]=0;
+    mock_wallpaper_default=1; /* Old selection must not hide uploaded media after an upgrade. */
+    s_lock=NULL;
     assert(hisu_settings_init()==ESP_OK);
-    assert(hisu_settings_get(HISU_SETTING_WALLPAPER_DEFAULT)==1);
+    assert(!mock_legacy_wallpaper_reads);
+    char secret[128];
+    assert(!hisu_settings_has_gemini_key());
+    assert(hisu_settings_set_gemini_key("legacy-chat")==ESP_OK);
+    assert(!strcmp(mock_secrets[0],"legacy-chat"));
+    for (unsigned i=1;i<HISU_GEMINI_KEY_COUNT;++i) {
+        char value[32]; snprintf(value,sizeof(value),"profile-%u",i);
+        assert(hisu_settings_set_gemini_profile((hisu_gemini_key_t)i,value)==ESP_OK);
+        assert(hisu_settings_get_gemini_profile((hisu_gemini_key_t)i,secret)==ESP_OK && !strcmp(secret,value));
+    }
+    assert(hisu_settings_get_gemini_key(secret)==ESP_OK && !strcmp(secret,"legacy-chat"));
+    uint32_t revision=hisu_settings_gemini_revision();
+    assert(hisu_settings_set_gemini_profile(HISU_GEMINI_READER,"bad\nheader")==ESP_ERR_INVALID_ARG);
+    assert(hisu_settings_set_gemini_profile(HISU_GEMINI_KEY_COUNT,"invalid")==ESP_ERR_INVALID_ARG);
+    assert(hisu_settings_gemini_revision()==revision);
+    s_lock=NULL; assert(hisu_settings_init()==ESP_OK);
+    assert(hisu_settings_get_gemini_profile(HISU_GEMINI_TRANSLATE,secret)==ESP_OK && !strcmp(secret,"profile-3"));
+    assert(hisu_settings_set_gemini_key("")==ESP_OK && hisu_settings_has_gemini_key()); /* Backup-only Chat is usable. */
+    assert(hisu_settings_set_gemini_profile(HISU_GEMINI_CHAT_BACKUP,"")==ESP_OK && !hisu_settings_has_gemini_key());
+    assert(hisu_settings_has_gemini_profile(HISU_GEMINI_READER) && hisu_settings_has_gemini_profile(HISU_GEMINI_TRANSLATE));
+    memset(secret,'x',sizeof(secret));
+    assert(hisu_settings_get_gemini_key(secret)!=ESP_OK);
+    for (unsigned i=0;i<sizeof(secret);++i) assert(!secret[i]);
     wifi_credentials_t legacy={"Old cafe","password123"};
     memcpy(mock_wifi_legacy,&legacy,sizeof(legacy)); mock_wifi_legacy_size=sizeof(legacy);
     char ssid[33], password[65];

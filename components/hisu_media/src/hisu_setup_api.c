@@ -85,7 +85,7 @@ static esp_err_t battery_audio_api(httpd_req_t *req)
             cJSON_AddNumberToObject(json,"http_status",status.http_status) &&
             cJSON_AddBoolToObject(json,"charging",power.valid && power.external_power) &&
             cJSON_AddBoolToObject(json,"connected",network.connected) &&
-            cJSON_AddBoolToObject(json,"configured",hisu_settings_has_gemini_key());
+            cJSON_AddBoolToObject(json,"configured",hisu_settings_has_gemini_profile(HISU_GEMINI_READER));
         if (!ok) { cJSON_Delete(json); json = NULL; }
         return json_response(req,json);
     }
@@ -95,7 +95,7 @@ static esp_err_t battery_audio_api(httpd_req_t *req)
     cJSON_Delete(json);
     if (!valid) return error(req,"400 Bad Request","Invalid audio preparation request.");
     if (!s_guard(req)) return error(req,"403 Forbidden","Session expired.");
-    if (!power.valid || !power.external_power || !network.connected || !hisu_settings_has_gemini_key())
+    if (!power.valid || !power.external_power || !network.connected || !hisu_settings_has_gemini_profile(HISU_GEMINI_READER))
         return error(req,"409 Conflict","Charging, Wi-Fi and a Gemini key are required.");
     esp_err_t err = hisu_alert_request();
     if (err != ESP_OK) return error(req,"409 Conflict","Audio preparation unavailable or busy.");
@@ -210,18 +210,21 @@ static esp_err_t time_api(httpd_req_t *req)
 static esp_err_t asr_key_api(httpd_req_t *req)
 {
     if (!s_guard(req)) return error(req, "403 Forbidden", "Session expired.");
-    bool gemini = strcmp(req->uri, "/gemini-key") == 0;
+    bool gemini = strcmp(req->uri, "/asr-key") != 0;
+    hisu_gemini_key_t profile=!strcmp(req->uri,"/gemini-backup-key") ? HISU_GEMINI_CHAT_BACKUP :
+        !strcmp(req->uri,"/gemini-reader-key") ? HISU_GEMINI_READER :
+        !strcmp(req->uri,"/gemini-translate-key") ? HISU_GEMINI_TRANSLATE : HISU_GEMINI_CHAT;
     if (req->method == HTTP_GET) {
         cJSON *json = cJSON_CreateObject();
         if (json) cJSON_AddBoolToObject(json, "configured",
-                                         gemini ? hisu_settings_has_gemini_key() : hisu_settings_has_asr_key());
+                                         gemini ? hisu_settings_has_gemini_profile(profile) : hisu_settings_has_asr_key());
         return json_response(req, json);
     }
     cJSON *json = body(req);
     cJSON *key = cJSON_GetObjectItemCaseSensitive(json, "key");
     esp_err_t result = ESP_ERR_INVALID_ARG;
     if (s_guard(req) && json && cJSON_GetArraySize(json) == 1 && cJSON_IsString(key))
-        result = gemini ? hisu_settings_set_gemini_key(key->valuestring) :
+        result = gemini ? hisu_settings_set_gemini_profile(profile,key->valuestring) :
                           hisu_settings_set_asr_key(key->valuestring);
     if (cJSON_IsString(key)) memset(key->valuestring, 0, strlen(key->valuestring));
     cJSON_Delete(json);
@@ -293,6 +296,12 @@ esp_err_t hisu_setup_api_register(httpd_handle_t server, bool (*guard)(httpd_req
         {.uri="/asr-key", .method=HTTP_POST, .handler=asr_key_api},
         {.uri="/gemini-key", .method=HTTP_GET, .handler=asr_key_api},
         {.uri="/gemini-key", .method=HTTP_POST, .handler=asr_key_api},
+        {.uri="/gemini-backup-key", .method=HTTP_GET, .handler=asr_key_api},
+        {.uri="/gemini-backup-key", .method=HTTP_POST, .handler=asr_key_api},
+        {.uri="/gemini-reader-key", .method=HTTP_GET, .handler=asr_key_api},
+        {.uri="/gemini-reader-key", .method=HTTP_POST, .handler=asr_key_api},
+        {.uri="/gemini-translate-key", .method=HTTP_GET, .handler=asr_key_api},
+        {.uri="/gemini-translate-key", .method=HTTP_POST, .handler=asr_key_api},
     };
     for (unsigned i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {
         esp_err_t err = httpd_register_uri_handler(server, &routes[i]);

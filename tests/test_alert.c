@@ -6,7 +6,11 @@
 static bool mock_connected=true;
 void hisu_power_get(hisu_power_status_t *out) { *out=(hisu_power_status_t){.valid=true,.external_power=mock_charging,.percent=80}; }
 void hisu_network_get(hisu_network_status_t *out) { *out=(hisu_network_status_t){.connected=mock_connected}; }
+void hisu_network_get_link(hisu_network_link_t *out) { *out=(hisu_network_link_t){.connected=mock_connected}; }
 esp_err_t hisu_settings_get_gemini_key(char out[128]) { strcpy(out,"fake-key"); return ESP_OK; }
+esp_err_t hisu_settings_get_gemini_profile(hisu_gemini_key_t profile,char out[128]) {
+    assert(profile==HISU_GEMINI_READER); strcpy(out,"fake-key"); return ESP_OK;
+}
 static bool idle(void) { return mock_idle; }
 static void reboot(void) {
     s_lock=NULL; memset(s_records,0,sizeof(s_records)); memset(&s_status,0,sizeof(s_status));

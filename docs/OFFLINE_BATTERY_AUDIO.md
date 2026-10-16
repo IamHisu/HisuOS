@@ -1,5 +1,9 @@
 # Offline Kore Battery Alerts
 
+The optional on-board preparation path uses the separate Reader key in Setting.
+The PC generator still uses its documented environment variable independently.
+Already installed offline clips are unchanged. See [key routing](GEMINI_KEYS.md).
+
 ## Prepare on the PC
 
 Set `GEMINI_DEV_API_KEY` (or `GEMINI_API_KEY`) in the PC environment, then run

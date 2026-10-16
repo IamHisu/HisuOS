@@ -5,6 +5,8 @@ $env:INCLUDE = "$root\components\hisu_memory\include;$env:INCLUDE"
 $config = Get-Content -LiteralPath $EimConfig -Raw | ConvertFrom-Json
 $idf = $config.idfInstalled | Where-Object name -eq 'v5.5.5' | Select-Object -First 1
 if (!$idf) { throw 'ESP-IDF v5.5.5 EIM installation required.' }
+& $idf.python (Join-Path $root 'tests\test_wallpaper_policy.py')
+if ($LASTEXITCODE -ne 0) { throw 'Wallpaper policy checks failed.' }
 $compiler = Get-ChildItem -Path 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe' |
     Sort-Object FullName | Select-Object -Last 1
 if (!$compiler) { throw 'MSVC x64 compiler is required for host tests.' }

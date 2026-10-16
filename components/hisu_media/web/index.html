@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#060914">
-  <title>HisuOS · Setting</title>
+  <title>HisuOS</title>
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header><strong>HisuOS</strong><span>Setting</span><button id="connection" type="button" title="Ngắt kết nối và kết thúc phiên" disabled>Đang kết nối…</button></header>
+  <header><strong>HisuOS</strong><button id="connection" type="button" title="Ngắt kết nối và kết thúc phiên" disabled>Đang kết nối…</button></header>
   <main>
     <section id="login-section">
       <h1>Setting</h1>
@@ -90,24 +90,60 @@
         <p id="memory-status" role="status"></p>
         <div id="memory-list" aria-label="Điều Hi Su đã ghi nhớ"></div>
         <div class="actions"><button id="memory-refresh" class="secondary" type="button" title="Tải lại trí nhớ" aria-label="Tải lại trí nhớ">↻</button><button id="memory-clear" class="secondary" type="button">Xóa trí nhớ</button><button id="memory-clear-recent" class="secondary" type="button">Xóa ngữ cảnh gần đây</button></div>
-        <form id="asr-key-form" autocomplete="off">
-          <h2>Lệnh giọng nói tiếng Việt</h2>
+        <form id="asr-key-form" class="key-form" aria-labelledby="asr-key-title" autocomplete="off">
+          <fieldset class="key-group"><legend id="asr-key-title">Lệnh giọng nói tiếng Việt</legend><div class="key-fields">
           <p id="asr-key-status" role="status"></p>
           <label for="asr-key">Groq API key</label>
           <input id="asr-key" type="password" maxlength="127" autocomplete="off" spellcheck="false" placeholder="gsk_…">
           <button id="asr-key-save" type="submit">Lưu key</button>
           <button id="asr-key-clear" class="secondary" type="button">Xóa key</button>
+          </div></fieldset>
         </form>
-        <form id="gemini-key-form" autocomplete="off">
-          <h2>Trả lời bằng giọng nói</h2>
+        <form id="gemini-key-form" class="key-form" aria-labelledby="gemini-key-title" autocomplete="off">
+          <fieldset class="key-group"><legend id="gemini-key-title">Chat chính</legend><div class="key-fields">
           <p id="gemini-key-status" role="status"></p>
           <label for="gemini-key">Gemini API key</label>
           <input id="gemini-key" type="password" maxlength="127" autocomplete="off" spellcheck="false">
           <button id="gemini-key-save" type="submit">Lưu key</button>
           <button id="gemini-key-clear" class="secondary" type="button">Xóa key</button>
+          </div></fieldset>
+        </form>
+        <form id="gemini-backup-key-form" class="key-form" aria-labelledby="gemini-backup-key-title" autocomplete="off">
+          <fieldset class="key-group"><legend id="gemini-backup-key-title">Chat dự phòng</legend><div class="key-fields">
+          <p id="gemini-backup-key-status" role="status"></p>
+          <label for="gemini-backup-key">Gemini API key</label>
+          <input id="gemini-backup-key" type="password" maxlength="127" autocomplete="off" spellcheck="false">
+          <button id="gemini-backup-key-save" type="submit">Lưu key</button>
+          <button id="gemini-backup-key-clear" class="secondary" type="button">Xóa key</button>
+          </div></fieldset>
+        </form>
+        <form id="gemini-reader-key-form" class="key-form" aria-labelledby="gemini-reader-key-title" autocomplete="off">
+          <fieldset class="key-group"><legend id="gemini-reader-key-title">Reader · Kể chuyện</legend><div class="key-fields">
+          <p id="gemini-reader-key-status" role="status"></p>
+          <label for="gemini-reader-key">Gemini API key</label>
+          <input id="gemini-reader-key" type="password" maxlength="127" autocomplete="off" spellcheck="false">
+          <button id="gemini-reader-key-save" type="submit">Lưu key</button>
+          <button id="gemini-reader-key-clear" class="secondary" type="button">Xóa key</button>
+          </div></fieldset>
+        </form>
+        <form id="gemini-translate-key-form" class="key-form" aria-labelledby="gemini-translate-key-title" autocomplete="off">
+          <fieldset class="key-group"><legend id="gemini-translate-key-title">Translate · Phiên dịch</legend><div class="key-fields">
+          <p id="gemini-translate-key-status" role="status"></p>
+          <label for="gemini-translate-key">Gemini API key</label>
+          <input id="gemini-translate-key" type="password" maxlength="127" autocomplete="off" spellcheck="false">
+          <button id="gemini-translate-key-save" type="submit">Lưu key</button>
+          <button id="gemini-translate-key-clear" class="secondary" type="button">Xóa key</button>
+          </div></fieldset>
         </form>
       </section>
     </section>
   </main>
+  <dialog id="key-confirm" aria-labelledby="key-confirm-title" aria-describedby="key-confirm-message">
+    <form method="dialog">
+      <h2 id="key-confirm-title"></h2>
+      <p id="key-confirm-message"></p>
+      <div class="actions"><button id="key-confirm-no" class="secondary" value="no" autofocus>Không</button><button id="key-confirm-yes" value="yes">Có</button></div>
+    </form>
+  </dialog>
 </body>
 </html>

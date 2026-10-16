@@ -17,7 +17,9 @@ static esp_err_t nvs_flash_init(void) { return ESP_OK; }
 static esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *handle) { *handle=1; return ESP_OK; }
 static void nvs_close(nvs_handle_t handle) {}
 static int32_t mock_wallpaper_default = -1;
+static unsigned mock_legacy_wallpaper_reads;
 static esp_err_t nvs_get_i32(nvs_handle_t handle, const char *key, int32_t *value) {
+    if (!strcmp(key,"wall_default")) ++mock_legacy_wallpaper_reads;
     if (strcmp(key,"wall_default") || mock_wallpaper_default < 0) return ESP_ERR_NVS_NOT_FOUND;
     *value=mock_wallpaper_default; return ESP_OK;
 }
@@ -25,9 +27,27 @@ static esp_err_t nvs_set_i32(nvs_handle_t handle, const char *key, int32_t value
     if (!strcmp(key,"wall_default")) mock_wallpaper_default=value;
     return ESP_OK;
 }
-static esp_err_t nvs_get_str(nvs_handle_t handle, const char *key, char *out, size_t *size) { return ESP_ERR_NVS_NOT_FOUND; }
-static esp_err_t nvs_set_str(nvs_handle_t handle, const char *key, const char *value) { return ESP_OK; }
-static esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key) { return ESP_OK; }
+static const char *const mock_secret_names[]={"gemini_key","gemini_backup","gemini_reader","gemini_trans","groq_key"};
+static char mock_secrets[5][128];
+static int mock_secret_slot(const char *key) {
+    for (unsigned i=0;i<5;++i) if (!strcmp(key,mock_secret_names[i])) return (int)i;
+    return -1;
+}
+static esp_err_t nvs_get_str(nvs_handle_t handle, const char *key, char *out, size_t *size) {
+    int i=mock_secret_slot(key);
+    if (i<0 || !mock_secrets[i][0]) return ESP_ERR_NVS_NOT_FOUND;
+    size_t n=strlen(mock_secrets[i])+1;
+    if (!out) { *size=n; return ESP_OK; }
+    if (*size<n) { *size=n; return ESP_ERR_INVALID_SIZE; }
+    memcpy(out,mock_secrets[i],n); *size=n; return ESP_OK;
+}
+static esp_err_t nvs_set_str(nvs_handle_t handle, const char *key, const char *value) {
+    int i=mock_secret_slot(key); if (i<0) return ESP_ERR_NVS_NOT_FOUND;
+    assert(strlen(value)<128); strcpy(mock_secrets[i],value); return ESP_OK;
+}
+static esp_err_t nvs_erase_key(nvs_handle_t handle, const char *key) {
+    int i=mock_secret_slot(key); if (i>=0) mock_secrets[i][0]=0; return ESP_OK;
+}
 static esp_err_t (*mock_during_commit)(void);
 static esp_err_t nvs_commit(nvs_handle_t handle) {
     assert(mock_values_critical_depth == 0);
