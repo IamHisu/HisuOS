@@ -1,15 +1,19 @@
-# Offline Kore Battery Alerts
+# Offline Erinome Battery Alerts
 
 The optional on-board preparation path uses the separate Reader key in Setting.
 The PC generator still uses its documented environment variable independently.
-Already installed offline clips are unchanged. See [key routing](GEMINI_KEYS.md).
+The current default is original Erinome without effects. Existing Kore/Puck clips
+are rejected, not relabeled; install the newly prepared audio image along with
+the firmware. See [key routing](GEMINI_KEYS.md).
 
 ## Prepare on the PC
 
 Set `GEMINI_DEV_API_KEY` (or `GEMINI_API_KEY`) in the PC environment, then run
 `python tools/prepare-battery-audio.py` from HisuOS. Never pass the key as an
-argument or commit it. The tool requests four battery recordings plus one generic
-reminder recording, caches WAV
+argument or commit it. PC generation requires the `websocket-client` Python package.
+The tool requests four battery recordings plus one generic
+reminder recording using Gemini Live with the same model as the firmware (not
+the legacy TTS endpoint), caches WAV
 previews and script metadata under `.cache/battery-audio/`, then atomically
 publishes `battery_audio.bin` only after all five clips pass validation. Existing
 matching clips are reused; `--pack-only` never contacts Gemini. Failed requests
@@ -22,12 +26,12 @@ integration adds the 0x1e0000-byte audio image at storage-relative offset
 write the wallpaper or memory regions and does not enlarge the app binary.
 Do not use erase-flash. App-only OTA updates cannot install missing recordings.
 If the image is absent, normal builds continue without new audio; existing
-Kore recordings already on the board remain usable. Old Puck records are rejected
-by the voice CRC, not relabeled as Kore. Kore is used without EQ, pitch shifting
+Erinome recordings already on the board remain usable. Old Kore/Puck records are rejected
+by the voice CRC, not relabeled as Erinome. Erinome is used without EQ, pitch shifting
 or other audio effects. Setting shows readiness only;
 the preparation button has been removed. Reboot must show `5/5` before testing.
 
-PC preparation uses the same Kore voice, script CRC and PCM/header format as the
+PC preparation uses Erinome Live, script CRC and the same PCM/header format as the
 existing store. A host/firmware compatibility test packs synthetic audio and
 loads it through the actual firmware validator; it does not test pronunciation.
 
@@ -36,8 +40,8 @@ loads it through the actual firmware validator; it does not test pronunciation.
 The internal preparation API is retained for compatibility but is no longer
 triggered by the Setting UI. It uses the existing `live_send` worker, not a new task. One requested
 clip is generated at a time, with at least 22 seconds between jobs. The worker
-uses Gemini 2.5 Flash Preview TTS `generateContent`, selects Kore explicitly, and
-requests five fixed Vietnamese scripts in a slightly tired, deadpan robot style.
+uses Gemini 2.5 Flash Preview TTS `generateContent`, selects Erinome explicitly, and
+requests five fixed Vietnamese scripts with natural delivery, without effects.
 No conversation history or memory is sent. The API key stays in an HTTPS header,
 never in URLs, browser responses or logs. Certificate verification stays enabled;
 redirects and automatic model fallback are disabled. HTTP 429/quota, permission,
@@ -46,11 +50,13 @@ The firmware cannot determine whether an account has billing enabled; requests
 consume the account's configured Gemini quota. It never enables billing.
 
 Reference: Google's [legacy speech generation API](https://ai.google.dev/gemini-api/docs/generate-content/speech-generation)
-documents the Kore voice, supported TTS models and mono 24 kHz PCM output.
+documents the Erinome voice, supported TTS models and mono 24 kHz PCM output.
 [Pricing](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-preview-tts)
 currently lists a free tier for this model, but actual key access and quota must
 be tested. The same voice name on TTS and Live does not guarantee identical
-prosody; the prepared recordings must be auditioned on the device.
+prosody. Dynamic online reminder speech still uses this TTS path, now with
+Erinome; the pre-generated offline clips use Live. Neither route applies EQ,
+pitch shifting or tempo effects. Recordings must be auditioned on the device.
 
 ## Offline Playback
 
@@ -114,7 +120,7 @@ new resident audio buffer or task stack. The 2048-byte stack-frame guard applies
 
 `tools/test-alert.ps1` compiles actual alert policy/store/TTS preparation against
 partition, HTTP, base64 and RTOS mocks. It covers thresholds, debounce, rearming,
-variants, CRC/reboot, partial writes, strict Kore request, bounded responses,
+variants, CRC/reboot, partial writes, strict Erinome request, bounded responses,
 silence, cancellation, quota errors and cleanup. `tools/test-voice.ps1` covers
 the shared speaker path, mute/critical-power suppression, maintenance exclusion
 and wake interruption. `tests/test_battery_audio_host.py` checks PCM/WAV formats,

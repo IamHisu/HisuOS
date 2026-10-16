@@ -13,7 +13,7 @@ Existing `gemini_key` in NVS remains the Chat primary. No migration, credential
 deletion, project ID, flash-layout change or audio regeneration is required.
 Reader and Translate never borrow Chat keys or act as additional Chat backups.
 Initial voice requests to enter these modes still go through Chat. Existing
-offline Kore clips need no key or Internet.
+offline Erinome clips need no key or Internet.
 
 ## Chat Fallback
 

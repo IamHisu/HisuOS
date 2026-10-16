@@ -54,7 +54,7 @@ static char *make_text_body(const char *phrase)
     char *encoded = text ? cJSON_PrintUnformatted(text) : NULL; cJSON_Delete(text);
     if (!encoded) return NULL;
     static const char format[] = "{\"contents\":[{\"parts\":[{\"text\":%s}]}],\"generationConfig\":{"
-        "\"responseModalities\":[\"AUDIO\"],\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}";
+        "\"responseModalities\":[\"AUDIO\"],\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Erinome\"}}}}}";
     size_t size = strlen(encoded) + sizeof(format);
     char *body = heap_caps_malloc(size,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (body) snprintf(body,size,format,encoded);

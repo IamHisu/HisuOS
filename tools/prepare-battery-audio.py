@@ -1,9 +1,10 @@
-"""Generate Kore clips on the PC; pack only the existing battery audio slots."""
+"""Generate Erinome Live clips on the PC; pack only the existing battery audio slots."""
 import argparse
 import array
 import base64
 import binascii
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -70,7 +71,7 @@ def decode_audio(response):
     return validate_pcm(b"".join(chunks))
 
 
-def request_body(phrase, voice="Kore", style=None):
+def request_body(phrase, voice="Erinome", style=None):
     prompt = ("Read only the following Vietnamese sentence, clearly and naturally, in under eight seconds. "
               + (style or "Use your natural voice without imitating a robot or adding vocal effects. ") +
               "Do not add words, directions, singing or beeps. Sentence: " + phrase)
@@ -79,7 +80,7 @@ def request_body(phrase, voice="Kore", style=None):
             "prebuiltVoiceConfig": {"voiceName": voice}}}}}
 
 
-def generate(phrase, key, *, voice="Kore", style=None):
+def generate(phrase, key, *, voice="Erinome", style=None):
     request = urllib.request.Request(URL, data=json.dumps(request_body(phrase,voice,style)).encode(),
                                      headers={"x-goog-api-key": key, "Content-Type": "application/json"})
     # Never forward the credential to a redirect destination or log API bodies.
@@ -108,7 +109,7 @@ def generate(phrase, key, *, voice="Kore", style=None):
 
 def pack_slot(index, phrase, pcm):
     validate_pcm(pcm)
-    header = [0x31505348, 1, index, zlib.crc32(b"Kore"), zlib.crc32(phrase.encode()),
+    header = [0x31505348, 1, index, zlib.crc32(b"Erinome"), zlib.crc32(phrase.encode()),
               len(pcm), zlib.crc32(pcm), 0] + [0] * 8
     header[7] = zlib.crc32(struct.pack("<16I", *header))
     slot = bytearray(b"\xff" * SLOT_BYTES)
@@ -131,12 +132,16 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     image = output / "battery_audio.bin"
     scripts = phrases()
+    spec = importlib.util.spec_from_file_location("live_preview", ROOT / "tools/preview-live-voices.py")
+    live = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(live)
+    live_model = live.board_model()
     clips = []
     last_request = None
     for index, phrase in enumerate(scripts):
-        wav = output / f"kore-{index + 1}.wav"
-        metadata = output / f"kore-{index + 1}.json"
-        expected = {"model": MODEL, "voice": "Kore", "phrase": phrase, "style": "natural-v1"}
+        wav = output / f"erinome-{index + 1}.wav"
+        metadata = output / f"erinome-{index + 1}.json"
+        expected = {"model": live_model, "api": "Gemini Live", "voice": "Erinome", "phrase": phrase, "style": "natural-live-v1"}
         pcm = None
         if wav.exists() and metadata.exists():
             if json.loads(metadata.read_text(encoding="utf-8")) == expected:
@@ -151,9 +156,15 @@ def main():
                 raise ValueError("Set GEMINI_DEV_API_KEY or GEMINI_API_KEY; do not put keys in command arguments")
             if last_request is not None:
                 time.sleep(max(0, 22 - (time.monotonic() - last_request)))
-            print(f"Generating Kore clip {index + 1}/{len(scripts)}...", flush=True)
+            print(f"Generating Erinome clip {index + 1}/{len(scripts)}...", flush=True)
             last_request = time.monotonic()
-            pcm = generate(phrase, key)
+            pcm, transcript = live.generate(key, live_model, "Erinome",
+                text="Đọc nguyên văn câu sau, không trả lời hay thêm lời nào: " + phrase,
+                style="You are reading a prerecorded device notification, not chatting. Read exactly the Vietnamese sentence supplied by the user, verbatim, naturally and clearly in under eight seconds. No commentary, effects or music.",
+                max_pcm=PCM_MAX)
+            pcm = validate_pcm(pcm)
+            print("Spoken notification: " + json.dumps(transcript, ensure_ascii=True), flush=True)
+            atomic_write(output / f"erinome-{index + 1}.transcript.txt", transcript.encode("utf-8"))
             buffer = io.BytesIO()
             with wave.open(buffer, "wb") as audio:
                 audio.setnchannels(1)
@@ -172,7 +183,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, KeyError, TypeError, OSError, RuntimeError, binascii.Error) as error:
+    except Exception as error:
         # Never print raw HTTP responses, request objects or credential values.
         print(f"Battery audio preparation failed: {type(error).__name__}" if not isinstance(error, (ValueError, RuntimeError))
               else f"Battery audio preparation failed: {error}", file=sys.stderr)

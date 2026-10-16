@@ -8,7 +8,7 @@ recording store, persisted timer, or change to saved volume/brightness.
 The dedicated Reader key opens a new Gemini Live connection for bedtime mode;
 configure it separately in Setting. See [key routing](GEMINI_KEYS.md).
 It narrates in gentle Vietnamese using original
-Kore, in approximately 100-180 word segments. After each segment's PCM and final
+Erinome, in approximately 100-180 word segments. After each segment's PCM and final
 DMA drain, playback queues one continuation. It does not reopen microphone
 capture or ask the listener to say continue between segments. An automatic turn
 cannot reset the timer or invoke side-effect tools; only expression changes are

@@ -81,7 +81,7 @@ static esp_err_t esp_http_client_set_header(esp_http_client_handle_t http,const 
 static esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t http,const char *body,int size) {
     cJSON *json=cJSON_Parse(body); assert(json && size==(int)strlen(body));
     cJSON *voice=cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(json,"generationConfig"),"speechConfig"),"voiceConfig"),"prebuiltVoiceConfig");
-    assert(!strcmp(cJSON_GetObjectItem(voice,"voiceName")->valuestring,"Kore"));
+    assert(!strcmp(cJSON_GetObjectItem(voice,"voiceName")->valuestring,"Erinome"));
     cJSON_Delete(json); return ESP_OK;
 }
 static esp_err_t esp_http_client_perform(esp_http_client_handle_t http) {

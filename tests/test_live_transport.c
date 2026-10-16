@@ -264,7 +264,7 @@ static void device_tool_tests(void) {
     assert(strstr(instruction->valuestring,"If all existing facts are more valuable, skip the new fact"));
     cJSON *voice=cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(config,"speechConfig"),"voiceConfig"),"prebuiltVoiceConfig");
     cJSON *voice_name=cJSON_GetObjectItem(voice,"voiceName");
-    assert(cJSON_IsString(voice_name) && !strcmp(voice_name->valuestring,"Kore"));
+    assert(cJSON_IsString(voice_name) && !strcmp(voice_name->valuestring,"Erinome"));
     cJSON *modalities=cJSON_GetObjectItem(config,"responseModalities");
     assert(cJSON_GetArraySize(modalities)==1 &&
         !strcmp(cJSON_GetArrayItem(modalities,0)->valuestring,"AUDIO"));

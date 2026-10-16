@@ -28,10 +28,10 @@ class HostAudioTests(unittest.TestCase):
     def test_shared_phrases_and_voice(self):
         self.assertEqual(len(host.phrases()), 5)
         config = host.request_body(host.phrases()[0])["generationConfig"]
-        self.assertEqual(config["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Kore")
+        self.assertEqual(config["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Erinome")
         preview = host.request_body("Hi Su",voice="Leda",style="Clear Vietnamese. ")
         self.assertEqual(preview["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Leda")
-        self.assertEqual(host.request_body("Hi Su")["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Kore")
+        self.assertEqual(host.request_body("Hi Su")["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"], "Erinome")
 
     def test_decode_and_bounds(self):
         self.assertEqual(host.decode_audio(response()), PCM)
@@ -71,6 +71,8 @@ class HostAudioTests(unittest.TestCase):
             header[7] = 0
             self.assertEqual(zlib.crc32(struct.pack("<16I", *header)), checksum)
             self.assertEqual(header[2], index)
+            self.assertEqual(header[3], zlib.crc32(b"Erinome"))
+            self.assertNotEqual(header[3], zlib.crc32(b"Kore"))
             self.assertEqual(header[6], zlib.crc32(PCM))
             self.assertEqual(clip[4096:4096 + len(PCM)], PCM)
             self.assertEqual(len(clip), 0x60000)

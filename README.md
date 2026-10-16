@@ -63,11 +63,11 @@ Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và fla
 
 ## Báo Pin Offline
 
-Tạo sẵn bốn câu Kore báo pin và một câu nhắc lịch trên máy tính bằng `python tools/prepare-battery-audio.py`, dùng biến môi trường `GEMINI_DEV_API_KEY` hoặc `GEMINI_API_KEY`. Sau đó chạy `idf.py reconfigure build` và `idf.py flash` để nạp kèm vùng âm thanh riêng, không đụng ảnh nền hay trí nhớ. Setting chỉ hiển thị số câu sẵn sàng, không còn nút chuẩn bị. Board phát cảnh báo hoàn toàn offline ở mốc 15% và 5%, mỗi mốc một lần trong chu kỳ sạc; hai câu mỗi mức để đỡ lặp. Tôn trọng tắt loa/âm lượng 0, không chen ngang hội thoại/nhạc và không bật loa ở mức pin ≤2%. Chi tiết, giới hạn và cách thử: [Offline Battery Audio](docs/OFFLINE_BATTERY_AUDIO.md).
+Tạo sẵn bốn câu Erinome báo pin và một câu nhắc lịch trên máy tính bằng `python tools/prepare-battery-audio.py`, dùng biến môi trường `GEMINI_DEV_API_KEY` hoặc `GEMINI_API_KEY`. Sau đó chạy `idf.py reconfigure build` và `idf.py flash` để nạp kèm vùng âm thanh riêng, không đụng ảnh nền hay trí nhớ. Setting chỉ hiển thị số câu sẵn sàng, không còn nút chuẩn bị. Board phát cảnh báo hoàn toàn offline ở mốc 15% và 5%, mỗi mốc một lần trong chu kỳ sạc; hai câu mỗi mức để đỡ lặp. Tôn trọng tắt loa/âm lượng 0, không chen ngang hội thoại/nhạc và không bật loa ở mức pin ≤2%. Chi tiết, giới hạn và cách thử: [Offline Battery Audio](docs/OFFLINE_BATTERY_AUDIO.md).
 
 ## Lịch và Nhắc Hẹn
 
-Đặt, xem, sửa và hủy lịch một lần qua AI; tối đa 32 mục. Menu → Lịch đánh dấu ngày có hẹn; chọn ngày rồi bấm BOOT để xem, lên/xuống để cuộn, BACK để trở lại. Khi rảnh, có mạng thì thử đọc đúng nội dung bằng Kore; nếu lỗi hoặc offline thì dùng câu Kore sẵn và hiện nội dung trên màn hình. Thay đổi lưu flash khi kết thúc phiên, không tắt nguồn ngay sau khi đặt. Board cần còn bật và giờ đã đồng bộ; chưa có lặp lịch, báo thức tự bật nguồn hay báo lại. Chi tiết và cách thử: [Schedules](docs/SCHEDULES.md).
+Đặt, xem, sửa và hủy lịch một lần qua AI; tối đa 32 mục. Menu → Lịch đánh dấu ngày có hẹn; chọn ngày rồi bấm BOOT để xem, lên/xuống để cuộn, BACK để trở lại. Khi rảnh, có mạng thì thử đọc đúng nội dung bằng Erinome; nếu lỗi hoặc offline thì dùng câu Erinome sẵn và hiện nội dung trên màn hình. Thay đổi lưu flash khi kết thúc phiên, không tắt nguồn ngay sau khi đặt. Board cần còn bật và giờ đã đồng bộ; chưa có lặp lịch, báo thức tự bật nguồn hay báo lại. Chi tiết và cách thử: [Schedules](docs/SCHEDULES.md).
 
 ## Trí Nhớ
 
