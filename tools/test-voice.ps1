@@ -1,6 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $env:INCLUDE = "$PSScriptRoot\..\components\hisu_ui\include;$env:INCLUDE"
 $root = Split-Path -Parent $PSScriptRoot
+$env:INCLUDE = "$root\components\hisu_schedule\include;$env:INCLUDE"
+$env:INCLUDE = "$root\components\hisu_memory\include;$env:INCLUDE"
+$env:INCLUDE = "$root\components\hisu_alert\include;$root\components\hisu_power\include;$env:INCLUDE"
 foreach ($name in @('sdkconfig.defaults', 'sdkconfig')) {
     $path = Join-Path $root $name
     if (!(Test-Path -LiteralPath $path)) { continue }

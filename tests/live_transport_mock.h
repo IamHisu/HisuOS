@@ -2,6 +2,9 @@
 #include "network_mock.h"
 #include <stdlib.h>
 #include <assert.h>
+#include <time.h>
+static struct tm *mock_gmtime_r(const time_t *value,struct tm *out) { return gmtime_s(out,value)==0 ? out : NULL; }
+#define gmtime_r mock_gmtime_r
 enum { ESP_FAIL = -1, ESP_ERR_NOT_FOUND = 100 };
 
 typedef struct { char version[32], project_name[32], idf_ver[32]; } esp_app_desc_t;

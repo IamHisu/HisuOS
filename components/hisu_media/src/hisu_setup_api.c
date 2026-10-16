@@ -2,8 +2,12 @@
 #include "hisu_settings.h"
 #include "hisu_network.h"
 #include "hisu_clock.h"
+#include "hisu_memory.h"
+#include "hisu_alert.h"
+#include "hisu_power.h"
 #include "cJSON.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 static bool (*s_guard)(httpd_req_t *);
@@ -64,6 +68,73 @@ static cJSON *body(httpd_req_t *req)
     return json;
 }
 
+static esp_err_t battery_audio_api(httpd_req_t *req)
+{
+    if (!s_guard(req)) return error(req,"403 Forbidden","Session expired.");
+    hisu_power_status_t power; hisu_power_get(&power);
+    hisu_network_status_t network; hisu_network_get(&network);
+    if (req->method == HTTP_GET) {
+        hisu_alert_status_t status; hisu_alert_get(&status);
+        cJSON *json = cJSON_CreateObject();
+        bool ok = json && cJSON_AddNumberToObject(json,"ready",status.ready) &&
+            cJSON_AddNumberToObject(json,"count",HISU_ALERT_COUNT) &&
+            cJSON_AddNumberToObject(json,"current",status.current) &&
+            cJSON_AddBoolToObject(json,"requested",status.requested) &&
+            cJSON_AddBoolToObject(json,"busy",status.busy) &&
+            cJSON_AddNumberToObject(json,"error",status.error) &&
+            cJSON_AddNumberToObject(json,"http_status",status.http_status) &&
+            cJSON_AddBoolToObject(json,"charging",power.valid && power.external_power) &&
+            cJSON_AddBoolToObject(json,"connected",network.connected) &&
+            cJSON_AddBoolToObject(json,"configured",hisu_settings_has_gemini_key());
+        if (!ok) { cJSON_Delete(json); json = NULL; }
+        return json_response(req,json);
+    }
+    cJSON *json = body(req);
+    cJSON *action = cJSON_GetObjectItemCaseSensitive(json,"action");
+    bool valid = json && cJSON_GetArraySize(json) == 1 && cJSON_IsString(action) && !strcmp(action->valuestring,"prepare");
+    cJSON_Delete(json);
+    if (!valid) return error(req,"400 Bad Request","Invalid audio preparation request.");
+    if (!s_guard(req)) return error(req,"403 Forbidden","Session expired.");
+    if (!power.valid || !power.external_power || !network.connected || !hisu_settings_has_gemini_key())
+        return error(req,"409 Conflict","Charging, Wi-Fi and a Gemini key are required.");
+    esp_err_t err = hisu_alert_request();
+    if (err != ESP_OK) return error(req,"409 Conflict","Audio preparation unavailable or busy.");
+    s_headers(req); httpd_resp_set_type(req,"application/json");
+    return httpd_resp_sendstr(req,"{\"accepted\":true}");
+}
+
+static esp_err_t memory_api(httpd_req_t *req)
+{
+    if (!s_guard(req)) return error(req, "403 Forbidden", "Session expired.");
+    if (req->method == HTTP_GET) {
+        char *json = hisu_memory_json();
+        if (!json) return error(req, "503 Service Unavailable", "Memory unavailable.");
+        s_headers(req); httpd_resp_set_type(req, "application/json");
+        esp_err_t err = httpd_resp_sendstr(req, json);
+        free(json); return err;
+    }
+    cJSON *json = body(req);
+    cJSON *action = cJSON_GetObjectItemCaseSensitive(json, "action");
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(json, "id");
+    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(json, "enabled");
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    if (json && cJSON_IsString(action) && s_guard(req)) {
+        int count = cJSON_GetArraySize(json);
+        if (!strcmp(action->valuestring, "forget") && count == 2 && cJSON_IsNumber(id) &&
+            id->valuedouble >= 1 && id->valuedouble <= INT32_MAX && id->valuedouble == id->valueint)
+            err = hisu_memory_forget((uint32_t)id->valueint);
+        else if (!strcmp(action->valuestring, "clear") && count == 1) err = hisu_memory_clear();
+        else if (!strcmp(action->valuestring, "clear_recent") && count == 1) {
+            hisu_memory_clear_recent(); err = ESP_OK;
+        } else if (!strcmp(action->valuestring, "enabled") && count == 2 && cJSON_IsBool(enabled))
+            err = hisu_memory_set_enabled(cJSON_IsTrue(enabled));
+    }
+    cJSON_Delete(json);
+    if (err != ESP_OK) return error(req, "400 Bad Request", "Memory change rejected.");
+    s_headers(req); httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"accepted\":true,\"pending\":true}");
+}
+
 static esp_err_t settings_api(httpd_req_t *req)
 {
     if (!s_guard(req)) return error(req, "403 Forbidden", "Session expired.");
@@ -102,7 +173,9 @@ static esp_err_t wifi_status(httpd_req_t *req)
         cJSON_AddBoolToObject(json, "scanning", state.scanning) && cJSON_AddBoolToObject(json, "joining", state.joining) &&
         cJSON_AddBoolToObject(json, "connected", state.connected) && cJSON_AddStringToObject(json, "ssid", state.ssid) &&
         cJSON_AddStringToObject(json, "internet", internet[state.internet]) &&
-        cJSON_AddStringToObject(json, "ip", state.ip) && cJSON_AddNumberToObject(json, "error", state.error);
+        cJSON_AddBoolToObject(json, "internet_check_paused", state.setup_enabled) &&
+        cJSON_AddStringToObject(json, "ip", state.ip) && cJSON_AddNumberToObject(json, "error", state.error) &&
+        cJSON_AddNumberToObject(json,"disconnect_reason",state.disconnect_reason);
     for (int i = 0; ok && i < state.count; ++i) {
         cJSON *ap = cJSON_CreateObject();
         ok = ap && cJSON_AddStringToObject(ap, "ssid", state.aps[i].ssid) &&
@@ -205,6 +278,10 @@ esp_err_t hisu_setup_api_register(httpd_handle_t server, bool (*guard)(httpd_req
 {
     s_guard = guard; s_headers = headers;
     const httpd_uri_t routes[] = {
+        {.uri="/battery-audio", .method=HTTP_GET, .handler=battery_audio_api},
+        {.uri="/battery-audio", .method=HTTP_POST, .handler=battery_audio_api},
+        {.uri="/memory", .method=HTTP_GET, .handler=memory_api},
+        {.uri="/memory", .method=HTTP_POST, .handler=memory_api},
         {.uri="/settings", .method=HTTP_GET, .handler=settings_api},
         {.uri="/settings", .method=HTTP_POST, .handler=settings_api},
         {.uri="/wifi", .method=HTTP_GET, .handler=wifi_status},

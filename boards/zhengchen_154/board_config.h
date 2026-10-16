@@ -25,6 +25,7 @@
 #define MIC_WS                 4
 #define MIC_SCK                5
 #define MIC_SD                 6
+#define MIC_SLOT_MASK          I2S_STD_SLOT_LEFT
 #define SPK_DOUT               7
 #define SPK_BCLK               15
 #define SPK_LRCK               16

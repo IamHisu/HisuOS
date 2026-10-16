@@ -1,6 +1,7 @@
 param([string]$EimConfig = 'C:\Espressif\tools\eim_idf.json')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$env:INCLUDE = "$root\components\hisu_memory\include;$env:INCLUDE"
 $config = Get-Content -LiteralPath $EimConfig -Raw | ConvertFrom-Json
 $idf = $config.idfInstalled | Where-Object name -eq 'v5.5.5' | Select-Object -First 1
 if (!$idf) { throw 'ESP-IDF v5.5.5 EIM installation required.' }

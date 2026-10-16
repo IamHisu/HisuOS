@@ -27,7 +27,7 @@ the active sdkconfig to catch a stale configuration retaining hardware AES.
 ## Speaker Startup During Music Search
 
 A later device log reports I2S DMA allocation failure when Gemini audio arrives
-while a music-search HTTPS request is still running. The speaker ring now uses
+while a music-search HTTPS request is still running. The first mitigation used
 four 160-frame stereo/16-bit buffers: 2560 bytes rather than 5760, excluding driver
 metadata. PCM waiting for playback remains in PSRAM. This ring holds about 27 ms
 at 24 kHz and 13 ms at 48 kHz; the smaller scheduling margin needs listening tests
@@ -49,6 +49,42 @@ The later jitter-buffer change separates network/decode from I2S with the two
 existing workers and PSRAM queuing instead of increasing this DMA reservation.
 It adds roughly 500 ms of startup buffering and raises I2S task priority; audible
 results and microphone timing still require a board test.
+
+## Mono Microphone and Scheduling Margin
+
+The Zhengchen board microphone now uses the left 32-bit I2S slot, matching the
+device logs (left active, right zero), rather than reading both slots and picking
+one by energy every block. Its default six 240-frame DMA buffers fall from 11520
+to 5760 bytes. Raw/converted microphone buffers are explicitly allocated in
+PSRAM before either worker starts. A different board wiring must set
+`MIC_SLOT_MASK` to its actual slot.
+
+The speaker ring is now six 240-frame stereo/16-bit buffers (5760 bytes), still
+reserved before TLS. This restores 60 ms at 24 kHz and about 33 ms at 44.1 kHz.
+Relative to the previous stereo-mic/small-speaker combination, the DMA payload
+budget decreases by 2560 bytes. Driver metadata and transient TLS allocations
+are additional; the real peak margin and audible improvement require a board
+test. The 500 ms startup buffer and bounded short resume wait are unchanged.
+
+AFE allocation explicitly prefers PSRAM and logs internal heap before/after
+creation. Microphone and detection logs include minimum free stack in bytes.
+The input preroll is 600 ms; sustained-speech detection remains 200 ms. No VAD
+cache is concatenated, avoiding accidental duplication of samples already in
+the preroll.
+
+Startup rollback destroys AFE, command tables, MultiNet and model mappings, as
+well as I2S and allocated buffers. Both application workers wait for startup to
+finish, so rollback cannot delete a worker in the middle of a heap operation.
+An AFE fetch fault closes the voice session and requests microphone shutdown;
+faulted AFE/model resources remain retained until reboot rather than being
+freed underneath an in-flight feed. Automatic AFE restart is not implemented.
+
+Settings getters now use a brief cache-only critical section, not the mutex held
+across NVS writes. Cache publication happens only after successful commit; flash
+operations never run inside that critical section. This removes mutex-induced
+audio waits but does not eliminate flash/cache stalls themselves. TCP receive
+window changes, larger response queues and WebSocket callback backpressure are
+deferred pending device timing/heap measurements.
 
 ## Uplink Write Stalls
 

@@ -42,7 +42,7 @@ if (typeof document !== 'undefined') {
   let token = '', bitmap, gifData, pollTimer, pending = false, uploadBusy = false, pollBusy = false;
   let processing = false, procText = '', procRatio = null, gifUrl = '';
   let baseline = 0, fileGeneration = 0, closed = false;
-  let pageId = 0;
+  let pageId = 0, batteryAudioTimer;
   let activeTab = 'wifi', wifiState, wifiBusy = false;
   const SIZE = 240, MAX_ZOOM = 4, pointers = new Map();
   let zoom = 1, panX = 0, panY = 0, frame = 0, pinch = 0;
@@ -74,6 +74,7 @@ if (typeof document !== 'undefined') {
     canvas.setAttribute('aria-busy', String(!!label));
   }
   function logout() {
+    clearTimeout(batteryAudioTimer);
     token = ''; closed = true; clearTimeout(pollTimer);
     el('editor').hidden = true; el('login-section').hidden = false;
     el('connection').textContent = 'Đã ngắt kết nối';
@@ -90,7 +91,7 @@ if (typeof document !== 'undefined') {
       if (response.status === 401 || response.status === 403) {
         logout(); throw new Error('Phiên đã kết thúc. Mở lại Setting trên Hisu để tạo phiên mới.');
       }
-      throw new Error(response.status === 409 ? (path === '/image' ? 'Hisu đang lưu ảnh. Chờ rồi thử lại.' : 'Wi-Fi đang bận. Chờ rồi thử lại.') : 'Không gửi được dữ liệu. Kiểm tra Hisu và Wi-Fi.');
+      throw new Error(response.status === 409 ? (path === '/battery-audio' ? 'Cần cắm sạc, Wi-Fi và Gemini key; đóng hội thoại rồi thử lại.' : path === '/image' ? 'Hisu đang lưu ảnh. Chờ rồi thử lại.' : 'Wi-Fi đang bận. Chờ rồi thử lại.') : 'Không gửi được dữ liệu. Kiểm tra Hisu và Wi-Fi.');
     }
     return response.json();
   }
@@ -117,12 +118,13 @@ if (typeof document !== 'undefined') {
   }
   function updateWifi(state) {
     wifiState = state;
-    const internet = {unknown:'Đang kiểm tra Internet…',checking:'Đang kiểm tra Internet…',
+    const deferred = state.internet_check_paused && ['unknown','checking'].includes(state.internet);
+    const internet = deferred ? 'Kiểm tra Internet sau khi đóng Setting' : {unknown:'Đang kiểm tra Internet…',checking:'Đang kiểm tra Internet…',
       online:'Có Internet',captive:'Mạng yêu cầu đăng nhập',offline:'Wi-Fi chưa có Internet'}[state.internet] || 'Đang kiểm tra Internet…';
     const warning = state.connected && ['captive','offline'].includes(state.internet);
     el('wifi-enabled').checked = state.enabled;
     el('wifi-status').textContent = state.scanning ? 'Đang quét…' : state.joining ? `Đang kết nối ${state.ssid}…` :
-      state.connected ? `${state.ssid} · ${internet} · ${state.ip}` : state.error ? `Kết nối thất bại (${state.error})` : state.enabled ? 'Chưa kết nối' : 'Wi-Fi đã tắt';
+      state.connected ? `Đã kết nối Wi-Fi: ${state.ssid} · ${internet} · ${state.ip}` : state.error ? `Kết nối thất bại (${state.error})` : state.enabled ? 'Chưa kết nối' : 'Wi-Fi đã tắt';
     const aps = [...state.aps].sort((a,b) => Number(b.ssid === state.ssid && state.connected) - Number(a.ssid === state.ssid && state.connected) || Number(b.saved) - Number(a.saved) || b.rssi - a.rssi);
     const names = new Set(aps.map(ap => ap.ssid));
     for (const [ssid,row] of wifiRows) if (!names.has(ssid)) { row.remove(); wifiRows.delete(ssid); }
@@ -219,7 +221,54 @@ if (typeof document !== 'undefined') {
       const state = await request(`/${name}-key`);
       el(`${name}-key-status`).textContent = state.configured ? 'Đã lưu key trên thiết bị' : 'Chưa có API key';
     }
+    try { await loadMemory(); }
+    catch (error) { el('memory-status').textContent = 'Trí nhớ chưa sẵn sàng.'; }
+    void loadBatteryAudio();
   }
+  async function loadBatteryAudio() {
+    clearTimeout(batteryAudioTimer);
+    if (!token || closed) return;
+    try {
+      const state = await request('/battery-audio');
+      if (!token || closed) return;
+      const progress = `${state.ready}/${state.count} câu thông báo`;
+      el('battery-audio-status').textContent = state.ready === state.count ? `${progress} · Sẵn sàng phát offline` :
+        `${progress} · Chưa nạp đủ âm thanh báo pin`;
+    } catch (error) { if (token) el('battery-audio-status').textContent = 'Báo pin chưa sẵn sàng.'; }
+    if (token && !closed) batteryAudioTimer = setTimeout(loadBatteryAudio,5000);
+  }
+  let memoryBusy = false;
+  async function loadMemory() {
+    const state = await request('/memory');
+    el('memory-enabled').checked = state.enabled;
+    el('memory-status').textContent = `${state.facts.length}/${state.capacity} mục${state.pending ? ' · Chờ lưu khi rảnh' : ' · Đã lưu'}`;
+    const rows = state.facts.map(fact => {
+      const row = document.createElement('div'); row.className = 'memory-row';
+      const text = document.createElement('span'); text.textContent = fact.fact;
+      const remove = document.createElement('button'); remove.type = 'button';
+      remove.className = 'secondary'; remove.textContent = '×';
+      remove.title = 'Xóa mục ghi nhớ'; remove.setAttribute('aria-label','Xóa mục ghi nhớ');
+      remove.onclick = () => { if (confirm(`Xóa điều đã nhớ: ${fact.fact}?`)) void changeMemory({action:'forget',id:fact.id}); };
+      row.append(text,remove); return row;
+    });
+    el('memory-list').replaceChildren(...rows);
+  }
+  async function changeMemory(change) {
+    if (!token || memoryBusy) return;
+    memoryBusy = true;
+    const controls = [...el('panel-device').querySelectorAll('#memory-list button, [id^="memory-"]')]
+      .filter(node => node.tagName === 'BUTTON' || node.tagName === 'INPUT');
+    controls.forEach(node => { node.disabled = true; });
+    try {
+      await request('/memory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(change)});
+      await loadMemory(); message('Đã cập nhật trí nhớ.');
+    } catch (error) { message(error.message,true); if (token) try { await loadMemory(); } catch {} }
+    finally { memoryBusy = false; controls.forEach(node => { node.disabled = false; }); }
+  }
+  el('memory-enabled').onchange = () => void changeMemory({action:'enabled',enabled:el('memory-enabled').checked});
+  el('memory-refresh').onclick = () => { if (!memoryBusy) void loadMemory().catch(error => message(error.message,true)); };
+  el('memory-clear').onclick = () => { if (confirm('Xóa toàn bộ điều Hi Su đã ghi nhớ?')) void changeMemory({action:'clear'}); };
+  el('memory-clear-recent').onclick = () => void changeMemory({action:'clear_recent'});
   for (const name of ['asr','gemini']) {
     el(`${name}-key-form`).onsubmit = async event => {
       event.preventDefault();

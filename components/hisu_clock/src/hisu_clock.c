@@ -5,15 +5,20 @@
 #include <time.h>
 #include <sys/time.h>
 static bool s_sntp_ready;
-bool hisu_clock_vietnam_date(int *day, int *month, int *year)
+static bool date_at_offset(int *day, int *month, int *year, int offset_minutes)
 {
     time_t now = time(NULL);
     if (now < 1704067200LL || now >= 4102444800LL) return false;
-    now += 7*3600;
+    now += offset_minutes*60;
     struct tm date;
     if (!gmtime_r(&now, &date) || date.tm_year+1900 > 2099) return false;
     *day = date.tm_mday; *month = date.tm_mon+1; *year = date.tm_year+1900;
     return true;
+}
+bool hisu_clock_vietnam_date(int *day, int *month, int *year) { return date_at_offset(day,month,year,420); }
+bool hisu_clock_local_date(int *day, int *month, int *year)
+{
+    return date_at_offset(day,month,year,hisu_settings_get(HISU_SETTING_TIMEZONE));
 }
 esp_err_t hisu_clock_start(void)
 {

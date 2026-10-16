@@ -83,6 +83,13 @@
         <label for="timeout">Tắt màn hình sau</label><select id="timeout" data-setting="timeout"><option value="0">Không tự tắt</option><option value="30">30 giây</option><option value="60">1 phút</option><option value="120">2 phút</option><option value="300">5 phút</option><option value="600">10 phút</option></select>
         <label for="timezone">Múi giờ UTC (phút)</label><input id="timezone" type="number" min="-720" max="840" step="1" data-setting="timezone">
         <button id="time-sync" type="button">Đồng bộ giờ điện thoại</button>
+        <h2>Giọng báo offline</h2>
+        <p id="battery-audio-status" role="status"></p>
+        <h2>Trí nhớ</h2>
+        <label class="toggle"><input id="memory-enabled" type="checkbox">Tự động ghi nhớ</label>
+        <p id="memory-status" role="status"></p>
+        <div id="memory-list" aria-label="Điều Hi Su đã ghi nhớ"></div>
+        <div class="actions"><button id="memory-refresh" class="secondary" type="button" title="Tải lại trí nhớ" aria-label="Tải lại trí nhớ">↻</button><button id="memory-clear" class="secondary" type="button">Xóa trí nhớ</button><button id="memory-clear-recent" class="secondary" type="button">Xóa ngữ cảnh gần đây</button></div>
         <form id="asr-key-form" autocomplete="off">
           <h2>Lệnh giọng nói tiếng Việt</h2>
           <p id="asr-key-status" role="status"></p>

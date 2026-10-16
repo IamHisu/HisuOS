@@ -1,5 +1,31 @@
 # Hội thoại Gemini Live
 
+## Kết Thúc Tự Nhiên và Xác Nhận Nhạc
+
+Gemini hiểu ngữ cảnh để gọi `end_conversation`: lời tạm biệt, yêu cầu dừng, hoặc
+người dùng từ chối lời mời hỗ trợ thêm. Không thêm luật từ khóa cục bộ cho chữ
+"không": trả lời phủ định một câu hỏi, từ chối bài nhạc hoặc tiếp tục giải thích
+không tự động kết thúc phiên. Công cụ chỉ đánh dấu đóng sau câu trả lời. Sau khi
+nhận kết quả, AI nói một câu kết ngắn, không hỏi tiếp. Luồng loa phát hết PCM và
+chờ DMA rồi mới gửi `LIVE_END`, không chuyển qua `LIVE_DONE`/đang lắng nghe.
+Ngắt sang lượt mới xóa dấu đóng; gói hoàn tất cũ không đóng được lượt mới.
+
+Nhạc đi qua `search_music` → `offer_music` → câu hỏi tên bài + ca sĩ → lượt xác
+nhận mới của người dùng → `play_music`. Kể cả yêu cầu ban đầu nêu đúng bài vẫn
+phải chốt. Firmware giữ tối đa năm kết quả tìm kiếm trong khoảng 1,5 KiB PSRAM,
+chỉ cho đề xuất id thuộc kết quả đó, và chặn phát cùng lượt đề xuất. Lượt đề xuất
+phải hoàn tất phản hồi có audio; chỉ lượt người dùng ngay tiếp theo, có bản nhận
+dạng không bị tràn, được phép xác nhận đúng id trong 60 giây. Đổi bài cần đề xuất
+và xác nhận lại. Tìm lại, dừng nhạc, hết hạn hoặc mở phiên mới làm mất hiệu lực
+xác nhận cũ. Không tự phát một bài khác nếu lỗi.
+
+AI chịu trách nhiệm hiểu câu xác nhận/từ chối theo ngữ cảnh, không yêu cầu một
+câu mật khẩu cố định. Chốt firmware ngăn tự xác nhận/cùng lượt/id sai, không phải
+bộ phân loại ngữ nghĩa thứ hai và không chứng minh người dùng đã nghe được loa.
+Kiểm thử mô phỏng bao gồm câu kết phát xong mới đóng, ngắt lượt, gói cũ, phát
+chưa chốt, chưa hoàn tất đề xuất, id khác, quá hạn, thiếu/tràn nhận dạng và phiên
+mới. Cần thử thêm hội thoại thật trên board để kiểm tra Gemini hiểu đúng ý.
+
 Hisu dùng MultiNet cho câu gọi và Gemini Live (`gemini-3.8-live`) cho audio trực tiếp. Chỉ cần Gemini API key trong Setting. Groq key được giữ để tương thích cấu hình cũ, không dùng trong hội thoại Live.
 
 ## Luồng audio

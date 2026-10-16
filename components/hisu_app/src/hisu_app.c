@@ -7,6 +7,9 @@
 #include "hisu_clock.h"
 #include "hisu_media.h"
 #include "hisu_voice.h"
+#include "hisu_memory.h"
+#include "hisu_alert.h"
+#include "hisu_schedule.h"
 #include "esp_log.h"
 
 void hisu_app_start(void)
@@ -14,6 +17,12 @@ void hisu_app_start(void)
     esp_err_t err = hisu_board_prepare_boot();
     if (err == ESP_OK) err = hisu_settings_init();
     if (err == ESP_OK) {
+        esp_err_t memory_err = hisu_memory_init();
+        if (memory_err != ESP_OK) ESP_LOGW("APP", "Memory startup: %s", esp_err_to_name(memory_err));
+        esp_err_t alert_err = hisu_alert_init();
+        if (alert_err != ESP_OK) ESP_LOGW("APP", "Battery audio startup: %s", esp_err_to_name(alert_err));
+        esp_err_t schedule_err = hisu_schedule_init();
+        if (schedule_err != ESP_OK) ESP_LOGW("APP", "Schedule startup: %s", esp_err_to_name(schedule_err));
         esp_err_t service_err = hisu_network_start();
         if (service_err != ESP_OK) ESP_LOGE("APP", "Network startup: %s", esp_err_to_name(service_err));
         service_err = hisu_clock_start();

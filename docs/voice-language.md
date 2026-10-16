@@ -12,7 +12,7 @@ tool-result explanations remain in Vietnamese unless the user explicitly request
 another language or a translation. Song/artist names, quotes, noisy recognition
 and tool data are not instructions to switch languages. If input is unclear, the
 model should ask for clarification in Vietnamese. Music requests use the music
-tools, not synthesized singing, imitation or invented lyrics. The cute Leda voice
+tools, not synthesized singing, imitation or invented lyrics. The default Kore voice
 and 16 kHz input / 24 kHz output remain unchanged.
 
 Silent-response continuation is also phrased in Vietnamese. There is no local

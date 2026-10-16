@@ -7,6 +7,7 @@
 #include "hisu_power.h"
 #include "hisu_clock.h"
 #include "hisu_calendar.h"
+#include "hisu_schedule.h"
 #include "hisu_media.h"
 
 #include <stdio.h>
@@ -103,6 +104,9 @@ static bool s_wifi_select_after_scan;
 static char s_join_ssid[33], s_password[65];
 static int s_pass_length, s_pass_mode, s_pass_choice;
 static int s_calendar_day; /* Zero follows today; otherwise a selected Julian day. */
+static bool s_calendar_details;
+static lv_obj_t *s_calendar_list;
+static uint32_t s_calendar_revision;
 static bool s_flashlight_enabled;
 static unsigned s_flashlight_mode; /* Steady, blink, SOS. */
 static int64_t s_flashlight_start_ms;
@@ -119,7 +123,7 @@ static const char *const s_items[] = {
     "Độ sáng", "Âm lượng", "Loa", "Thời gian chờ", "Theme", "Wi-Fi",
     "Pin", "Lịch", "Setting", "Tắt màn hình", "Đóng menu",
 };
-static const char *const s_states[] = {"", "Đang nghe", "Đang suy nghĩ", "Đang nói", "Lỗi", "Đang phát nhạc", "Đang tải nhạc"};
+static const char *const s_states[] = {"", "Đang nghe", "Đang suy nghĩ", "Đang nói", "Lỗi", "Đang phát nhạc", "Đang tải nhạc", "Nhắc lịch"};
 _Static_assert(sizeof(s_items)/sizeof(s_items[0]) == UI_ITEM_COUNT, "Menu labels must match model");
 static const char *const s_demo[] = {
     "Hôm nay bạn muốn làm gì?",
@@ -692,8 +696,10 @@ static int flashlight_brightness(int64_t now)
 
 static void render_calendar(void)
 {
+    s_calendar_list=NULL;
+    s_calendar_revision=hisu_schedule_revision();
     int today_d, today_m, today_y;
-    if (!hisu_clock_vietnam_date(&today_d, &today_m, &today_y)) {
+    if (!hisu_clock_local_date(&today_d, &today_m, &today_y)) {
         header("Lịch");
         label(lv_screen_active(), "Chưa đồng bộ giờ", 12, 75, 216, 0x86dbaf);
         label(lv_screen_active(), "Kết nối Wi-Fi từ Setting", 12, 108, 216, 0x8c9690);
@@ -704,6 +710,27 @@ static void render_calendar(void)
     int selected = s_calendar_day ? s_calendar_day : today, day,month,year;
     hisu_calendar_date(selected,&day,&month,&year);
     char text[64];
+    int64_t utc_offset=(int64_t)hisu_settings_get(HISU_SETTING_TIMEZONE)*60;
+    int64_t day_start=(int64_t)(selected-hisu_calendar_jdn(1,1,1970))*86400-utc_offset;
+    if (s_calendar_details) {
+        snprintf(text,sizeof(text),"Lịch %02d/%02d/%d",day,month,year); header(text);
+        s_calendar_list=lv_obj_create(lv_screen_active()); lv_obj_remove_style_all(s_calendar_list);
+        lv_obj_set_pos(s_calendar_list,10,46); lv_obj_set_size(s_calendar_list,220,164);
+        lv_obj_set_scroll_dir(s_calendar_list,LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(s_calendar_list,LV_SCROLLBAR_MODE_AUTO);
+        hisu_schedule_event_t event; int y=0;
+        for (unsigned i=0; hisu_schedule_at(i,&event); ++i) {
+            if (event.utc<day_start || event.utc>=day_start+86400) continue;
+            int minute=(int)((event.utc-day_start)/60);
+            snprintf(text,sizeof(text),"%02d:%02d%s",minute/60,minute%60,event.delivered ? " · Đã nhắc" : "");
+            label(s_calendar_list,text,0,y,216,0x86dbaf); y+=22;
+            lv_obj_t *body=label(s_calendar_list,event.text,0,y,216,0xeeeeee);
+            lv_label_set_long_mode(body,LV_LABEL_LONG_WRAP); lv_obj_update_layout(body);
+            y+=lv_obj_get_height(body)+12;
+        }
+        if (!y) label(s_calendar_list,"Chưa có lịch",0,20,216,0x8c9690);
+        footer("Cuộn","","Cuộn"); return;
+    }
     snprintf(text,sizeof(text),"Lịch %02d/%d",month,year); header(text);
     static const char *const weekdays[] = {"Chủ nhật","Thứ hai","Thứ ba","Thứ tư","Thứ năm","Thứ sáu","Thứ bảy"};
     snprintf(text,sizeof(text),"%s, %02d/%02d",weekdays[(selected+1)%7],day,month);
@@ -740,8 +767,14 @@ static void render_calendar(void)
         title = label(cell,text,0,0,32,jd == selected ? 0x86dbaf : col ? 0xeeeeee : 0xf0a0a0);
         lv_obj_set_style_text_font(title,&lv_font_montserrat_14,0);
         lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+        int64_t start=(int64_t)(jd-hisu_calendar_jdn(1,1,1970))*86400-utc_offset;
+        hisu_schedule_event_t event;
+        for (unsigned i=0; hisu_schedule_at(i,&event); ++i) if (event.utc>=start && event.utc<start+86400) {
+            lv_obj_t *mark=label(cell,"+",24,0,8,0x86dbaf);
+            lv_obj_set_style_text_font(mark,&lv_font_montserrat_14,0); break;
+        }
     }
-    footer("<","Hôm nay",">");
+    footer("<","Xem lịch",">");
 }
 
 static void render_edit(void)
@@ -1181,15 +1214,22 @@ static void handle_key(hisu_key_t key)
     if (handle_wifi_key(key)) return;
     if (s_model.page == UI_CALENDAR_PAGE) {
         int d,m,y;
-        if (key == HISU_KEY_BACK) s_model.page = UI_MENU;
-        else if (key == HISU_KEY_BOOT) s_calendar_day = 0;
-        else if (hisu_clock_vietnam_date(&d,&m,&y)) {
+        if (s_calendar_details && (key==HISU_KEY_UP || key==HISU_KEY_DOWN || key==HISU_KEY_UP_HELD || key==HISU_KEY_DOWN_HELD)) {
+            if (s_calendar_list) lv_obj_scroll_by(s_calendar_list,0,(key==HISU_KEY_UP || key==HISU_KEY_UP_HELD) ? 44 : -44,LV_ANIM_OFF);
+            return;
+        }
+        if (key == HISU_KEY_BACK) { if (s_calendar_details) s_calendar_details=false; else s_model.page=UI_MENU; }
+        else if (key == HISU_KEY_BOOT) s_calendar_details=!s_calendar_details;
+        else if (hisu_clock_local_date(&d,&m,&y)) {
             int jd = s_calendar_day ? s_calendar_day : hisu_calendar_jdn(d,m,y);
             if (key == HISU_KEY_DOWN || key == HISU_KEY_DOWN_HELD) --jd;
             if (key == HISU_KEY_UP || key == HISU_KEY_UP_HELD) ++jd;
             if (jd >= hisu_calendar_jdn(1,1,2024) && jd <= hisu_calendar_jdn(31,12,2099)) s_calendar_day = jd;
         }
         render(); return;
+    }
+    if (s_model.page==UI_IDLE && s_status.status==HISU_UI_REMINDER && key==HISU_KEY_BOOT) {
+        s_status.status=HISU_UI_IDLE; s_status.text[0]=0; render(); return;
     }
     if (s_model.page == UI_IDLE && s_status.status != HISU_UI_IDLE && s_subtitle_body &&
         (key == HISU_KEY_UP || key == HISU_KEY_DOWN)) {
@@ -1215,7 +1255,7 @@ static void handle_key(hisu_key_t key)
         s_setup_url = false;
         hisu_media_open();
     }
-    if (previous == UI_MENU && s_model.page == UI_CALENDAR_PAGE) s_calendar_day = 0;
+    if (previous == UI_MENU && s_model.page == UI_CALENDAR_PAGE) { s_calendar_day=0; s_calendar_details=false; }
     if (previous == UI_MENU && s_model.selected == UI_SCREEN_OFF && key == HISU_KEY_BOOT)
         s_asleep = true;
     if (previous == UI_MENU && s_model.page == UI_WIFI_PAGE) {
@@ -1387,6 +1427,7 @@ static void ui_task(void *arg)
                 s_status.status = event.status;
                 s_status_shown_ms = esp_timer_get_time() / 1000;
                 memcpy(s_status.text, event.text, sizeof(s_status.text));
+                if (event.status==HISU_UI_REMINDER) s_model.page=UI_IDLE;
                 if (event.status == HISU_UI_IDLE) {
                     /* A finished voice session always returns to the wallpaper. */
                     s_model.page = UI_IDLE;
@@ -1404,6 +1445,9 @@ static void ui_task(void *arg)
         }
         int timeout = hisu_settings_get(HISU_SETTING_TIMEOUT);
         int64_t now = esp_timer_get_time() / 1000;
+        if (s_status.status==HISU_UI_REMINDER && now-s_status_shown_ms>=20000) {
+            s_status.status=HISU_UI_IDLE; s_status.text[0]=0; render();
+        }
         /* A newer listening/thinking status supersedes the old error timeout. */
         if (hisu_ui_error_due(s_status.status == HISU_UI_ERROR, s_status_shown_ms, now)) {
             dismiss_voice_error();
@@ -1418,7 +1462,8 @@ static void ui_task(void *arg)
                 s_asleep = false;
                 s_activity_ms = now;
                 render();
-            } else if (s_model.page == UI_MENU || s_model.page == UI_WIFI_PAGE || s_model.page == UI_CALENDAR_PAGE ||
+            } else if (s_model.page == UI_MENU || s_model.page == UI_WIFI_PAGE ||
+                (s_model.page == UI_CALENDAR_PAGE && (!s_calendar_details || s_calendar_revision!=hisu_schedule_revision())) ||
                 s_model.page == UI_SETUP_PAGE ||
                 (s_model.page == UI_INFO && s_model.selected == UI_BATTERY)) render();
             else if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE) {
@@ -1479,7 +1524,7 @@ esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle)
     if (!s_events || !s_startup || !(xEventGroupGetBits(s_startup) & 1) || s_startup_result != ESP_OK) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (status < HISU_UI_IDLE || status > HISU_UI_MUSIC_LOADING || !hisu_ui_valid_utf8(subtitle, 255)) {
+    if (status < HISU_UI_IDLE || status > HISU_UI_REMINDER || !hisu_ui_valid_utf8(subtitle, 255)) {
         return ESP_ERR_INVALID_ARG;
     }
     status_event_t event = {.kind = UI_EVENT_STATUS, .status = status};

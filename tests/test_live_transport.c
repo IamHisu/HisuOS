@@ -6,6 +6,75 @@
 #define pdMS_TO_TICKS(ms) ((ms) / 10)
 #include "../components/hisu_voice/src/hisu_voice_live.c"
 
+static bool mock_memory_enabled = true;
+static hisu_power_status_t mock_alert_power;
+static int mock_alert_index = -1;
+static unsigned mock_alert_played, mock_alert_reads;
+static unsigned mock_alert_polls;
+static bool mock_alert_interrupt;
+void hisu_power_get(hisu_power_status_t *out) { *out = mock_alert_power; }
+bool hisu_voice_alert_prepare(bool (*idle)(void)) { return false; }
+static hisu_schedule_event_t mock_schedule_event;
+static bool mock_schedule_due, mock_schedule_tts_fail;
+static unsigned mock_schedule_claims, mock_schedule_tts_calls;
+static esp_err_t mock_schedule_flush_result;
+static unsigned mock_reminder_screens;
+esp_err_t hisu_ui_post_status(hisu_ui_status_t status,const char *text) {
+    assert(status==HISU_UI_REMINDER && text && text[0]); ++mock_reminder_screens; return ESP_OK;
+}
+esp_err_t hisu_schedule_flush(void) { return mock_schedule_flush_result; }
+bool hisu_schedule_due(int64_t now,hisu_schedule_event_t *out) {
+    if (mock_schedule_due) *out=mock_schedule_event;
+    return mock_schedule_due;
+}
+esp_err_t hisu_schedule_claim(uint32_t id) { ++mock_schedule_claims; mock_schedule_due=false; return ESP_OK; }
+int64_t hisu_schedule_local_utc(const char *text,int offset) { return 1800000000LL; }
+esp_err_t hisu_schedule_set(uint32_t id,int64_t utc,const char *text,int64_t now,uint32_t *result) { *result=id ? id : 7; return ESP_OK; }
+esp_err_t hisu_schedule_delete(uint32_t id) { return id==7 ? ESP_OK : ESP_ERR_NOT_FOUND; }
+char *hisu_schedule_json(int64_t from,int64_t until) {
+    char *json=malloc(14); strcpy(json,"{\"events\":[]}"); return json;
+}
+esp_err_t hisu_voice_reminder_tts(const char *text,bool (*idle)(void),int16_t **pcm,size_t *bytes) {
+    ++mock_schedule_tts_calls;
+    if (mock_schedule_tts_fail) return ESP_FAIL;
+    *bytes=1024; *pcm=calloc(1,*bytes); return ESP_OK;
+}
+int hisu_alert_poll(bool valid, bool charging, int percent, int64_t now) {
+    ++mock_alert_polls;
+    return valid && !charging && percent > 2 && percent <= 15 ? mock_alert_index : -1;
+}
+size_t hisu_alert_size(unsigned index) { return 1024; }
+esp_err_t hisu_alert_read(unsigned index, size_t offset, void *pcm, size_t bytes) {
+    ++mock_alert_reads; memset(pcm,0,bytes);
+    if (mock_alert_interrupt) { mock_alert_interrupt = false; voice_live_open(20); }
+    return ESP_OK;
+}
+void hisu_alert_played(unsigned index) { ++mock_alert_played; }
+static unsigned mock_memory_writes, mock_memory_forgets;
+static bool mock_memory_full;
+static unsigned mock_memory_evictions;
+esp_err_t hisu_memory_remember(const char *fact, uint32_t replace, uint32_t *id) {
+    if (!mock_memory_enabled || !fact[0]) return ESP_ERR_INVALID_STATE;
+    if (mock_memory_full && !replace) return HISU_MEMORY_ERR_FULL;
+    ++mock_memory_writes; *id = replace ? replace : 1; return ESP_OK;
+}
+esp_err_t hisu_memory_evict_and_remember(const char *fact, uint32_t evict, const char *expected, uint32_t *id) {
+    if (!mock_memory_enabled || !mock_memory_full || strcmp(expected,"Old fact")) return ESP_ERR_INVALID_STATE;
+    if (evict != 7) return ESP_ERR_NOT_FOUND;
+    ++mock_memory_evictions; *id = 88; return ESP_OK;
+}
+esp_err_t hisu_memory_forget(uint32_t id) { ++mock_memory_forgets; return id == 1 ? ESP_OK : ESP_ERR_NOT_FOUND; }
+char *hisu_memory_json(void) {
+    const char *text = "{\"facts\":[],\"enabled\":true,\"pending\":false}";
+    char *copy = malloc(strlen(text) + 1); strcpy(copy,text); return copy;
+}
+char *hisu_memory_context(void) {
+    const char *text = "{\"known_user_facts\":[\"quote \\\" and \\\\ slash\"],\"recent_conversation\":\"hello\\nworld\"}";
+    char *copy = malloc(strlen(text) + 1); strcpy(copy,text); return copy;
+}
+bool hisu_memory_pending(void) { return false; }
+esp_err_t hisu_memory_flush(void) { return ESP_OK; }
+
 static input_t sent[32];
 static output_t output[32];
 static unsigned sent_count, output_count, events[LIVE_MUSIC_ERROR+1];
@@ -16,7 +85,16 @@ static bool music_emit_pcm, full_output;
 bool hisu_music_current(uint32_t ticket) { return music_busy && ticket==music_ticket; }
 bool hisu_music_cancel(void) { bool busy=music_busy; ++music_ticket; music_busy=false; return busy; }
 void hisu_music_finish(uint32_t ticket) { if (ticket==music_ticket) music_busy=false; }
-esp_err_t hisu_music_search(const char *query, cJSON *results) { return music_error ? ESP_ERR_INVALID_STATE : ESP_OK; }
+esp_err_t hisu_music_search(const char *query, cJSON *results) {
+    if (music_error) return ESP_ERR_INVALID_STATE;
+    static const char *const ids[]={"qYD31k5TVTCQ","song1"};
+    for (unsigned i=0; i<2; ++i) {
+        cJSON *item=cJSON_CreateObject(); assert(item && cJSON_AddItemToArray(results,item));
+        cJSON_AddStringToObject(item,"id",ids[i]); cJSON_AddStringToObject(item,"title","Sóng Gió");
+        cJSON_AddStringToObject(item,"artist","Jack, K-ICM");
+    }
+    return ESP_OK;
+}
 esp_err_t hisu_music_queue(const char *id, hisu_music_track_t *track) {
     if (music_error) return ESP_ERR_INVALID_STATE;
     track->ticket=++music_ticket; music_busy=true;
@@ -82,6 +160,11 @@ static void event(live_event_t kind, uint32_t generation, const char *text) {
     }
 }
 static void reset(void) {
+    if (s_reminder) { free(s_reminder->pcm); free(s_reminder); s_reminder=NULL; }
+    mock_schedule_due=mock_schedule_tts_fail=false;
+    mock_schedule_claims=mock_schedule_tts_calls=mock_reminder_screens=0;
+    mock_schedule_flush_result=ESP_OK;
+    s_offline_playing=s_idle_maintenance=false; s_playback_idle=true;
     for (unsigned i = 0; i < output_count; ++i) free(output[i].pcm);
     output_count = sent_count = 0; full_input = interrupt_on_text = false;
     free(s_pending_music); s_pending_music=NULL; music_error=false;
@@ -139,20 +222,35 @@ static void device_tool_tests(void) {
     cJSON *instruction=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"systemInstruction"),"parts"),0),"text");
     assert(strstr(instruction->valuestring,"A name-only greeting must include audible speech"));
     assert(!strncmp(instruction->valuestring,"Bạn là Hi Su",strlen("Bạn là Hi Su")));
-    assert(strstr(instruction->valuestring,"Ngôn ngữ trò chuyện mặc định là tiếng Việt"));
+    assert(strstr(instruction->valuestring,"Luôn giao tiếp bằng tiếng Việt tự nhiên"));
+    assert(strstr(instruction->valuestring,"thiết bị cá nhân chạy HisuOS"));
+    assert(strstr(instruction->valuestring,"người miền Nam và miền Tây"));
+    assert(strstr(instruction->valuestring,"Tránh Markdown, bảng biểu, emoji"));
+    assert(strstr(instruction->valuestring,"giọng đọc thực tế do hệ thống TTS quyết định"));
+    assert(strstr(instruction->valuestring,"Không thảo mai: không khen lấy lòng"));
+    assert(strstr(instruction->valuestring,"chỉ ra chỗ sai cụ thể và giải thích ngắn gọn, không hùa theo"));
+    assert(strstr(instruction->valuestring,"Không kết thúc mọi lượt bằng câu hỏi hay lời mời hỗ trợ"));
+    assert(strstr(instruction->valuestring,"không an ủi sáo rỗng"));
+    assert(strstr(instruction->valuestring,"tỉnh bơ, hơi lầy và tự trêu thân robot"));
+    assert(strstr(instruction->valuestring,"không phải câu mẫu để lặp lại"));
+    assert(strstr(instruction->valuestring,"Không bịa pin yếu, lỗi thiết bị hay số liệu"));
+    assert(strstr(instruction->valuestring,"Không tiết lộ thông tin nhạy cảm, API key"));
     assert(strstr(instruction->valuestring,"trừ khi người dùng chủ động yêu cầu rõ ràng"));
     assert(strstr(instruction->valuestring,"Không tự đổi ngôn ngữ theo tên bài hát"));
     assert(strstr(instruction->valuestring,"do not sing, imitate a song or invent lyrics"));
     assert(!cJSON_GetObjectItem(cJSON_GetObjectItem(config,"speechConfig"),"languageCode"));
     assert(strstr(instruction->valuestring,"Do not mention the tool or claim to have real human feelings"));
+    assert(strstr(instruction->valuestring,"not FIFO or keyword rules"));
+    assert(strstr(instruction->valuestring,"EXACT old expected_fact from list_memory"));
+    assert(strstr(instruction->valuestring,"If all existing facts are more valuable, skip the new fact"));
     cJSON *voice=cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(config,"speechConfig"),"voiceConfig"),"prebuiltVoiceConfig");
     cJSON *voice_name=cJSON_GetObjectItem(voice,"voiceName");
-    assert(cJSON_IsString(voice_name) && !strcmp(voice_name->valuestring,"Leda"));
+    assert(cJSON_IsString(voice_name) && !strcmp(voice_name->valuestring,"Kore"));
     cJSON *modalities=cJSON_GetObjectItem(config,"responseModalities");
     assert(cJSON_GetArraySize(modalities)==1 &&
         !strcmp(cJSON_GetArrayItem(modalities,0)->valuestring,"AUDIO"));
     cJSON *declarations=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"tools"),0),"functionDeclarations");
-    assert(cJSON_GetArraySize(declarations)==18); cJSON_Delete(setup);
+    assert(cJSON_GetArraySize(declarations)==26); cJSON_Delete(setup);
     check_tool("set_expression","{\"expression\":\"happy\"}",true);
     assert(output_count == 1 && output[0].cue == 2 && events[LIVE_EXPRESSION] == 0);
     play_cue(&output[0]);
@@ -195,7 +293,7 @@ static void device_tool_tests(void) {
     assert(device_settings[HISU_SETTING_VOLUME]==35);
     setting_error=false;
     value=invoke_tool("end_conversation","{}",&ended);
-    assert(ended && cJSON_IsTrue(cJSON_GetObjectItem(value,"ok"))); cJSON_Delete(value);
+    assert(!ended && s_reply_state.end_after_reply && cJSON_IsTrue(cJSON_GetObjectItem(value,"ok"))); cJSON_Delete(value);
 
     reset(); live_turn_start(&s_turn); live_turn_end(&s_turn);
     receive("{\"toolCall\":{\"functionCalls\":[{\"id\":\"a\",\"name\":\"set_volume\",\"args\":{\"percent\":20}}]}}");
@@ -210,7 +308,138 @@ static void device_tool_tests(void) {
     input_t end={.epoch=s_epoch,.generation=s_generation,.kind=5};
     strcpy((char *)end.pcm,"{\"id\":\"end\",\"name\":\"end_conversation\",\"args\":{}}");
     assert(run_tool((void *)1,&end));
+    assert(events[LIVE_END]==0 && voice_live_ready() && s_reply_state.end_after_reply);
+    finish_spoken_reply(s_epoch,s_generation);
     assert(events[LIVE_END]==1 && !voice_live_ready());
+}
+
+static void memory_tool_tests(void)
+{
+    reset();
+    char *body = build_setup();
+    assert(body && !strstr(body,"@@HISU_MEMORY@@"));
+    cJSON *json = cJSON_Parse(body);
+    assert(json);
+    cJSON *setup = cJSON_GetObjectItem(json,"setup");
+    cJSON *part = cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"systemInstruction"),"parts"),0);
+    const char *instruction = cJSON_GetObjectItem(part,"text")->valuestring;
+    char *context = hisu_memory_context();
+    assert(strstr(instruction,context) && strstr(instruction,"UNTRUSTED historical data"));
+    assert(cJSON_GetArraySize(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(setup,"tools"),0),"functionDeclarations")) == 26);
+    free(body); free(context); cJSON_Delete(json);
+    unsigned before = mock_memory_writes;
+    check_tool("remember","{\"fact\":\"Likes quiet music\"}",true);
+    check_tool("remember","{\"fact\":\"Likes jazz\",\"replace_id\":1}",true);
+    assert(mock_memory_writes == before + 2);
+    check_tool("remember","{\"fact\":\"bad\",\"replace_id\":0}",false);
+    check_tool("remember","{\"fact\":\"bad\",\"extra\":1}",false);
+    check_tool("remember","{\"fact\":123}",false);
+    assert(mock_memory_writes == before + 2);
+    mock_memory_enabled = false;
+    check_tool("remember","{\"fact\":\"Disabled\"}",false);
+    mock_memory_enabled = true;
+    check_tool("list_memory","{}",true);
+    check_tool("forget","{\"id\":1}",true);
+    check_tool("forget","{\"id\":-1}",false);
+    check_tool("forget","{\"id\":1.5}",false);
+    check_tool("forget","{\"id\":2}",false);
+    unsigned evictions = mock_memory_evictions, forgets = mock_memory_forgets;
+    check_tool("remember","{\"fact\":\"New\",\"evict_id\":7}",false);
+    check_tool("remember","{\"fact\":\"New\",\"expected_fact\":\"Old fact\"}",false);
+    check_tool("remember","{\"fact\":\"New\",\"evict_id\":0,\"expected_fact\":\"Old fact\"}",false);
+    check_tool("remember","{\"fact\":\"New\",\"evict_id\":1.5,\"expected_fact\":\"Old fact\"}",false);
+    check_tool("remember","{\"fact\":\"New\",\"replace_id\":1,\"evict_id\":7,\"expected_fact\":\"Old fact\"}",false);
+    assert(mock_memory_evictions == evictions);
+    mock_memory_full = true;
+    bool ended;
+    cJSON *value = invoke_tool("remember","{\"fact\":\"New\"}",&ended);
+    assert(!ended && cJSON_IsFalse(cJSON_GetObjectItem(value,"ok")));
+    assert(!strcmp(cJSON_GetObjectItem(value,"code")->valuestring,"memory_full"));
+    assert(strstr(cJSON_GetObjectItem(value,"next_action")->valuestring,"list_memory"));
+    cJSON_Delete(value);
+    check_tool("list_memory","{}",true);
+    value = invoke_tool("remember","{\"fact\":\"New\",\"evict_id\":7,\"expected_fact\":\"Old fact\"}",&ended);
+    assert(cJSON_IsTrue(cJSON_GetObjectItem(value,"ok")) && !ended);
+    assert(cJSON_GetObjectItem(value,"id")->valueint == 88 && cJSON_GetObjectItem(value,"evicted_id")->valueint == 7);
+    cJSON_Delete(value);
+    check_tool("remember","{\"fact\":\"New\",\"evict_id\":7,\"expected_fact\":\"Stale\"}",false);
+    assert(mock_memory_evictions == evictions + 1 && mock_memory_forgets == forgets);
+    mock_memory_full = false;
+}
+
+static void reminder_tests(void)
+{
+    reset();
+    check_tool("get_clock","{}",true);
+    check_tool("set_schedule","{\"text\":\"Đi sửa xe\",\"local_time\":\"2027-01-15T10:00:00\"}",true);
+    check_tool("set_schedule","{\"text\":\"Test\",\"local_time\":\"x\",\"id\":1.5}",false);
+    check_tool("list_schedule","{}",true);
+    check_tool("list_schedule","{\"from_local\":\"x\"}",false);
+    check_tool("delete_schedule","{\"id\":7}",true);
+    check_tool("delete_schedule","{\"id\":8}",false);
+    int16_t *previous_mix=s_speaker_mix; s_speaker_mix=calloc(512,sizeof(int16_t)); assert(s_speaker_mix);
+    for (int mode=0; mode<5; ++mode) {
+        reset(); voice_live_close(); mock_now+=60000000;
+        mock_alert_power=(hisu_power_status_t){.valid=true,.percent=80};
+        network_status.connected=true; network_status.internet=HISU_INTERNET_ONLINE;
+        mock_schedule_due=true; mock_schedule_event=(hisu_schedule_event_t){.id=7};
+        strcpy(mock_schedule_event.text,"Đi sửa xe");
+        if (mode==1) network_status.connected=false;
+        if (mode==2) mock_schedule_tts_fail=true;
+        if (mode==3) device_settings[HISU_SETTING_SPEAKER]=0;
+        if (mode==4) network_status.setup_enabled=true;
+        unsigned reads=mock_alert_reads;
+        prepare_reminder();
+        if (mode==4) { assert(!s_reminder && !mock_schedule_claims && !mock_schedule_tts_calls); continue; }
+        assert(s_reminder && mock_schedule_claims==1);
+        assert((s_reminder->pcm!=NULL)==(mode==0));
+        play_reminder();
+        assert(!s_reminder && !s_offline_playing && !s_speaker_enabled && mock_reminder_screens==1);
+        assert((mock_alert_reads>reads)==(mode==1 || mode==2));
+        mock_now+=60000000; prepare_reminder(); assert(!s_reminder && mock_schedule_claims==1);
+    }
+    reset(); voice_live_close(); mock_now+=60000000; mock_schedule_due=true;
+    mock_alert_power=(hisu_power_status_t){.valid=true,.percent=80}; mock_schedule_flush_result=ESP_FAIL;
+    prepare_reminder(); assert(!s_reminder && !mock_schedule_claims);
+    reset(); mock_now+=60000000; mock_schedule_due=true;
+    prepare_reminder(); assert(!s_reminder && !mock_schedule_claims); /* Wake/active session cancels preparation. */
+    speaker_release(); free(s_speaker_mix); s_speaker_mix=previous_mix; reset();
+}
+
+static void offline_alert_tests(void)
+{
+    int16_t *previous_mix = s_speaker_mix;
+    s_speaker_mix = calloc(512,sizeof(int16_t)); assert(s_speaker_mix);
+    reset(); voice_live_close();
+    mock_now += 60000000;
+    mock_alert_power = (hisu_power_status_t){.valid=true,.percent=10};
+    voice_live_open(19);
+    unsigned polls = mock_alert_polls;
+    observe_battery_policy();
+    assert(mock_alert_polls == polls + 1 && !s_offline_playing);
+    voice_live_close();
+    mock_alert_index = 0; device_settings[HISU_SETTING_SPEAKER] = 1; device_settings[HISU_SETTING_VOLUME] = 55;
+    s_idle_maintenance = true;
+    unsigned reads = mock_alert_reads, played = mock_alert_played;
+    play_offline_battery_alert(); assert(mock_alert_reads == reads);
+    s_idle_maintenance = false;
+    play_offline_battery_alert();
+    assert(mock_alert_reads > reads && mock_alert_played == played + 1 && !s_offline_playing && !s_speaker_enabled);
+    mock_now += 60000000;
+    mock_alert_power.external_power = true; reads = mock_alert_reads;
+    play_offline_battery_alert(); assert(mock_alert_reads == reads);
+    mock_now += 60000000; mock_alert_power.external_power = false;
+    device_settings[HISU_SETTING_SPEAKER] = 0;
+    play_offline_battery_alert(); assert(mock_alert_reads == reads);
+    mock_now += 60000000; device_settings[HISU_SETTING_SPEAKER] = 1;
+    mock_alert_power.percent = 2;
+    play_offline_battery_alert(); assert(mock_alert_reads == reads);
+    mock_now += 60000000; mock_alert_power.percent = 10;
+    mock_alert_interrupt = true; played = mock_alert_played;
+    play_offline_battery_alert();
+    assert(mock_alert_played == played && !s_speaker_enabled && !s_offline_playing);
+    mock_alert_index = -1;
+    speaker_release(); free(s_speaker_mix); s_speaker_mix = previous_mix; reset();
 }
 
 static void extended_tool_tests(void) {
@@ -332,6 +561,79 @@ static void wake_reply_tests(void) {
     assert(!send_wake((void *)1,&sent[0])); /* Caller fails the session on send error. */
 }
 
+static void confirm_test_song(const char *id)
+{
+    check_tool("search_music","{\"query\":\"Song Gio\"}",true);
+    char args[100]; snprintf(args,sizeof(args),"{\"id\":\"%s\"}",id);
+    check_tool("offer_music",args,true);
+    assert(!s_music_offer.spoken && !s_pending_music);
+    s_reply_state.audio=true;
+    finish_spoken_reply(s_epoch,s_generation);
+    assert(s_music_offer.spoken);
+    assert(voice_live_begin(s_generation+1));
+    live_turn_start(&s_turn); live_turn_end(&s_turn);
+    receive("{\"serverContent\":{\"inputTranscription\":{\"text\":\"Đúng rồi, phát đi\"}}}");
+}
+
+static void conversation_close_tests(void)
+{
+    reset(); live_turn_end(&s_turn);
+    receive("{\"toolCall\":{\"functionCalls\":[{\"id\":\"bye\",\"name\":\"end_conversation\",\"args\":{}}]}}");
+    assert(sent_count==1 && run_tool((void *)1,&sent[0]));
+    assert(s_reply_state.end_after_reply && voice_live_ready() && !events[LIVE_END]);
+    receive(audio_done);
+    assert(output_count==3 && output[2].done && !events[LIVE_END] && !events[LIVE_DONE]);
+    uint32_t epoch=s_epoch, generation=s_generation;
+    finish_spoken_reply(epoch,generation); /* Playback consumer has drained the queued farewell. */
+    assert(events[LIVE_END]==1 && !events[LIVE_DONE] && !voice_live_ready());
+    finish_spoken_reply(epoch,generation); assert(events[LIVE_END]==1);
+
+    reset(); check_tool("end_conversation","{}",true);
+    epoch=s_epoch; generation=s_generation;
+    assert(voice_live_interrupt(generation+1));
+    assert(!s_reply_state.end_after_reply);
+    finish_spoken_reply(epoch,generation); assert(!events[LIVE_END] && !events[LIVE_DONE]);
+    finish_spoken_reply(s_epoch,s_generation); assert(events[LIVE_DONE]==1 && !events[LIVE_END]);
+
+    reset(); live_turn_end(&s_turn);
+    receive("{\"serverContent\":{\"inputTranscription\":{\"text\":\"Không\"}}}");
+    receive(audio_done); finish_spoken_reply(s_epoch,s_generation);
+    assert(!events[LIVE_END] && events[LIVE_DONE]==1); /* A negative word alone never closes locally. */
+}
+
+static void music_confirmation_tests(void)
+{
+    reset(); bool ended;
+    check_tool("search_music","{\"query\":\"Song Gio\"}",true);
+    cJSON *value=invoke_tool("offer_music","{\"id\":\"song1\"}",&ended);
+    assert(!ended && !strcmp(cJSON_GetObjectItem(value,"title")->valuestring,"Sóng Gió") &&
+        !strcmp(cJSON_GetObjectItem(value,"artist")->valuestring,"Jack, K-ICM")); cJSON_Delete(value);
+    assert(voice_live_begin(s_generation+1)); live_turn_end(&s_turn);
+    receive("{\"serverContent\":{\"inputTranscription\":{\"text\":\"Đúng\"}}}");
+    check_tool("play_music","{\"id\":\"song1\"}",false); /* Offer has not been heard yet. */
+    for (int mode=0; mode<6; ++mode) {
+        reset(); confirm_test_song("song1");
+        if (mode==0) s_music_offer.deadline=esp_timer_get_time()-1;
+        if (mode==1) assert(voice_live_begin(s_generation+1)); /* Not the next answer anymore. */
+        if (mode==2) s_confirmation[0]=0; /* No real user transcription. */
+        if (mode==3) {
+            char wire[400]; char text[200]; memset(text,'a',sizeof(text)-1); text[sizeof(text)-1]=0;
+            snprintf(wire,sizeof(wire),"{\"serverContent\":{\"inputTranscription\":{\"text\":\"%s\"}}}",text);
+            receive(wire); assert(s_confirmation_overflow);
+        }
+        if (mode==4) { check_tool("stop_music","{}",true); }
+        if (mode==5) { voice_live_close(); voice_live_open(30); s_ready=true; }
+        check_tool("play_music","{\"id\":\"song1\"}",false);
+        assert(!s_pending_music && !music_busy);
+    }
+    reset(); confirm_test_song("song1");
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\"}",false); /* Cannot switch tracks under an old confirmation. */
+    music_error=true;
+    check_tool("search_music","{\"query\":\"Other\"}",false);
+    music_error=false;
+    check_tool("play_music","{\"id\":\"song1\"}",false); /* Failed new search invalidates old consent. */
+}
+
 static void music_tests(void) {
     reset();
     check_tool("search_music","{\"query\":\"Lac Troi Son Tung\"}",true);
@@ -339,10 +641,16 @@ static void music_tests(void) {
     check_tool("search_music","{\"query\":\"test\",\"extra\":true}",false);
     check_tool("play_music","{\"id\":\"../unsafe\"}",false);
     check_tool("play_music","{\"id\":\"https://example.com\"}",false);
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\"}",false);
+    check_tool("offer_music","{\"id\":\"unknown\"}",false);
+    check_tool("offer_music","{\"id\":\"qYD31k5TVTCQ\"}",true);
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\"}",false); /* Cannot self-confirm. */
+    confirm_test_song("qYD31k5TVTCQ");
     music_error=true;
     check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\"}",false);
     assert(!s_pending_music && voice_live_ready());
     music_error=false;
+    confirm_test_song("qYD31k5TVTCQ");
     input_t play={.epoch=s_epoch,.generation=s_generation,.kind=5};
     strcpy((char *)play.pcm,"{\"id\":\"song\",\"name\":\"play_music\",\"args\":{\"id\":\"qYD31k5TVTCQ\"}}");
     assert(run_tool((void *)1,&play));
@@ -352,6 +660,7 @@ static void music_tests(void) {
     voice_live_open(20);
     assert(!hisu_music_current(ticket) && !music_busy);
     reset();
+    confirm_test_song("qYD31k5TVTCQ");
     play.epoch=s_epoch; play.generation=s_generation; mock_send_failure=true;
     assert(!run_tool((void *)1,&play));
     assert(!s_pending_music && !music_busy); /* No playback after failed acknowledgment. */
@@ -432,9 +741,9 @@ static void spoken_reply_tests(void) {
     assert(s_turn.response_pending && !s_reply_state.deferred_complete && output_count==2);
     receive(play_call);
     assert(sent_count==2 && s_reply_state.pending_tools==1);
-    assert(run_tool((void *)1,&sent[1]) && s_pending_music && events[LIVE_END]==1);
+    assert(run_tool((void *)1,&sent[1]) && !s_pending_music && events[LIVE_END]==0);
     assert(music_resolve_calls==0); /* No music HTTPS while acknowledging the Gemini tool. */
-    assert(events[LIVE_DONE]==0 && !voice_live_ready()); /* Music follow-up survives a pre-result audio boundary. */
+    assert(events[LIVE_DONE]==0 && voice_live_ready()); /* No playback from a same-turn tool continuation. */
 
     reset(); live_turn_end(&s_turn); receive(search_call); receive(complete);
     mock_on_send=reply_during_send;
@@ -636,6 +945,12 @@ static void audio_buffer_tests(void) {
 }
 
 int main(void) {
+    _set_error_mode(_OUT_TO_STDERR);
+    conversation_close_tests();
+    music_confirmation_tests();
+    reminder_tests();
+    offline_alert_tests();
+    memory_tool_tests();
     device_tool_tests();
     extended_tool_tests();
     wake_reply_tests();
@@ -646,7 +961,7 @@ int main(void) {
     audio_buffer_tests();
     assert(speaker_open() == ESP_OK);
     assert(mock_i2s_channel_config.auto_clear_after_cb);
-    assert(mock_i2s_channel_config.dma_desc_num==4 && mock_i2s_channel_config.dma_frame_num==160);
+    assert(mock_i2s_channel_config.dma_desc_num==6 && mock_i2s_channel_config.dma_frame_num==240);
     unsigned created=mock_i2s_created, preloaded=mock_i2s_preloaded, reconfigured=mock_i2s_reconfigured;
     speaker_close();
     assert(s_speaker && !s_speaker_enabled);

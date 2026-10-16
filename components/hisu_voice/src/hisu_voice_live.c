@@ -5,8 +5,14 @@
 #include "hisu_voice_music.h"
 #include "hisu_voice_caption.h"
 #include "hisu_ui_face.h"
+#include "hisu_ui.h"
 #include "hisu_network.h"
 #include "hisu_settings.h"
+#include "hisu_memory.h"
+#include "hisu_alert.h"
+#include "hisu_schedule.h"
+#include "hisu_power.h"
+#include "hisu_voice_alert_tts.h"
 #include "hisu_media.h"
 #include "esp_app_desc.h"
 #include "esp_system.h"
@@ -29,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 #define MESSAGE_MAX (128 * 1024)
 #define INPUT_SAMPLES 640
@@ -65,7 +72,7 @@ static bool s_active, s_ready, s_failed;
 static live_turn_t s_turn;
 static struct {
     unsigned pending_tools;
-    bool audio, deferred_complete, retry_used, retry_queued, retry_sent;
+    bool audio, deferred_complete, retry_used, retry_queued, retry_sent, end_after_reply;
     size_t rx_bytes;
     int64_t rx_first_us, rx_last_us, max_rx_gap_us;
 } s_reply_state;
@@ -84,6 +91,8 @@ static live_event_fn s_callback;
 static i2s_chan_handle_t s_speaker;
 static int s_speaker_rate;
 static bool s_speaker_enabled;
+static bool s_playback_idle = true;
+static bool s_offline_playing, s_idle_maintenance;
 static int64_t s_end_us;
 static size_t s_queued_audio_bytes;
 /* Prepared by the transport worker; handed to the playback worker only after WSS teardown. */
@@ -101,6 +110,19 @@ static bool s_reboot_pending;
 static uint32_t s_reboot_generation;
 static int64_t s_reboot_deadline;
 static char s_confirmation[160];
+static bool s_confirmation_overflow;
+typedef struct { char id[41], title[128], artist[128]; } music_choice_t;
+static music_choice_t *s_music_choices; /* Five bounded search results in PSRAM; live_send owns writes. */
+static unsigned s_music_choice_count;
+static uint32_t s_music_choices_epoch;
+static struct {
+    char id[41];
+    uint32_t epoch, generation;
+    int64_t deadline;
+    bool pending, spoken;
+} s_music_offer; /* Protected by s_mux; only a later real user turn may confirm. */
+typedef struct { hisu_schedule_event_t event; int16_t *pcm; size_t bytes; } reminder_t;
+static reminder_t *s_reminder;
 
 /* Compare the entire user transcription, never a model-generated argument. */
 static bool reboot_confirmed(void)
@@ -142,6 +164,7 @@ void voice_live_open(uint32_t generation)
     portENTER_CRITICAL(&s_mux);
     ++s_epoch; s_generation = generation; s_active = true; s_ready = s_failed = false;
     s_reboot_pending = false; s_confirmation[0] = 0;
+    s_confirmation_overflow=false; s_music_offer.pending=false; s_music_choices_epoch=0;
     live_turn_reset(&s_turn); s_interrupt_deadline = 0;
     memset(&s_reply_state, 0, sizeof(s_reply_state));
     portEXIT_CRITICAL(&s_mux);
@@ -151,6 +174,7 @@ void voice_live_close(void)
     portENTER_CRITICAL(&s_mux);
     ++s_epoch; s_active = s_ready = false;
     s_reboot_pending = false; s_confirmation[0] = 0;
+    s_confirmation_overflow=false; s_music_offer.pending=false; s_music_choices_epoch=0;
     live_turn_reset(&s_turn); s_interrupt_deadline = 0;
     memset(&s_reply_state, 0, sizeof(s_reply_state));
     portEXIT_CRITICAL(&s_mux);
@@ -185,6 +209,8 @@ bool voice_live_interrupt(uint32_t generation)
     if (active) {
         frame.epoch = s_epoch;
         s_generation = generation;
+        s_confirmation[0]=0; s_confirmation_overflow=false;
+        if (generation!=s_music_offer.generation && generation!=s_music_offer.generation+1) s_music_offer.pending=false;
         /* A queued continuation has not opened another server turn yet. */
         if (s_reply_state.retry_queued) s_turn.response_pending = false;
         live_turn_interrupt(&s_turn);
@@ -203,6 +229,8 @@ bool voice_live_begin(uint32_t generation)
         (generation == s_generation || generation == s_generation + 1);
     if (ready) {
         s_generation = generation; s_confirmation[0] = 0;
+        s_confirmation_overflow=false;
+        if (generation!=s_music_offer.generation && generation!=s_music_offer.generation+1) s_music_offer.pending=false;
         memset(&s_reply_state, 0, sizeof(s_reply_state));
     }
     portEXIT_CRITICAL(&s_mux);
@@ -406,7 +434,8 @@ static void parse_message(connection_t *connection)
                 size_t used = strlen(s_confirmation), extra = strlen(input->valuestring);
                 if (extra >= sizeof(s_confirmation) - used) {
                     s_reboot_pending = false; /* Truncation must never create a confirmation. */
-                } else memcpy(s_confirmation + used, input->valuestring, extra + 1);
+                    s_confirmation_overflow=true; s_music_offer.pending=false;
+                } else if (!s_confirmation_overflow) memcpy(s_confirmation + used, input->valuestring, extra + 1);
             }
             portEXIT_CRITICAL(&s_mux);
             s_callback(LIVE_INPUT, generation, input->valuestring);
@@ -616,19 +645,166 @@ static char *execute_tool(const input_t *frame, bool *end_session)
     int setting_value = 0;
     hisu_setting_t setting = HISU_SETTING_COUNT;
     esp_err_t err = ESP_OK;
-    if (!strcmp(name->valuestring,"search_music")) {
+    if (!strcmp(name->valuestring,"get_clock") && no_args) {
+        valid=true;
+        time_t now=time(NULL), local=now+hisu_settings_get(HISU_SETTING_TIMEZONE)*60;
+        struct tm date; char text[24]={0};
+        if (now<1704067200LL || now>=4102444800LL || !gmtime_r(&local,&date)) err=ESP_ERR_INVALID_STATE;
+        else {
+            strftime(text,sizeof(text),"%Y-%m-%dT%H:%M:%S",&date);
+            cJSON_AddStringToObject(value,"local_time",text);
+            cJSON_AddNumberToObject(value,"utc",(double)now);
+            cJSON_AddNumberToObject(value,"utc_offset_minutes",hisu_settings_get(HISU_SETTING_TIMEZONE));
+        }
+    } else if (!strcmp(name->valuestring,"set_schedule")) {
+        const cJSON *text=cJSON_GetObjectItemCaseSensitive(args,"text");
+        const cJSON *at=cJSON_GetObjectItemCaseSensitive(args,"local_time");
+        const cJSON *replace=cJSON_GetObjectItemCaseSensitive(args,"id");
+        valid=cJSON_IsObject(args) && cJSON_GetArraySize(args)==(replace ? 3 : 2) && cJSON_IsString(text) &&
+            cJSON_IsString(at) && (!replace || (cJSON_IsNumber(replace) && replace->valuedouble>=1 &&
+            replace->valuedouble<=INT32_MAX && replace->valuedouble==replace->valueint));
+        if (valid) {
+            int64_t utc=hisu_schedule_local_utc(at->valuestring,hisu_settings_get(HISU_SETTING_TIMEZONE));
+            uint32_t schedule_id=0;
+            err=hisu_schedule_set(replace ? (uint32_t)replace->valueint : 0,utc,text->valuestring,time(NULL),&schedule_id);
+            if (err==ESP_OK) {
+                cJSON_AddNumberToObject(value,"id",schedule_id);
+                cJSON_AddStringToObject(value,"local_time",at->valuestring);
+                cJSON_AddStringToObject(value,"status","pending_idle_flash_save");
+            }
+        }
+    } else if (!strcmp(name->valuestring,"delete_schedule")) {
+        int schedule_id=0; valid=tool_integer(args,"id",1,INT32_MAX,&schedule_id);
+        if (valid) err=hisu_schedule_delete((uint32_t)schedule_id);
+    } else if (!strcmp(name->valuestring,"list_schedule")) {
+        const cJSON *from=cJSON_GetObjectItemCaseSensitive(args,"from_local");
+        const cJSON *until=cJSON_GetObjectItemCaseSensitive(args,"until_local");
+        valid=no_args || (cJSON_IsObject(args) && cJSON_GetArraySize(args)==2 && cJSON_IsString(from) && cJSON_IsString(until));
+        if (valid) {
+            int offset=hisu_settings_get(HISU_SETTING_TIMEZONE);
+            int64_t start=no_args ? 1704067200LL : hisu_schedule_local_utc(from->valuestring,offset);
+            int64_t end=no_args ? 4102444800LL : hisu_schedule_local_utc(until->valuestring,offset);
+            char *json=start && end>start ? hisu_schedule_json(start,end) : NULL;
+            cJSON *events=json ? cJSON_CreateRaw(json) : NULL; free(json);
+            if (!events || !cJSON_AddItemToObject(value,"schedule",events)) { cJSON_Delete(events); err=ESP_ERR_INVALID_STATE; }
+        }
+    } else if (!strcmp(name->valuestring,"remember")) {
+        const cJSON *fact = cJSON_GetObjectItemCaseSensitive(args,"fact");
+        const cJSON *replace = cJSON_GetObjectItemCaseSensitive(args,"replace_id");
+        const cJSON *evict = cJSON_GetObjectItemCaseSensitive(args,"evict_id");
+        const cJSON *expected = cJSON_GetObjectItemCaseSensitive(args,"expected_fact");
+        valid = cJSON_IsObject(args) && cJSON_IsString(fact) &&
+            cJSON_GetArraySize(args) == 1 + (replace ? 1 : 0) + (evict ? 1 : 0) + (expected ? 1 : 0) &&
+            !(replace && evict) && (!!evict == !!expected) && (!evict ||
+            (cJSON_IsString(expected) && cJSON_IsNumber(evict) && evict->valuedouble >= 1 &&
+             evict->valuedouble <= INT32_MAX && evict->valuedouble == evict->valueint)) && (!replace ||
+            (cJSON_IsNumber(replace) && replace->valuedouble >= 1 && replace->valuedouble <= INT32_MAX &&
+             replace->valuedouble == replace->valueint));
+        if (valid) {
+            uint32_t memory_id = 0;
+            err = evict ? hisu_memory_evict_and_remember(fact->valuestring, (uint32_t)evict->valueint,
+                                                        expected->valuestring, &memory_id) :
+                hisu_memory_remember(fact->valuestring, replace ? (uint32_t)replace->valueint : 0, &memory_id);
+            if (err == ESP_OK) {
+                cJSON_AddNumberToObject(value,"id", memory_id);
+                if (evict) cJSON_AddNumberToObject(value,"evicted_id",evict->valueint);
+                cJSON_AddStringToObject(value,"status","pending_idle_flash_save");
+            } else if (err == HISU_MEMORY_ERR_FULL) {
+                cJSON_AddStringToObject(value,"code","memory_full");
+                cJSON_AddStringToObject(value,"next_action",
+                    "Call list_memory, merge the same topic with replace_id or select a lower-value fact. "
+                    "Retry remember with evict_id and its exact expected_fact. Never forget first. "
+                    "If the new fact is less useful than existing facts, skip saving it.");
+            } else if (evict) {
+                cJSON_AddStringToObject(value,"code","eviction_rejected");
+                cJSON_AddStringToObject(value,"next_action",
+                    "No fact was removed. Refresh list_memory; target may have changed, capacity may be available, "
+                    "or automatic memory is disabled. Do not repeat an obsolete eviction.");
+            }
+        }
+    } else if (!strcmp(name->valuestring,"list_memory") && no_args) {
+        valid = true;
+        char *json = hisu_memory_json();
+        cJSON *memory = json ? cJSON_CreateRaw(json) : NULL;
+        free(json);
+        if (!memory || !cJSON_AddItemToObject(value,"memory",memory)) {
+            cJSON_Delete(memory); err = ESP_ERR_NO_MEM;
+        }
+    } else if (!strcmp(name->valuestring,"forget")) {
+        int memory_id = 0;
+        valid = tool_integer(args,"id",1,INT32_MAX,&memory_id);
+        if (valid) {
+            err = hisu_memory_forget((uint32_t)memory_id);
+            if (err == ESP_OK) cJSON_AddStringToObject(value,"status","pending_idle_flash_removal");
+        }
+    } else if (!strcmp(name->valuestring,"search_music")) {
         const cJSON *query = cJSON_GetObjectItemCaseSensitive(args,"query");
         valid = cJSON_IsObject(args) && cJSON_GetArraySize(args) == 1 && cJSON_IsString(query) &&
             query->valuestring[0] && strlen(query->valuestring) <= 180;
         if (valid) {
+            portENTER_CRITICAL(&s_mux); s_music_offer.pending=false; s_music_choices_epoch=0; portEXIT_CRITICAL(&s_mux);
             cJSON *songs = cJSON_AddArrayToObject(value,"songs");
             err = songs ? hisu_music_search(query->valuestring,songs) : ESP_ERR_NO_MEM;
+            if (err==ESP_OK) {
+                if (!s_music_choices) s_music_choices=heap_caps_calloc(5,sizeof(*s_music_choices),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+                if (!s_music_choices) err=ESP_ERR_NO_MEM;
+                else {
+                    s_music_choice_count=0;
+                    const cJSON *item;
+                    cJSON_ArrayForEach(item,songs) {
+                        const cJSON *song_id=cJSON_GetObjectItemCaseSensitive(item,"id");
+                        const cJSON *title=cJSON_GetObjectItemCaseSensitive(item,"title");
+                        const cJSON *artist=cJSON_GetObjectItemCaseSensitive(item,"artist");
+                        if (s_music_choice_count==5) break;
+                        if (!cJSON_IsString(song_id) || !hisu_music_valid_id(song_id->valuestring) || !cJSON_IsString(title) ||
+                            !cJSON_IsString(artist) || strlen(title->valuestring)>=128 || strlen(artist->valuestring)>=128) continue;
+                        music_choice_t *choice=&s_music_choices[s_music_choice_count++];
+                        strcpy(choice->id,song_id->valuestring); strcpy(choice->title,title->valuestring); strcpy(choice->artist,artist->valuestring);
+                    }
+                    portENTER_CRITICAL(&s_mux);
+                    if (frame->epoch==s_epoch && frame->generation==s_generation && s_active && !s_failed) s_music_choices_epoch=frame->epoch;
+                    portEXIT_CRITICAL(&s_mux);
+                }
+            }
+        }
+    } else if (!strcmp(name->valuestring,"offer_music")) {
+        const cJSON *song=cJSON_GetObjectItemCaseSensitive(args,"id");
+        valid=cJSON_IsObject(args) && cJSON_GetArraySize(args)==1 && cJSON_IsString(song) && hisu_music_valid_id(song->valuestring);
+        const music_choice_t *choice=NULL;
+        if (valid) for (unsigned i=0; i<s_music_choice_count; ++i)
+            if (!strcmp(s_music_choices[i].id,song->valuestring)) { choice=&s_music_choices[i]; break; }
+        portENTER_CRITICAL(&s_mux);
+        bool available=valid && choice && s_music_choices_epoch==frame->epoch && frame->epoch==s_epoch && frame->generation==s_generation;
+        if (available) {
+            strcpy(s_music_offer.id,choice->id); s_music_offer.epoch=frame->epoch; s_music_offer.generation=frame->generation;
+            s_music_offer.pending=true; s_music_offer.spoken=false; s_music_offer.deadline=esp_timer_get_time()+60000000;
+        }
+        portEXIT_CRITICAL(&s_mux);
+        if (valid && !available) err=ESP_ERR_INVALID_STATE;
+        if (available) {
+            cJSON_AddStringToObject(value,"id",choice->id);
+            cJSON_AddStringToObject(value,"title",choice->title);
+            cJSON_AddStringToObject(value,"artist",choice->artist);
+            cJSON_AddBoolToObject(value,"confirmation_required",true);
+            cJSON_AddStringToObject(value,"next_action","Say the exact title and artist, ask if this is the right track, then WAIT for the user's next answer. Do not play yet.");
         }
     } else if (!strcmp(name->valuestring,"play_music")) {
         const cJSON *song = cJSON_GetObjectItemCaseSensitive(args,"id");
         valid = cJSON_IsObject(args) && cJSON_GetArraySize(args) == 1 && cJSON_IsString(song) &&
             hisu_music_valid_id(song->valuestring);
-        if (valid) {
+        portENTER_CRITICAL(&s_mux);
+        bool confirmed=valid && s_music_offer.pending && s_music_offer.spoken && s_music_offer.epoch==frame->epoch &&
+            frame->generation==s_music_offer.generation+1 && !strcmp(s_music_offer.id,song->valuestring) &&
+            esp_timer_get_time()<=s_music_offer.deadline && s_confirmation[0] && !s_confirmation_overflow;
+        if (confirmed) s_music_offer.pending=false;
+        portEXIT_CRITICAL(&s_mux);
+        if (valid && !confirmed) {
+            err=ESP_ERR_INVALID_STATE;
+            cJSON_AddStringToObject(value,"code","music_confirmation_required");
+            cJSON_AddStringToObject(value,"error","A new user confirmation of the proposed track is required before playback.");
+            cJSON_AddStringToObject(value,"next_action","Call offer_music with an exact search result, speak its title and artist, then wait for a new user answer confirming this track. Never confirm on the user's behalf.");
+        }
+        if (valid && confirmed) {
             free(s_pending_music); s_pending_music = NULL;
             hisu_music_track_t *track = heap_caps_calloc(1,sizeof(*track),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
             err = track ? hisu_music_queue(song->valuestring,track) : ESP_ERR_NO_MEM;
@@ -644,6 +820,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
         }
     } else if (!strcmp(name->valuestring,"stop_music") && no_args) {
         valid=true; (void)hisu_music_cancel();
+        portENTER_CRITICAL(&s_mux); s_music_offer.pending=false; portEXIT_CRITICAL(&s_mux);
     } else if (!strcmp(name->valuestring,"get_network_status") && no_args) {
         hisu_network_status_t network;
         hisu_network_get(&network);
@@ -727,7 +904,11 @@ static char *execute_tool(const input_t *frame, bool *end_session)
         cJSON_AddNumberToObject(value,"screen_timeout",hisu_settings_get(HISU_SETTING_TIMEOUT));
     } else if (!strcmp(name->valuestring,"end_conversation") && no_args) {
         valid = true;
-        *end_session = true;
+        portENTER_CRITICAL(&s_mux);
+        if (frame->epoch==s_epoch && frame->generation==s_generation) s_reply_state.end_after_reply=true;
+        portEXIT_CRITICAL(&s_mux);
+        cJSON_AddStringToObject(value,"status","close_after_spoken_reply");
+        cJSON_AddStringToObject(value,"next_action","Say one brief natural closing sentence, do not ask another question, then finish your turn. Firmware closes after the speaker drains.");
     } else if (!strcmp(name->valuestring,"set_volume")) {
         setting = HISU_SETTING_VOLUME;
         valid = tool_integer(args,"percent",0,100,&setting_value);
@@ -768,7 +949,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
     cJSON_AddBoolToObject(value,"ok",valid && err == ESP_OK);
     ESP_LOGI(TAG,"Device tool %s: %s",name->valuestring, valid && err == ESP_OK ? "ok" : "rejected");
     if (!valid) cJSON_AddStringToObject(value,"error","Unsupported function or invalid arguments");
-    else if (err != ESP_OK) cJSON_AddStringToObject(value,"error",
+    else if (err != ESP_OK && !cJSON_GetObjectItemCaseSensitive(value,"error")) cJSON_AddStringToObject(value,"error",
         !strcmp(name->valuestring,"search_music") || !strcmp(name->valuestring,"play_music") ?
         "Zing MP3 unavailable, track restricted, or request cancelled. Do not substitute another song." :
         "Device could not apply the request");
@@ -816,6 +997,70 @@ static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
     return ok;
 }
 
+static char *build_setup(void)
+{
+    static const char marker[] = "@@HISU_MEMORY@@";
+    const char *where = strstr(voice_live_setup, marker);
+    if (!where) return NULL;
+    char *context = hisu_memory_context();
+    cJSON *string = cJSON_CreateString(context ? context : "{\"available\":false}");
+    free(context);
+    char *encoded = string ? cJSON_PrintUnformatted(string) : NULL;
+    cJSON_Delete(string);
+    if (!encoded) return NULL;
+    /* Only substitute a cJSON-escaped string payload into the trusted template.
+     * Avoid building its large tool-schema object tree in internal RAM. */
+    size_t prefix = (size_t)(where - voice_live_setup), length = strlen(encoded) - 2;
+    const char *suffix = where + sizeof(marker) - 1;
+    char *setup = heap_caps_malloc(prefix + length + strlen(suffix) + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (setup) {
+        memcpy(setup, voice_live_setup, prefix);
+        memcpy(setup + prefix, encoded + 1, length);
+        strcpy(setup + prefix + length, suffix);
+    }
+    cJSON_free(encoded); return setup;
+}
+
+static bool idle_for_alert_prepare(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool idle = !s_active && !s_music_playing && s_playback_idle && !s_queued_audio_bytes && !s_offline_playing;
+    portEXIT_CRITICAL(&s_mux); return idle;
+}
+
+static void prepare_reminder(void)
+{
+    static int64_t next_poll;
+    int64_t now=esp_timer_get_time();
+    if (now<next_poll) return;
+    next_poll=now+1000000;
+    hisu_power_status_t power; hisu_power_get(&power);
+    if (!power.valid || (!power.external_power && power.percent<=5)) return;
+    /* Only live_send mutates schedules. No flash/TLS on the audio consumer. */
+    if (hisu_schedule_flush()!=ESP_OK) return;
+    portENTER_CRITICAL(&s_mux); bool pending=s_reminder!=NULL; portEXIT_CRITICAL(&s_mux);
+    if (pending) return;
+    hisu_network_status_t network; hisu_network_get(&network);
+    if (network.setup_enabled) return;
+    reminder_t *notice=heap_caps_calloc(1,sizeof(*notice),MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!notice) return;
+    if (!hisu_schedule_due(time(NULL),&notice->event)) { free(notice); return; }
+    if (power.valid && (power.external_power || power.percent>2) && network.connected &&
+        network.internet==HISU_INTERNET_ONLINE && hisu_settings_get(HISU_SETTING_SPEAKER)==1 &&
+        hisu_settings_get(HISU_SETTING_VOLUME)>0) {
+        char phrase[224]; snprintf(phrase,sizeof(phrase),"Tới giờ rồi nè. %s",notice->event.text);
+        (void)hisu_network_set_performance(true);
+        (void)hisu_voice_reminder_tts(phrase,idle_for_alert_prepare,&notice->pcm,&notice->bytes);
+        (void)hisu_network_set_performance(false);
+    }
+    hisu_network_get(&network); hisu_power_get(&power);
+    if (network.setup_enabled || !power.valid || (!power.external_power && power.percent<=5) ||
+        !idle_for_alert_prepare() || hisu_schedule_claim(notice->event.id)!=ESP_OK) {
+        free(notice->pcm); free(notice); return;
+    }
+    portENTER_CRITICAL(&s_mux); s_reminder=notice; portEXIT_CRITICAL(&s_mux);
+}
+
 static void transport_task(void *arg)
 {
     (void)arg;
@@ -824,13 +1069,28 @@ static void transport_task(void *arg)
     int16_t *pcm = (int16_t *)s_send_storage;
     char *encoded = s_send_storage + SEND_SAMPLES * sizeof(*pcm);
     char *body = encoded + ENCODED_CAPACITY;
-    const char *setup = voice_live_setup;
+    int64_t next_memory_save = 0;
+    int64_t next_alert_prepare = 0;
     for (;;) {
         portENTER_CRITICAL(&s_mux);
         bool active = s_active && !s_failed; uint32_t epoch = s_epoch, generation = s_generation;
-        bool music_playing = s_music_playing;
+        bool music_playing = s_music_playing || s_offline_playing;
+        bool memory_idle = !s_active && !s_music_playing && !s_offline_playing && s_playback_idle && !s_queued_audio_bytes;
+        if (memory_idle) s_idle_maintenance = true;
         portEXIT_CRITICAL(&s_mux);
-        if (!active || music_playing) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+        if (!active || music_playing) {
+            if (memory_idle) prepare_reminder();
+            if (memory_idle && esp_timer_get_time() >= next_memory_save && hisu_memory_pending()) {
+                esp_err_t err = hisu_memory_flush();
+                if (err != ESP_OK) ESP_LOGW(TAG,"Memory save deferred: %s",esp_err_to_name(err));
+                next_memory_save = esp_timer_get_time() + 5000000;
+            }
+            if (memory_idle && esp_timer_get_time() >= next_alert_prepare &&
+                hisu_voice_alert_prepare(idle_for_alert_prepare))
+                next_alert_prepare = esp_timer_get_time() + 22000000;
+            portENTER_CRITICAL(&s_mux); s_idle_maintenance = false; portEXIT_CRITICAL(&s_mux);
+            vTaskDelay(pdMS_TO_TICKS(20)); continue;
+        }
         if (hisu_settings_get_gemini_key(key) != ESP_OK) { fail(epoch, generation); continue; }
         snprintf(headers, sizeof(s_send_workspace->headers), "x-goog-api-key: %s\r\n", key);
         memset(key, 0, sizeof(s_send_workspace->key));
@@ -871,7 +1131,9 @@ static void transport_task(void *arg)
             if (!voice_live_ready() && esp_timer_get_time() - started > 15000000) { fail(epoch, generation); break; }
             portENTER_CRITICAL(&s_mux); bool connected = connection.connected; portEXIT_CRITICAL(&s_mux);
             if (connected && !sent_setup) {
-                sent_setup = send_text(client, setup);
+                char *setup = build_setup();
+                sent_setup = setup && send_text(client, setup);
+                free(setup);
                 if (!sent_setup) { fail(epoch, generation); break; }
             }
             if (xQueueReceive(s_input, frame, pdMS_TO_TICKS(10)) != pdTRUE) continue;
@@ -934,9 +1196,9 @@ static esp_err_t speaker_reserve(void)
 {
     if (s_speaker) return ESP_OK;
     i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
-    /* PCM is queued in PSRAM; keep the hardware ring small enough for concurrent TLS. */
-    channel.dma_desc_num = 4;
-    channel.dma_frame_num = 160;
+    /* Reserved before TLS; mono microphone DMA pays for the larger output ring. */
+    channel.dma_desc_num = 6;
+    channel.dma_frame_num = 240;
     /* Do not replay old DMA samples when streamed audio arrives late. */
     channel.auto_clear_after_cb = true;
     esp_err_t err = i2s_new_channel(&channel, &s_speaker, NULL);
@@ -1150,6 +1412,101 @@ static bool finish_music_output(void)
     return true;
 }
 
+static void observe_battery_policy(void)
+{
+    static int64_t next_observation;
+    int64_t now = esp_timer_get_time();
+    if (now < next_observation) return;
+    next_observation = now + 2000000;
+    hisu_power_status_t power; hisu_power_get(&power);
+    /* Observe charge cycles even during long conversations/music. Only the
+     * idle playback path below is allowed to emit a warning. */
+    (void)hisu_alert_poll(power.valid,power.external_power,power.percent,now);
+}
+
+static void play_offline_battery_alert(void)
+{
+    static int64_t next_poll;
+    int64_t now = esp_timer_get_time();
+    if (now < next_poll) return;
+    portENTER_CRITICAL(&s_mux);
+    bool idle = !s_active && !s_music_playing && !s_idle_maintenance && !s_queued_audio_bytes;
+    if (idle) s_offline_playing = true;
+    portEXIT_CRITICAL(&s_mux);
+    if (!idle) return;
+    next_poll = now + 2000000;
+    hisu_power_status_t power; hisu_power_get(&power);
+    int index = hisu_alert_poll(power.valid,power.external_power,power.percent,now);
+    bool ok = false;
+    if (index >= 0 && hisu_settings_get(HISU_SETTING_SPEAKER) == 1 && hisu_settings_get(HISU_SETTING_VOLUME) > 0) {
+        size_t bytes = hisu_alert_size((unsigned)index);
+        int16_t mono[256];
+        ok = bytes > 0;
+        for (size_t offset = 0; ok && offset < bytes;) {
+            portENTER_CRITICAL(&s_mux); bool interrupted = s_active; portEXIT_CRITICAL(&s_mux);
+            hisu_power_get(&power);
+            int volume = hisu_settings_get(HISU_SETTING_VOLUME);
+            if (interrupted || !power.valid || power.external_power || power.percent <= 2 ||
+                hisu_settings_get(HISU_SETTING_SPEAKER) != 1 || volume <= 0) { ok = false; break; }
+            size_t count = (bytes - offset) / 2; if (count > 256) count = 256;
+            if (hisu_alert_read((unsigned)index,offset,mono,count * 2) != ESP_OK) { ok = false; break; }
+            if (volume > 50) volume = 50;
+            for (size_t i = 0; i < count; ++i)
+                s_speaker_mix[i * 2] = s_speaker_mix[i * 2 + 1] = (int32_t)mono[i] * volume / 100;
+            if (speaker_open() != ESP_OK || !speaker_write(s_speaker_mix,count * 4)) { ok = false; break; }
+            offset += count * 2;
+        }
+        if (ok) { vTaskDelay(pdMS_TO_TICKS(100)); hisu_alert_played((unsigned)index); }
+        speaker_close();
+        if (!ok) next_poll = esp_timer_get_time() + 30000000;
+        ESP_LOGI(TAG,"Offline battery alert %d: %s",index,ok ? "played" : "interrupted");
+    }
+    portENTER_CRITICAL(&s_mux); s_offline_playing = false; portEXIT_CRITICAL(&s_mux);
+}
+
+static void play_reminder(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool idle=!s_active && !s_music_playing && !s_idle_maintenance && !s_queued_audio_bytes;
+    reminder_t *notice=idle ? s_reminder : NULL;
+    if (notice) { s_reminder=NULL; s_offline_playing=true; }
+    portEXIT_CRITICAL(&s_mux);
+    if (!notice) return;
+    (void)hisu_ui_post_status(HISU_UI_REMINDER,notice->event.text);
+    size_t bytes=notice->pcm ? notice->bytes : hisu_alert_size(HISU_ALERT_REMINDER);
+    int16_t mono[256]; bool ok=bytes>0;
+    for (size_t offset=0; ok && offset<bytes;) {
+        portENTER_CRITICAL(&s_mux); bool interrupted=s_active; portEXIT_CRITICAL(&s_mux);
+        hisu_power_status_t power; hisu_power_get(&power);
+        int volume=hisu_settings_get(HISU_SETTING_VOLUME);
+        if (interrupted || hisu_settings_get(HISU_SETTING_SPEAKER)!=1 || volume<=0 ||
+            !power.valid || (!power.external_power && power.percent<=2)) { ok=false; break; }
+        size_t count=(bytes-offset)/2; if (count>256) count=256;
+        if (notice->pcm) memcpy(mono,(const uint8_t *)notice->pcm+offset,count*2);
+        else if (hisu_alert_read(HISU_ALERT_REMINDER,offset,mono,count*2)!=ESP_OK) { ok=false; break; }
+        for (size_t i=0; i<count; ++i)
+            s_speaker_mix[i*2]=s_speaker_mix[i*2+1]=(int32_t)mono[i]*volume/100;
+        if (speaker_open()!=ESP_OK || !speaker_write(s_speaker_mix,count*4)) { ok=false; break; }
+        offset+=count*2;
+    }
+    if (ok) vTaskDelay(pdMS_TO_TICKS(100));
+    speaker_close(); free(notice->pcm); free(notice);
+    portENTER_CRITICAL(&s_mux); s_offline_playing=false; portEXIT_CRITICAL(&s_mux);
+    ESP_LOGI(TAG,"Reminder: %s",ok ? "played" : "screen only/interrupted");
+}
+
+/* Called only after queued PCM and the final DMA drain, never on network arrival. */
+static void finish_spoken_reply(uint32_t epoch, uint32_t generation)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool live=s_active && !s_failed && epoch==s_epoch && generation==s_generation;
+    bool ending=live && s_reply_state.end_after_reply;
+    if (live && s_reply_state.audio && s_music_offer.pending && s_music_offer.epoch==epoch && s_music_offer.generation==generation)
+        s_music_offer.spoken=true;
+    portEXIT_CRITICAL(&s_mux);
+    if (live) s_callback(ending ? LIVE_END : LIVE_DONE,generation,"");
+}
+
 static void playback_task(void *arg)
 {
     (void)arg;
@@ -1160,6 +1517,7 @@ static void playback_task(void *arg)
     uint32_t playback_epoch = 0, playback_generation = 0;
     int16_t *stereo=s_speaker_mix;
     for (;;) {
+        observe_battery_policy();
         portENTER_CRITICAL(&s_mux);
         uint32_t epoch = s_epoch, generation = s_generation;
         bool active = s_active && !s_failed;
@@ -1178,7 +1536,12 @@ static void playback_task(void *arg)
                 continue;
             }
             portENTER_CRITICAL(&s_mux); bool active = s_active && !s_failed; portEXIT_CRITICAL(&s_mux);
-            if (!active) { speaker_close(); first = needs_buffer = true; }
+            if (!active) {
+                speaker_close(); first = needs_buffer = true;
+                portENTER_CRITICAL(&s_mux); s_playback_idle = true; portEXIT_CRITICAL(&s_mux);
+                play_reminder();
+                play_offline_battery_alert();
+            }
             else if (!first && !needs_buffer) {
                 needs_buffer=true;
                 int64_t now=esp_timer_get_time();
@@ -1192,6 +1555,7 @@ static void playback_task(void *arg)
             }
             continue;
         }
+        portENTER_CRITICAL(&s_mux); s_playback_idle = false; portEXIT_CRITICAL(&s_mux);
         if (audio.music) {
             consume_music(&audio); first=needs_buffer=true; continue;
         }
@@ -1207,7 +1571,7 @@ static void playback_task(void *arg)
             else caption.text[0] = 0;
             if (s_speaker_enabled) vTaskDelay(pdMS_TO_TICKS(100));
             speaker_close(); first = needs_buffer = true;
-            if (current(audio.epoch, audio.generation)) s_callback(LIVE_DONE, audio.generation, "");
+            finish_spoken_reply(audio.epoch,audio.generation);
             continue;
         }
         if (needs_buffer && !wait_audio_buffer(false,first,audio.epoch,audio.generation,audio.bytes,0)) {
@@ -1281,4 +1645,6 @@ void voice_live_deinit(void)
     free(s_send_storage); s_send_storage = NULL;
     free(s_send_workspace); s_send_workspace = NULL;
     free(s_speaker_mix); s_speaker_mix=NULL;
+    if (s_reminder) { free(s_reminder->pcm); free(s_reminder); s_reminder=NULL; }
+    free(s_music_choices); s_music_choices=NULL; s_music_choice_count=0; s_music_choices_epoch=0;
 }

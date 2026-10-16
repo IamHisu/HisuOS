@@ -161,8 +161,19 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = data;
         xSemaphoreTake(s_lock, portMAX_DELAY);
+        size_t expected = strlen(s_status.ssid);
+        bool matches = event && event->ssid_len <= sizeof(event->ssid) && expected &&
+            (!event->ssid_len || (event->ssid_len == expected &&
+                !memcmp(event->ssid,s_status.ssid,expected)));
+        if (!matches) {
+            xSemaphoreGive(s_lock);
+            ESP_LOGI("NETWORK","Ignoring disconnect from a previous/invalid SSID");
+            return;
+        }
         s_status.disconnect_reason = event->reason;
+        ++s_status.revision;
         xSemaphoreGive(s_lock);
+        ESP_LOGW("NETWORK","STA disconnected: reason=%u",(unsigned)event->reason);
         xEventGroupSetBits(s_events, EVENT_DISCONNECTED);
     }
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP)
@@ -233,8 +244,17 @@ static void setup_radio(bool enabled)
     }
     esp_netif_ip_info_t ip = {0};
     if (err == ESP_OK && enabled) err = esp_netif_get_ip_info(s_setup_netif, &ip);
+    bool recheck = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (err == ESP_OK) {
+        /* Fence probes started before the Setting session changed. */
+        ++s_connection_generation;
+        recheck = !enabled && station && s_status.connected &&
+            !s_performance && !s_performance_requested;
+        if (recheck) {
+            s_status.internet = HISU_INTERNET_CHECKING;
+            s_internet_failures = 0;
+        }
         s_status.setup_enabled = enabled;
         s_status.setup_client_connected = false;
         memset(s_status.setup_ssid, 0, sizeof(s_status.setup_ssid));
@@ -248,6 +268,7 @@ static void setup_radio(bool enabled)
         ++s_status.revision;
     } else s_status.error = err;
     xSemaphoreGive(s_lock);
+    if (recheck) xTaskNotifyGive(s_probe_task);
     memset(&config, 0, sizeof(config));
     if (err != ESP_OK && enabled) {
         radio_mode(station, false);
@@ -260,11 +281,17 @@ static void begin_join(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     reset_internet(HISU_INTERNET_UNKNOWN);
     s_status.connected = false;
+    s_status.ip[0] = 0;
+    s_status.error = ESP_OK;
+    s_status.disconnect_reason = 0;
+    memcpy(s_status.ssid,s_ssid,sizeof(s_ssid));
+    ++s_status.revision;
     xSemaphoreGive(s_lock);
     wifi_config_t config = {0};
     memcpy(config.sta.ssid, s_ssid, strlen(s_ssid));
     memcpy(config.sta.password, s_password, strlen(s_password));
     config.sta.pmf_cfg.capable = true;
+    config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
     config.sta.threshold.authmode = s_password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     xEventGroupClearBits(s_events, EVENT_IP | EVENT_DISCONNECTED);
     if (s_started && esp_wifi_disconnect() == ESP_OK)
@@ -276,10 +303,12 @@ static void begin_join(void)
     if (err == ESP_OK) err = esp_wifi_connect();
     memset(&config, 0, sizeof(config));
     if (err != ESP_OK) {
+        ESP_LOGW("NETWORK","Join start failed: %s (0x%x)",esp_err_to_name(err),(unsigned)err);
         record_join_failure(false);
         s_want_connection = false; s_deadline = s_retry_at = 0;
         failed(err); return;
     }
+    ESP_LOGI("NETWORK","Join started: setup=%u retry=%d",(unsigned)s_status.setup_enabled,s_retries);
     s_retry_at = 0;
     s_deadline = esp_timer_get_time() + 25000000;
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -287,7 +316,6 @@ static void begin_join(void)
     s_status.connected = false;
     s_status.ip[0] = 0;
     s_status.error = ESP_OK;
-    s_status.disconnect_reason = 0;
     memcpy(s_status.ssid, s_ssid, sizeof(s_ssid));
     ++s_status.revision;
     xSemaphoreGive(s_lock);

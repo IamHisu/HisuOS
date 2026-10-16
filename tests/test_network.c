@@ -64,6 +64,7 @@ static void reset(void) {
     mock_disconnects = 0; mock_scan_error = ESP_OK; mock_scans = 0;
     mock_http_count = 0; mock_http_cleanup_count = 0; mock_read_chunk = 0;
     mock_redirect_disabled = false;
+    mock_probe_notifications = 0; mock_mode_error = ESP_OK;
     mock_recover_during_lookup = mock_manual_during_lookup = false;
     mock_http[0] = (mock_http_response_t){.status = 204, .body = ""};
     mock_http[1] = (mock_http_response_t){.status = 200, .body = "Microsoft Connect Test"};
@@ -83,6 +84,48 @@ static void fail_current(bool rejected) {
     failed(rejected ? ESP_ERR_INVALID_ARG : ESP_ERR_TIMEOUT);
 }
 int main(void) {
+    reset(); strcpy(s_ssid,"New home");
+    begin_join();
+    assert(!strcmp(s_status.ssid,"New home"));
+    assert(mock_config.sta.sae_pwe_h2e==WPA3_SAE_PWE_BOTH);
+    wifi_event_sta_disconnected_t disconnect={.ssid="Old cafe",.ssid_len=8,.reason=WIFI_REASON_AUTH_FAIL};
+    unsigned sets=mock_event_sets;
+    on_event(NULL,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,&disconnect);
+    assert(mock_event_sets==sets && s_status.disconnect_reason==0);
+    memcpy(disconnect.ssid,"New home",8);
+    on_event(NULL,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,&disconnect);
+    assert(mock_event_sets==sets+1 && s_status.disconnect_reason==WIFI_REASON_AUTH_FAIL);
+    disconnect.ssid_len=33;
+    on_event(NULL,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,&disconnect);
+    assert(mock_event_sets==sets+1);
+    disconnect.ssid_len=0; /* No-AP failures may omit the SSID. */
+    on_event(NULL,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,&disconnect);
+    assert(mock_event_sets==sets+2);
+
+    reset(); s_status.connected=true; s_status.internet=HISU_INTERNET_ONLINE;
+    uint32_t generation=s_connection_generation;
+    setup_radio(true);
+    assert(s_status.setup_enabled && mock_probe_notifications==0);
+    setup_radio(false);
+    assert(!s_status.setup_enabled && s_status.internet==HISU_INTERNET_CHECKING);
+    assert(mock_probe_notifications==1 && s_connection_generation==generation+2);
+    publish_internet(generation,HISU_INTERNET_OFFLINE);
+    assert(s_status.internet==HISU_INTERNET_CHECKING);
+    publish_internet(s_connection_generation,HISU_INTERNET_ONLINE);
+    assert(s_status.internet==HISU_INTERNET_ONLINE);
+    setup_radio(false);
+    assert(mock_probe_notifications==1); /* No duplicate close probe. */
+
+    reset(); s_status.setup_enabled=true; s_status.connected=true;
+    mock_mode_error=ESP_ERR_INVALID_STATE;
+    setup_radio(false);
+    assert(s_status.setup_enabled && mock_probe_notifications==0 && s_connection_generation==0);
+    reset(); s_status.setup_enabled=true;
+    setup_radio(false);
+    assert(!s_status.setup_enabled && mock_probe_notifications==0);
+    reset(); s_status.setup_enabled=true; s_status.connected=true; s_performance_requested=true;
+    setup_radio(false);
+    assert(!s_status.setup_enabled && mock_probe_notifications==0);
     reset(); s_performance = true; assert(radio_start() == ESP_OK && mock_wifi_ps == WIFI_PS_NONE);
     reset(); assert(radio_start() == ESP_OK && mock_wifi_ps == WIFI_PS_MIN_MODEM);
     reset(); saved("Strong", true, -30); saved("Backup", true, -60);

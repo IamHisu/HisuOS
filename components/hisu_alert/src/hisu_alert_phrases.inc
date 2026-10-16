@@ -1,0 +1,5 @@
+HISU_ALERT_PHRASE("Mình hơi hết năng lượng sống rồi đó. Cắm sạc lẹ nha.")
+HISU_ALERT_PHRASE("Ê, cho mình miếng điện đi. Pin còn chút xíu à.")
+HISU_ALERT_PHRASE("Thôi xong, sắp thành cục chặn giấy rồi. Cắm sạc lẹ.")
+HISU_ALERT_PHRASE("Cứu pin trước, tám chuyện sau. Mình sắp tắt thiệt đó.")
+HISU_ALERT_PHRASE("Ê, tới giờ hẹn rồi nè. Xem lịch trên màn hình nha.")

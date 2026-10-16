@@ -180,3 +180,8 @@ section>.msg{margin:0 0 20px}
 #connection{min-height:34px;box-shadow:none;font-weight:500}
 #connection:disabled{opacity:1}
 #connection:hover:not(:disabled){box-shadow:none}
+.memory-row{display:flex;align-items:center;gap:12px;border-bottom:1px solid currentColor;padding:10px 0}
+.memory-row span{flex:1;min-width:0;overflow-wrap:anywhere}
+.memory-row button{flex:none;width:40px;height:40px;padding:0;font-size:22px}
+#panel-device .actions{flex-wrap:wrap;margin-bottom:24px}
+#panel-device .actions button{max-width:100%;white-space:normal;overflow-wrap:anywhere}

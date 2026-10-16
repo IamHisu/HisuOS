@@ -48,11 +48,29 @@ Chạy host tests từ PowerShell thường:
 .\tools\test-ui.ps1
 .\tools\test-network.ps1
 .\tools\test-voice.ps1
+.\tools\test-memory.ps1
+.\tools\test-alert.ps1
 ```
 
 Helper tự tìm headers/libraries của MSVC x64 và Windows SDK đã cài, chạy bộ UI/Wi-Fi/pin và test lịch 2024–2099. Không cần mở Developer PowerShell.
 
-Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và flash 16MB theo profile N16R8. Partition dành hai app slots 4MB cho OTA tương lai; media dùng 240 KiB đầu vùng storage cho hai records hình nền, phần còn lại reserve. Chưa mount filesystem.
+Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và flash 16MB theo profile N16R8. Partition dành hai app slots 4MB cho OTA tương lai; storage bắt đầu bằng hai slot ảnh/GIF, tiếp theo là hai slot trí nhớ 8 KiB. Chưa mount filesystem.
+
+## Báo Pin Offline
+
+Tạo sẵn bốn câu Kore báo pin và một câu nhắc lịch trên máy tính bằng `python tools/prepare-battery-audio.py`, dùng biến môi trường `GEMINI_DEV_API_KEY` hoặc `GEMINI_API_KEY`. Sau đó chạy `idf.py reconfigure build` và `idf.py flash` để nạp kèm vùng âm thanh riêng, không đụng ảnh nền hay trí nhớ. Setting chỉ hiển thị số câu sẵn sàng, không còn nút chuẩn bị. Board phát cảnh báo hoàn toàn offline ở mốc 15% và 5%, mỗi mốc một lần trong chu kỳ sạc; hai câu mỗi mức để đỡ lặp. Tôn trọng tắt loa/âm lượng 0, không chen ngang hội thoại/nhạc và không bật loa ở mức pin ≤2%. Chi tiết, giới hạn và cách thử: [Offline Battery Audio](docs/OFFLINE_BATTERY_AUDIO.md).
+
+## Lịch và Nhắc Hẹn
+
+Đặt, xem, sửa và hủy lịch một lần qua AI; tối đa 32 mục. Menu → Lịch đánh dấu ngày có hẹn; chọn ngày rồi bấm BOOT để xem, lên/xuống để cuộn, BACK để trở lại. Khi rảnh, có mạng thì thử đọc đúng nội dung bằng Kore; nếu lỗi hoặc offline thì dùng câu Kore sẵn và hiện nội dung trên màn hình. Thay đổi lưu flash khi kết thúc phiên, không tắt nguồn ngay sau khi đặt. Board cần còn bật và giờ đã đồng bộ; chưa có lặp lịch, báo thức tự bật nguồn hay báo lại. Chi tiết và cách thử: [Schedules](docs/SCHEDULES.md).
+
+## Trí Nhớ
+
+Gemini tự chọn lọc tối đa 24 thông tin ngắn về sở thích, thói quen và việc đang làm; không cần nói đúng câu “nhớ giúp mình”. Ghi nhớ lâu dài được lưu khi phiên trò chuyện/nhạc kết thúc, không ghi flash ngay trong lúc nói. Tắt nguồn trước khi lưu xong có thể mất thay đổi mới nhất. Ngữ cảnh trò chuyện gần đây được giữ có giới hạn giữa các phiên trong RAM, không còn sau reboot.
+
+Khi đủ 24 mục, Gemini xem danh sách và ưu tiên gộp/cập nhật cùng chủ đề hoặc thay mục lỗi thời, ít hữu ích hơn. Không mặc định xóa mục cũ nhất; nếu mục mới kém hữu ích hơn các mục đã có thì không lưu. Firmware kiểm tra mục được chọn trước khi thay nguyên tử, không xóa trước rồi thêm sau.
+
+Web Setting → Thiết bị → Trí nhớ cho xem/xóa từng mục, xóa toàn bộ, tắt tự động ghi nhớ và xóa ngữ cảnh gần đây. Bộ lọc nội dung nhạy cảm dựa vào chỉ dẫn cho AI, không phải bảo đảm tuyệt đối; không cung cấp bí mật vì flash chưa mã hóa. Chi tiết và cách thử: [Memory](docs/MEMORY.md).
 
 ## Điều Khiển
 

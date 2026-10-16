@@ -13,6 +13,7 @@ static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout
 static const int s_min[] = {10, 0, 0, 0, 0, 0, -720, 0};
 static const int s_max[] = {100, 100, 1, 600, 1, 1, 840, 1};
 static int s_values[] = {75, 55, 1, 0, 0, 1, 420, 0};
+static portMUX_TYPE s_values_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
 
@@ -45,9 +46,10 @@ esp_err_t hisu_settings_init(void)
 int hisu_settings_get(hisu_setting_t key)
 {
     if (!s_lock || key < 0 || key >= HISU_SETTING_COUNT) return -1;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
+    /* Audio must not wait for a writer to finish an NVS commit. */
+    portENTER_CRITICAL(&s_values_mux);
     int value = s_values[key];
-    xSemaphoreGive(s_lock);
+    portEXIT_CRITICAL(&s_values_mux);
     return value;
 }
 
@@ -62,7 +64,11 @@ esp_err_t hisu_settings_set(hisu_setting_t key, int value)
     if (value != s_values[key]) {
         err = nvs_set_i32(s_nvs, s_keys[key], value);
         if (err == ESP_OK) err = nvs_commit(s_nvs);
-        if (err == ESP_OK) s_values[key] = value;
+        if (err == ESP_OK) {
+            portENTER_CRITICAL(&s_values_mux);
+            s_values[key] = value;
+            portEXIT_CRITICAL(&s_values_mux);
+        }
     }
     xSemaphoreGive(s_lock);
     return err;

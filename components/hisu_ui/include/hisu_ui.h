@@ -12,6 +12,7 @@ typedef enum {
     HISU_UI_ERROR,
     HISU_UI_MUSIC,
     HISU_UI_MUSIC_LOADING,
+    HISU_UI_REMINDER,
 } hisu_ui_status_t;
 
 esp_err_t hisu_ui_start(void);

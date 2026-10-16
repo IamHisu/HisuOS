@@ -4,9 +4,26 @@
 #include "settings_mock.h"
 #include "../components/hisu_settings/src/hisu_settings.c"
 
+static esp_err_t read_during_failed_commit(void)
+{
+    unsigned takes = mock_semaphore_takes;
+    assert(hisu_settings_get(HISU_SETTING_VOLUME) == 55);
+    assert(mock_semaphore_takes == takes);
+    return ESP_ERR_INVALID_STATE;
+}
+
 int main(void)
 {
+    assert(hisu_settings_get(HISU_SETTING_VOLUME) == -1);
     assert(hisu_settings_init()==ESP_OK);
+    assert(hisu_settings_get((hisu_setting_t)-1) == -1);
+    assert(hisu_settings_get(HISU_SETTING_COUNT) == -1);
+    mock_during_commit = read_during_failed_commit;
+    assert(hisu_settings_set(HISU_SETTING_VOLUME, 60) == ESP_ERR_INVALID_STATE);
+    assert(hisu_settings_get(HISU_SETTING_VOLUME) == 55);
+    mock_during_commit = NULL;
+    assert(hisu_settings_set(HISU_SETTING_VOLUME, 60) == ESP_OK);
+    assert(hisu_settings_get(HISU_SETTING_VOLUME) == 60);
     assert(hisu_settings_get(HISU_SETTING_WALLPAPER_DEFAULT)==0);
     assert(hisu_settings_set(HISU_SETTING_WALLPAPER_DEFAULT,2)==ESP_ERR_INVALID_ARG);
     assert(hisu_settings_set(HISU_SETTING_WALLPAPER_DEFAULT,1)==ESP_OK);

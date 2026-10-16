@@ -14,6 +14,7 @@ for (const [route,file,type] of [['/','index.html','text/html'],['/app.js','app.
   assets.set(route,{body:await readFile(new URL(file,root)),type});
 let state, uploaded, uploadType, wifi, device, wifiRequests, sessionRequests, leaveRequests = 0;
 let gifAssetRequests = 0;
+let memory, batteryAudio;
 const token = 'a'.repeat(64);
 const wifiOnly = process.argv.includes('--wifi-only');
 const server = createServer(async(req,res)=>{
@@ -32,6 +33,22 @@ const server = createServer(async(req,res)=>{
       send(state.expired ? 403 : 200,{token,page:sessionRequests});return;
     }
     if (state.expired || req.headers.authorization!==`Bearer ${token}`) {send(403,{});return;}
+    if (req.url==='/battery-audio') {
+      assert.equal(req.method,'GET');
+      send(200,batteryAudio);
+      return;
+    }
+    if (req.url==='/memory') {
+      if (req.method==='POST') {
+        const change=JSON.parse(body);
+        if (change.action==='enabled') memory.enabled=change.enabled;
+        else if (change.action==='forget') memory.facts=memory.facts.filter(fact=>fact.id!==change.id);
+        else if (change.action==='clear') memory.facts=[];
+        else assert.equal(change.action,'clear_recent');
+        send(200,{accepted:true});
+      } else send(200,memory);
+      return;
+    }
     if (req.url==='/leave') {assert.equal(req.method,'POST');assert.equal(body.length,0);assert.ok(Number(req.headers['x-hisu-page'])>0);++leaveRequests;send(200,{closing:true});return;}
     if (req.url==='/settings') {
       if (req.method==='POST') {
@@ -68,6 +85,8 @@ try {
   for (const [name,width,height] of [['desktop',1280,800],['mobile',390,844],['small-mobile',320,720]]) {
     state={pending:false,saving:false,revision:1,error:0,seconds:299,expired:false};uploaded=null;sessionRequests=0;gifAssetRequests=0;
     device={brightness:75,volume:55,speaker:1,timeout:0,theme:0,timezone:420};wifiRequests=[];
+    memory={enabled:true,pending:false,capacity:24,facts:[{id:1,fact:'Thích nghe nhạc nhẹ vào buổi tối.'},{id:2,fact:'<img src=x onerror=alert(1)>'}]};
+    batteryAudio={ready:0,count:5,current:0,requested:false,busy:false,error:0,http_status:0,charging:true,connected:true,configured:true};
     wifi={enabled:true,scanning:false,joining:false,connected:false,internet:'unknown',error:0,ssid:'',ip:'',aps:[
       {ssid:'Saved home',rssi:-45,saved:true,secure:true,supported:true},
       {ssid:'<img src=x onerror=alert(1)>',rssi:-60,saved:false,secure:true,supported:true},
@@ -83,6 +102,29 @@ try {
     assert.equal(gifAssetRequests,0,'Setting must open without loading the GIF processor');
     await page.waitForFunction(()=>document.querySelectorAll('.wifi-row').length===3);
     assert.equal(sessionRequests,1);
+    await page.locator('#tab-device').click();
+    await page.waitForFunction(()=>document.getElementById('battery-audio-status').textContent.includes('0/5'));
+    assert.equal(await page.locator('#battery-audio-prepare').count(),0);
+    assert.match(await page.locator('#battery-audio-status').textContent(),/Chưa nạp đủ/);
+    batteryAudio.ready=5;
+    await page.waitForFunction(()=>document.getElementById('battery-audio-status').textContent.includes('Sẵn sàng phát offline'));
+    await page.waitForFunction(()=>document.querySelectorAll('.memory-row').length===2);
+    assert.equal(await page.locator('#memory-list img').count(),0);
+    assert.equal(await page.locator('#memory-enabled').isChecked(),true);
+    await page.evaluate(()=>window.scrollTo(0,0));
+    await page.screenshot({path:fileURLToPath(new URL(`${name}-memory.png`,output)),fullPage:true});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.locator('#memory-enabled').uncheck();
+    await page.waitForFunction(()=>document.getElementById('memory-status').textContent.includes('Đã lưu') && !document.getElementById('memory-enabled').disabled);
+    assert.equal(memory.enabled,false);
+    page.once('dialog',dialog=>dialog.accept());
+    await page.locator('.memory-row button').first().click();
+    await page.waitForFunction(()=>document.querySelectorAll('.memory-row').length===1);
+    assert.equal(memory.facts[0].id,2);
+    page.once('dialog',dialog=>dialog.accept());
+    await page.locator('#memory-clear').click();
+    await page.waitForFunction(()=>document.querySelectorAll('.memory-row').length===0);
+    await page.locator('#tab-wifi').click();
     assert.equal(await page.locator('#panel-wifi').isVisible(),true);
     assert.equal(await page.locator('.wifi-row').filter({hasText:'Enterprise'}).isDisabled(),true);
     assert.equal(await page.locator('#panel-wifi img').count(),0);
@@ -100,6 +142,14 @@ try {
     assert.equal(await page.locator('#wifi-password').inputValue(),'');
     assert.equal(await page.locator('#wifi-dialog').isVisible(),false);
     const savedRow=page.locator('.wifi-row').filter({hasText:'Saved home'});
+    for (const internet of ['unknown','checking']) {
+      wifi.internet=internet; wifi.internet_check_paused=true;
+      await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('Kiểm tra Internet sau khi đóng Setting'));
+      assert.match(await page.locator('#wifi-status').textContent(),/Đã kết nối Wi-Fi: Saved home/);
+      assert.equal(await savedRow.locator('.wifi-warning').isVisible(),false);
+      assert.equal((await page.locator('#wifi-status').textContent()).includes('Đang kiểm tra'),false);
+    }
+    await page.screenshot({path:fileURLToPath(new URL(`${name}-wifi-deferred.png`,output)),fullPage:true});
     for (const [internet,text,warning] of [
       ['checking','Đang kiểm tra Internet',false],
       ['captive','Mạng yêu cầu đăng nhập',true],
@@ -107,6 +157,7 @@ try {
       ['online','Có Internet',false],
     ]) {
       wifi.internet=internet;
+      wifi.internet_check_paused=internet!=='checking';
       await page.waitForFunction(text=>document.getElementById('wifi-status').textContent.includes(text),text);
       assert.equal(await savedRow.locator('.wifi-warning').isVisible(),warning);
       assert.equal(await savedRow.getAttribute('data-connected'),'true');

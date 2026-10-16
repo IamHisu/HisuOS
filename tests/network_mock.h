@@ -15,13 +15,13 @@ typedef int esp_event_base_t;
 typedef void *esp_event_handler_instance_t;
 typedef struct { int unused; } esp_netif_t;
 typedef struct { struct { unsigned addr; } ip; } esp_netif_ip_info_t;
-typedef struct { int reason; } wifi_event_sta_disconnected_t;
+typedef struct { uint8_t ssid[32], ssid_len; int reason; } wifi_event_sta_disconnected_t;
 typedef struct { unsigned char ssid[33]; int rssi, authmode; } wifi_ap_record_t;
 typedef struct { bool show_hidden; } wifi_scan_config_t;
 typedef struct { int unused; } wifi_init_config_t;
 typedef struct {
     struct { unsigned char ssid[32], password[64]; struct { bool capable; } pmf_cfg;
-             struct { int authmode; } threshold; } sta;
+             struct { int authmode; } threshold; int sae_pwe_h2e; } sta;
     struct { unsigned char ssid[33], password[65]; size_t ssid_len;
              int channel, max_connection, authmode, ssid_hidden;
              struct { bool capable; } pmf_cfg; } ap;
@@ -43,6 +43,8 @@ enum { WIFI_EVENT, IP_EVENT, WIFI_EVENT_AP_STACONNECTED, WIFI_EVENT_AP_STADISCON
        WIFI_REASON_ASSOC_LEAVE, WIFI_REASON_AUTH_FAIL,
        WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT, WIFI_REASON_HANDSHAKE_TIMEOUT };
 enum { WIFI_PS_NONE, WIFI_PS_MIN_MODEM };
+enum { WPA3_SAE_PWE_BOTH };
+#define ESP_LOGI(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
 static int mock_wifi_ps;
 static esp_err_t esp_wifi_set_ps(int mode) { mock_wifi_ps = mode; return ESP_OK; }
@@ -98,7 +100,8 @@ static esp_err_t esp_http_client_cleanup(esp_http_client_handle_t client) { ++mo
 static esp_err_t esp_crt_bundle_attach(void *conf) { return ESP_OK; }
 static int64_t esp_timer_get_time(void) { return mock_now; }
 static SemaphoreHandle_t xSemaphoreCreateMutex(void) { return (void *)1; }
-static int xSemaphoreTake(SemaphoreHandle_t lock, int timeout) { return 1; }
+static unsigned mock_semaphore_takes;
+static int xSemaphoreTake(SemaphoreHandle_t lock, int timeout) { ++mock_semaphore_takes; return 1; }
 static int xSemaphoreGive(SemaphoreHandle_t lock) { return 1; }
 static void vSemaphoreDelete(SemaphoreHandle_t lock) {}
 static QueueHandle_t xQueueCreate(int count, size_t size) { return (void *)1; }
@@ -109,7 +112,8 @@ static int xQueueReceive(QueueHandle_t queue, void *data, int timeout) { return 
 static void vQueueDelete(QueueHandle_t queue) {}
 static EventGroupHandle_t xEventGroupCreate(void) { return (void *)1; }
 static EventBits_t xEventGroupClearBits(EventGroupHandle_t events, unsigned bits) { return 0; }
-static EventBits_t xEventGroupSetBits(EventGroupHandle_t events, unsigned bits) { return bits; }
+static unsigned mock_event_sets;
+static EventBits_t xEventGroupSetBits(EventGroupHandle_t events, unsigned bits) { ++mock_event_sets; return bits; }
 static EventBits_t xEventGroupWaitBits(EventGroupHandle_t events, unsigned bits, int clear, int all, int timeout) { return bits; }
 static void vEventGroupDelete(EventGroupHandle_t events) {}
 static int xTaskCreate(void (*task)(void *), const char *name, int stack, void *arg, int priority, void *handle) {
@@ -117,13 +121,15 @@ static int xTaskCreate(void (*task)(void *), const char *name, int stack, void *
     return 1;
 }
 static unsigned ulTaskNotifyTake(int clear, unsigned timeout) { return 0; }
-static void xTaskNotifyGive(TaskHandle_t task) {}
+static unsigned mock_probe_notifications;
+static void xTaskNotifyGive(TaskHandle_t task) { ++mock_probe_notifications; }
 static void vTaskDelete(TaskHandle_t task) {}
 static esp_err_t esp_wifi_start(void) { return ESP_OK; }
 static esp_err_t esp_wifi_stop(void) { return ESP_OK; }
 static esp_err_t esp_wifi_disconnect(void) { ++mock_disconnects; return ESP_OK; }
 static esp_err_t esp_wifi_connect(void) { ++mock_connects; return mock_connect_error; }
-static esp_err_t esp_wifi_set_mode(int mode) { return ESP_OK; }
+static esp_err_t mock_mode_error;
+static esp_err_t esp_wifi_set_mode(int mode) { return mock_mode_error; }
 static esp_err_t esp_wifi_set_config(int interface, const wifi_config_t *config) { mock_config = *config; return ESP_OK; }
 static esp_err_t esp_wifi_deauth_sta(int aid) { return ESP_OK; }
 static esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config, bool block) { ++mock_scans; return mock_scan_error; }

@@ -2,11 +2,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "hisu_storage_layout.h"
 
 #define HISU_MEDIA_PIXEL_BYTES 115200U
 #define HISU_MEDIA_GIF_STORAGE_MAX_BYTES 1048576U
 #define HISU_MEDIA_LEGACY_SLOT_BYTES 122880U
-#define HISU_MEDIA_SLOT_BYTES 1052672U
+#define HISU_MEDIA_SLOT_BYTES HISU_STORAGE_WALLPAPER_SLOT_BYTES
 #define HISU_MEDIA_DATA_OFFSET 4096U
 #define HISU_MEDIA_MAGIC 0x31424748U
 
