@@ -822,7 +822,8 @@ static bool send_story_continuation(esp_websocket_client_handle_t client, const 
     return send_text(client,"{\"clientContent\":{\"turns\":[{\"role\":\"user\",\"parts\":[{\"text\":\""
         "Kể tiếp một đoạn truyện ru ngủ bằng tiếng Việt, khoảng 100 đến 180 từ, tiếp nối đoạn trước. "
         "Nếu truyện đã hết, chuyển nhẹ sang một truyện êm dịu khác. Không nhắc lại phần trước, không chào lại, "
-        "không hỏi người nghe, không gọi công cụ. Giọng Erinome tự nhiên, chậm vừa phải, nhẹ và rõ. "
+        "không hỏi người nghe, không gọi công cụ. Giọng Leda tự nhiên, chậm vừa phải, nhẹ và rõ; "
+        "giữ phát âm và ngữ điệu miền Nam Việt Nam trong cả đoạn, không chỉ chữ r, không cường điệu. "
         "Kết thúc đoạn ở một câu trọn vẹn; bộ hẹn giờ trên thiết bị sẽ tự dừng.\"}]}],\"turnComplete\":true}}");
 }
 
@@ -1370,8 +1371,8 @@ static char *build_setup(void)
     hisu_gemini_key_t profile=s_key_profile;
     const char *language=s_interpreter;
     portEXIT_CRITICAL(&s_mux);
-    if (profile==HISU_GEMINI_READER) snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: Reader. The user already authorized bedtime narration and its board timer is active. Narrate gently in Vietnamese, 100-180 words per segment. Never call start_sleep_story again or change timer/settings. Do not ask for continuation. Keep original Erinome.");
-    else if (profile==HISU_GEMINI_TRANSLATE) snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: Interpreter is ALREADY ACTIVE between vi and %s. This overrides the default-off startup rule. Confirm briefly in Vietnamese once, then only translate each utterance into the other language. Do not answer/execute the content, store facts or call start_interpreter again. Mode controls require a deliberate wake/interrupt and successful tool result. Keep original Erinome.",language ? language : "en");
+    if (profile==HISU_GEMINI_READER) snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: Reader. The user already authorized bedtime narration and its board timer is active. Narrate gently in Vietnamese, 100-180 words per segment. Never call start_sleep_story again or change timer/settings. Do not ask for continuation. Keep original Leda.");
+    else if (profile==HISU_GEMINI_TRANSLATE) snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: Interpreter is ALREADY ACTIVE between vi and %s. This overrides the default-off startup rule. Confirm briefly in Vietnamese once, then only translate each utterance into the other language. Do not answer/execute the content, store facts or call start_interpreter again. Mode controls require a deliberate wake/interrupt and successful tool result. Keep original Leda.",language ? language : "en");
     else snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: ordinary Chat. Interpreter is OFF and no bedtime timer is active. Mode changes still require explicit user requests and a successful tool result. Never replay earlier tools or pending commands on a fresh connection.");
     char *result=setup_substitute(setup,"@@HISU_ROLE@@",role); free(setup);
     return result ? setup_resumption(result) : NULL;
@@ -1540,6 +1541,8 @@ static void transport_task(void *arg)
                 sent_setup = setup && send_text(client, setup);
                 free(setup);
                 if (!sent_setup) { fail(epoch, generation); break; }
+                ESP_LOGI(TAG,"Live setup sent: model=%s voice=%s PCM=24000 Hz effects=off build=%s %s",
+                    HISU_LIVE_MODEL,HISU_LIVE_VOICE,__DATE__,__TIME__);
             }
             if (xQueueReceive(s_input, frame, pdMS_TO_TICKS(10)) != pdTRUE) continue;
             if (!current(frame->epoch, frame->generation)) continue;

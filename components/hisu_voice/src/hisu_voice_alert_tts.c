@@ -48,13 +48,15 @@ static char *make_text_body(const char *phrase)
     char *prompt = heap_caps_malloc(1400,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!prompt) return NULL;
     snprintf(prompt,1400,"Đọc nguyên văn câu tiếng Việt sau bằng giọng gốc tự nhiên, "
+        "giọng Leda, phát âm và ngữ điệu miền Nam Việt Nam nhất quán trong cả câu, "
+        "phát âm r kiểu miền Nam, không đọc r thành gi, không cường điệu. "
         "không giả giọng robot hay thêm hiệu ứng. Nói rõ, tốc độ tự nhiên, không kéo dài quá 8 giây. "
         "Không đọc chỉ dẫn, không thêm lời, không hát, không thêm tiếng bíp: %s",phrase);
     cJSON *text = cJSON_CreateString(prompt); free(prompt);
     char *encoded = text ? cJSON_PrintUnformatted(text) : NULL; cJSON_Delete(text);
     if (!encoded) return NULL;
     static const char format[] = "{\"contents\":[{\"parts\":[{\"text\":%s}]}],\"generationConfig\":{"
-        "\"responseModalities\":[\"AUDIO\"],\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Erinome\"}}}}}";
+        "\"responseModalities\":[\"AUDIO\"],\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Leda\"}}}}}";
     size_t size = strlen(encoded) + sizeof(format);
     char *body = heap_caps_malloc(size,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (body) snprintf(body,size,format,encoded);

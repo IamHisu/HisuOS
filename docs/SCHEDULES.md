@@ -48,12 +48,12 @@ is a personal reminder feature, not a guaranteed safety-critical alarm clock.
 
 ## Speech and Fallback
 
-When idle, `live_send` checks due entries once a second, attempts one short Kore
+When idle, `live_send` checks due entries once a second, attempts one short Leda
 TTS request only if the last network state is online, then closes HTTP before
 handing PSRAM PCM to `live_play`. The request has an eight-second async deadline
 and two-second transport timeout, no automatic retry or model fallback. A new
 wake cancels preparation. HTTP/quota/invalid/silent/too-long audio results fall
-back to immutable Kore clip 5: a generic reminder with the event text on-screen.
+back to immutable Leda clip 5: a generic reminder with the event text on-screen.
 Only the current event text is sent, never the list, memory or conversation.
 The online model is configurable under menuconfig -> Hi Su voice; the default
 is `gemini-2.5-flash-preview-tts`. The offline clip remains the fallback, not

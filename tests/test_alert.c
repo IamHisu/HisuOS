@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
         assert(s_status.error==ESP_OK && !mock_http_live && s_status.ready==i+1);
     }
     alert_record_t old_voice=s_records[0];
-    old_voice.voice_crc=crc("Kore",4);
+    old_voice.voice_crc=crc("Erinome",7);
     old_voice.header_crc=0;
     old_voice.header_crc=crc(&old_voice,sizeof(old_voice));
     assert(!header_valid(&old_voice,0));
@@ -114,6 +114,6 @@ int main(int argc, char **argv) {
         reboot(); assert(s_status.ready==HISU_ALERT_COUNT);
         puts("PC-generated image accepted by firmware CRC/header validation.");
     }
-    puts("Offline alert tests passed: threshold/debounce/charge reset, variants, flash CRC/reboot/torn writes, Erinome request, bounded PCM, cancellation, quota failure and cleanup. API/audio mocked.");
+    puts("Offline alert tests passed: threshold/debounce/charge reset, variants, flash CRC/reboot/torn writes, Leda request, bounded PCM, cancellation, quota failure and cleanup. API/audio mocked.");
     return 0;
 }

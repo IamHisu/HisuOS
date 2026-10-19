@@ -256,6 +256,9 @@ static void device_tool_tests(void) {
     assert(strstr(instruction->valuestring,"người miền Nam và miền Tây"));
     assert(strstr(instruction->valuestring,"Tránh Markdown, bảng biểu, emoji"));
     assert(strstr(instruction->valuestring,"giọng đọc thực tế do hệ thống TTS quyết định"));
+    assert(strstr(instruction->valuestring,"phát âm và ngữ điệu miền Nam Việt Nam"));
+    assert(strstr(instruction->valuestring,"không chỉ riêng chữ r"));
+    assert(strstr(instruction->valuestring,"không đổi r thành âm gi"));
     assert(strstr(instruction->valuestring,"Không thảo mai: không khen lấy lòng"));
     assert(strstr(instruction->valuestring,"chỉ ra chỗ sai cụ thể và giải thích ngắn gọn, không hùa theo"));
     assert(strstr(instruction->valuestring,"Không kết thúc mọi lượt bằng câu hỏi hay lời mời hỗ trợ"));
@@ -274,7 +277,7 @@ static void device_tool_tests(void) {
     assert(strstr(instruction->valuestring,"If all existing facts are more valuable, skip the new fact"));
     cJSON *voice=cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(config,"speechConfig"),"voiceConfig"),"prebuiltVoiceConfig");
     cJSON *voice_name=cJSON_GetObjectItem(voice,"voiceName");
-    assert(cJSON_IsString(voice_name) && !strcmp(voice_name->valuestring,"Erinome"));
+    assert(cJSON_IsString(voice_name) && !strcmp(voice_name->valuestring,"Leda"));
     cJSON *modalities=cJSON_GetObjectItem(config,"responseModalities");
     assert(cJSON_GetArraySize(modalities)==1 &&
         !strcmp(cJSON_GetArrayItem(modalities,0)->valuestring,"AUDIO"));
@@ -1278,6 +1281,17 @@ static void startup_failure_tests(void) {
     reset();
 }
 int main(void) {
+    for (unsigned profile=0;profile<HISU_GEMINI_KEY_COUNT;++profile) {
+        reset(); s_key_profile=(hisu_gemini_key_t)profile;
+        char *body=build_setup(); assert(body);
+        cJSON *json=cJSON_Parse(body); free(body); assert(json);
+        cJSON *setup=cJSON_GetObjectItem(json,"setup");
+        assert(!strcmp(cJSON_GetObjectItem(setup,"model")->valuestring,"models/gemini-3.8-live"));
+        cJSON *config=cJSON_GetObjectItem(setup,"generationConfig");
+        cJSON *voice=cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(config,"speechConfig"),"voiceConfig"),"prebuiltVoiceConfig");
+        assert(!strcmp(cJSON_GetObjectItem(voice,"voiceName")->valuestring,"Leda"));
+        cJSON_Delete(json);
+    }
     startup_failure_tests();
     story_resumption_tests();
     key_routing_tests();

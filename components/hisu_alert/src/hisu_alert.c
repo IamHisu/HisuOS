@@ -31,7 +31,7 @@ static bool header_valid(const alert_record_t *record, unsigned index)
 {
     alert_record_t header = *record; header.header_crc = 0;
     return record->magic == 0x31505348U && record->version == 1 && record->index == index &&
-        record->voice_crc == crc("Erinome",7) && record->phrase_crc == crc(phrases[index],strlen(phrases[index])) &&
+        record->voice_crc == crc("Leda",4) && record->phrase_crc == crc(phrases[index],strlen(phrases[index])) &&
         record->bytes >= 24000 && record->bytes <= HISU_ALERT_PCM_MAX && !(record->bytes & 1U) &&
         record->header_crc == crc(&header,sizeof(header));
 }
@@ -102,7 +102,7 @@ esp_err_t hisu_alert_store(unsigned index, const int16_t *pcm, size_t bytes)
     if (index >= HISU_ALERT_COUNT || !pcm || bytes < 24000 || bytes > HISU_ALERT_PCM_MAX || (bytes & 1U)) return ESP_ERR_INVALID_ARG;
     lock(); bool allowed = s_status.busy && s_status.current == index && !s_records[index].bytes; unlock();
     if (!allowed) return ESP_ERR_INVALID_STATE;
-    alert_record_t header = {.magic=0x31505348U,.version=1,.index=index,.voice_crc=crc("Erinome",7),
+    alert_record_t header = {.magic=0x31505348U,.version=1,.index=index,.voice_crc=crc("Leda",4),
         .phrase_crc=crc(phrases[index],strlen(phrases[index])),.bytes=(uint32_t)bytes,.pcm_crc=crc(pcm,bytes)};
     header.header_crc = crc(&header,sizeof(header));
     size_t base = ALERT_OFFSET + index * ALERT_SLOT_BYTES;

@@ -23,7 +23,7 @@ MAX_PCM = 48000 * 20
 
 def board_model():
     source = (ROOT / "components/hisu_voice/src/hisu_voice_live_setup.h").read_text(encoding="utf-8")
-    match = re.search(r'model\\":\\"(models/[^"\\]+)', source)
+    match = re.search(r'^#define HISU_LIVE_MODEL "(models/[^"\\]+)"', source, re.MULTILINE)
     if not match:
         raise ValueError("Cannot read firmware Live model")
     return match.group(1)

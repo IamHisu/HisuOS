@@ -12,7 +12,7 @@ answered as questions or executed as commands. The mode explicitly overrides
 the ordinary Vietnamese-only response/persona/short-answer rules. The prompt
 preserves meaning, negation, names, numbers and register, and asks for repetition
 instead of inventing unclear speech. Quality/direction recognition are model
-behavior, not guaranteed by the firmware tests. Original Erinome is unchanged.
+behavior, not guaranteed by the firmware tests. Original Leda is unchanged.
 
 This is turn-by-turn Gemini Live audio, not simultaneous interpretation or a
 new STT/LLM/TTS chain. Existing capture limits (12 seconds maximum, about 700 ms
@@ -46,7 +46,7 @@ the existing reply monitor logs still contain output transcription. Content is
 also available to the model inside the current Live session. Select the mode
 first, then speak the text to translate; speech before activation remains an
 ordinary conversation turn. Existing subtitle fonts are Vietnamese/Latin-focused
-and do not guarantee rendering of Japanese, Chinese, Erinomean or other scripts;
+and do not guarantee rendering of Japanese, Chinese, Korean or other scripts;
 the spoken output is independent of that font limitation.
 
 ## Verification

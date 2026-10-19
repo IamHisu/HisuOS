@@ -1,4 +1,4 @@
-"""Generate Erinome Live clips on the PC; pack only the existing battery audio slots."""
+"""Generate Leda Live clips on the PC; pack only the existing battery audio slots."""
 import argparse
 import array
 import base64
@@ -21,6 +21,9 @@ SLOT_BYTES = 0x60000
 PCM_MAX = 384000
 MODEL = "gemini-2.5-flash-preview-tts"
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+SOUTHERN_STYLE = ("Use natural Southern Vietnamese pronunciation, intonation and rhythm throughout the sentence, "
+                  "not only for the letter r. Clearly distinguish initial r from gi and d. "
+                  "Do not exaggerate the accent or change the supplied words. ")
 
 
 def phrases():
@@ -71,16 +74,16 @@ def decode_audio(response):
     return validate_pcm(b"".join(chunks))
 
 
-def request_body(phrase, voice="Erinome", style=None):
+def request_body(phrase, voice="Leda", style=None):
     prompt = ("Read only the following Vietnamese sentence, clearly and naturally, in under eight seconds. "
-              + (style or "Use your natural voice without imitating a robot or adding vocal effects. ") +
+              + (style or "Use your natural voice without imitating a robot or adding vocal effects. " + SOUTHERN_STYLE) +
               "Do not add words, directions, singing or beeps. Sentence: " + phrase)
     return {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {
         "responseModalities": ["AUDIO"], "speechConfig": {"voiceConfig": {
             "prebuiltVoiceConfig": {"voiceName": voice}}}}}
 
 
-def generate(phrase, key, *, voice="Erinome", style=None):
+def generate(phrase, key, *, voice="Leda", style=None):
     request = urllib.request.Request(URL, data=json.dumps(request_body(phrase,voice,style)).encode(),
                                      headers={"x-goog-api-key": key, "Content-Type": "application/json"})
     # Never forward the credential to a redirect destination or log API bodies.
@@ -109,7 +112,7 @@ def generate(phrase, key, *, voice="Erinome", style=None):
 
 def pack_slot(index, phrase, pcm):
     validate_pcm(pcm)
-    header = [0x31505348, 1, index, zlib.crc32(b"Erinome"), zlib.crc32(phrase.encode()),
+    header = [0x31505348, 1, index, zlib.crc32(b"Leda"), zlib.crc32(phrase.encode()),
               len(pcm), zlib.crc32(pcm), 0] + [0] * 8
     header[7] = zlib.crc32(struct.pack("<16I", *header))
     slot = bytearray(b"\xff" * SLOT_BYTES)
@@ -139,9 +142,9 @@ def main():
     clips = []
     last_request = None
     for index, phrase in enumerate(scripts):
-        wav = output / f"erinome-{index + 1}.wav"
-        metadata = output / f"erinome-{index + 1}.json"
-        expected = {"model": live_model, "api": "Gemini Live", "voice": "Erinome", "phrase": phrase, "style": "natural-live-v1"}
+        wav = output / f"leda-{index + 1}.wav"
+        metadata = output / f"leda-{index + 1}.json"
+        expected = {"model": live_model, "api": "Gemini Live", "voice": "Leda", "phrase": phrase, "style": "southern-vietnamese-live-v1"}
         pcm = None
         if wav.exists() and metadata.exists():
             if json.loads(metadata.read_text(encoding="utf-8")) == expected:
@@ -156,15 +159,15 @@ def main():
                 raise ValueError("Set GEMINI_DEV_API_KEY or GEMINI_API_KEY; do not put keys in command arguments")
             if last_request is not None:
                 time.sleep(max(0, 22 - (time.monotonic() - last_request)))
-            print(f"Generating Erinome clip {index + 1}/{len(scripts)}...", flush=True)
+            print(f"Generating Leda clip {index + 1}/{len(scripts)}...", flush=True)
             last_request = time.monotonic()
-            pcm, transcript = live.generate(key, live_model, "Erinome",
+            pcm, transcript = live.generate(key, live_model, "Leda",
                 text="Đọc nguyên văn câu sau, không trả lời hay thêm lời nào: " + phrase,
-                style="You are reading a prerecorded device notification, not chatting. Read exactly the Vietnamese sentence supplied by the user, verbatim, naturally and clearly in under eight seconds. No commentary, effects or music.",
+                style="You are reading a prerecorded device notification, not chatting. Read exactly the Vietnamese sentence supplied by the user, verbatim, naturally and clearly in under eight seconds. No commentary, effects or music. " + SOUTHERN_STYLE,
                 max_pcm=PCM_MAX)
             pcm = validate_pcm(pcm)
             print("Spoken notification: " + json.dumps(transcript, ensure_ascii=True), flush=True)
-            atomic_write(output / f"erinome-{index + 1}.transcript.txt", transcript.encode("utf-8"))
+            atomic_write(output / f"leda-{index + 1}.transcript.txt", transcript.encode("utf-8"))
             buffer = io.BytesIO()
             with wave.open(buffer, "wb") as audio:
                 audio.setnchannels(1)
