@@ -144,7 +144,10 @@ typedef struct {
 } esp_websocket_event_data_t;
 enum { WEBSOCKET_EVENT_CONNECTED, WEBSOCKET_EVENT_ERROR, WEBSOCKET_EVENT_DISCONNECTED,
        WEBSOCKET_EVENT_DATA, WEBSOCKET_EVENT_ANY };
-static esp_websocket_client_handle_t esp_websocket_client_init(const esp_websocket_client_config_t *config) { return (void *)1; }
+static bool mock_client_init_failure;
+static esp_websocket_client_handle_t esp_websocket_client_init(const esp_websocket_client_config_t *config) {
+    return mock_client_init_failure ? NULL : (void *)1;
+}
 static esp_err_t esp_websocket_register_events(esp_websocket_client_handle_t client, int id,
     void (*callback)(void *, esp_event_base_t, int32_t, void *), void *arg) { return ESP_OK; }
 static esp_err_t esp_websocket_client_start(esp_websocket_client_handle_t client) { return ESP_OK; }

@@ -154,6 +154,11 @@ int main(void) {
     cancel_join(); assert(!s_want_connection && !s_password[0] && !s_deadline && !s_status.joining);
     s_want_connection=s_had_connection=s_status.connected=true;
     cancel_join(); assert(s_status.connected && s_want_connection);
+    s_status.connected=false; s_status.joining=true;
+    s_save_candidate=true; s_deadline=mock_now+1000000; s_retry_at=mock_now+500000;
+    cancel_join(); /* Historical success must not block BACK after a lost connection. */
+    assert(!s_want_connection && !s_save_candidate && !s_password[0]);
+    assert(!s_status.joining && !s_deadline && !s_retry_at);
 
     reset(); saved("Cafe", false, 0); scan();
     assert(!s_want_connection && mock_connects == 0);

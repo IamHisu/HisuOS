@@ -156,6 +156,13 @@ try {
       await page.waitForFunction(text=>document.getElementById('wifi-status').textContent.includes(text),text);
       assert.equal((await page.locator('#wifi-status').textContent()).includes(`(${error})`),false);
     }
+    const joinsBeforeRetry=wifiRequests.filter(request=>request.path==='/wifi/join').length;
+    await savedRow.click(); /* A timeout is not proof that the saved password is wrong. */
+    await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('192.168.1.55'));
+    assert.equal(wifiRequests.filter(request=>request.path==='/wifi/join').length,joinsBeforeRetry+1);
+    assert.deepEqual(wifiRequests.filter(request=>request.path==='/wifi/join').at(-1).data,
+      {ssid:'Saved home',password:'',saved:true});
+    assert.equal(await page.locator('#wifi-dialog').isVisible(),false);
     wifi.connected=true; wifi.error=0; wifi.disconnect_reason=0;
     for (const internet of ['unknown','checking']) {
       wifi.internet=internet; wifi.internet_check_paused=true;
@@ -197,11 +204,36 @@ try {
     await page.locator('#wifi-dialog').waitFor({state:'visible'});
     assert.equal(await page.locator('#wifi-dialog-title').textContent(),'Saved home');
     assert.equal(wifiRequests.filter(request=>request.path==='/wifi/join').length,joinsBeforeCorrection);
+    assert.equal(await page.locator('#wifi-use-saved').isVisible(),true);
+    await page.screenshot({path:fileURLToPath(new URL(`${name}-wifi-saved-password.png`,output)),fullPage:true});
+    await page.locator('#wifi-password').fill('discard-this-candidate');
+    await page.locator('#wifi-use-saved').click();
+    await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('192.168.1.55'));
+    assert.deepEqual(wifiRequests.filter(request=>request.path==='/wifi/join').at(-1).data,
+      {ssid:'Saved home',password:'',saved:true});
+    assert.equal(await page.locator('#wifi-password').inputValue(),'');
+    wifi.connected=false;
+    await page.locator('#wifi-scan').click();
+    await page.waitForFunction(()=>document.querySelector('.wifi-row').dataset.connected === 'false');
+    await savedRow.click();
+    await page.locator('#wifi-dialog').waitFor({state:'visible'});
+    await page.locator('#wifi-password').fill('corrected-password');
+    await page.locator('#wifi-connect').click();
+    await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('192.168.1.55'));
+    assert.deepEqual(wifiRequests.filter(request=>request.path==='/wifi/join').at(-1).data,
+      {ssid:'Saved home',password:'corrected-password'});
+    assert.equal(await page.locator('#wifi-password').inputValue(),'');
+    wifi.connected=false;
+    await page.locator('#wifi-scan').click();
+    await page.waitForFunction(()=>document.querySelector('.wifi-row').dataset.connected === 'false');
+    await savedRow.click();
+    await page.locator('#wifi-dialog').waitFor({state:'visible'});
     await page.locator('#wifi-cancel').click();
     await page.screenshot({path:fileURLToPath(new URL(`${name}-wifi.png`,output)),fullPage:true});
     await page.locator('.wifi-row').filter({hasText:'<img src=x onerror=alert(1)>'}).click();
     await page.locator('#wifi-dialog').waitFor({state:'visible'});
     assert.equal(await page.locator('#wifi-dialog-title').textContent(),'<img src=x onerror=alert(1)>');
+    assert.equal(await page.locator('#wifi-use-saved').isVisible(),false);
     await page.locator('#wifi-password').fill('password123');
     await page.screenshot({path:fileURLToPath(new URL(`${name}-wifi-dialog.png`,output)),fullPage:true});
     await page.locator('#wifi-connect').click();
@@ -211,6 +243,7 @@ try {
     assert.equal(await page.locator('#wifi-hidden-option').isVisible(),false);
     await page.locator('#wifi-hidden').click();
     assert.equal(await page.locator('#wifi-hidden-option').isVisible(),true);
+    assert.equal(await page.locator('#wifi-use-saved').isVisible(),false);
     assert.equal(await page.locator('#wifi-is-hidden').isChecked(),false);
     await page.locator('#wifi-ssid').fill('Private hidden');
     await page.locator('#wifi-password').fill('hiddenpass');

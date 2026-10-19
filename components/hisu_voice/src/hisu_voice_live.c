@@ -804,10 +804,12 @@ static bool send_story_continuation(esp_websocket_client_handle_t client, const 
 {
     if (poll_bedtime()) return true;
     portENTER_CRITICAL(&s_mux);
-    bool send=s_active && !s_failed && s_bedtime.active && s_bedtime.next_queued &&
+    bool send=s_active && !s_failed && !s_rekey_pending && s_bedtime.active && s_bedtime.next_queued &&
         frame->epoch==s_epoch && frame->generation==s_generation && !s_turn.response_pending &&
         !s_turn.input_open && !s_turn.obsolete_turns;
-    if (send) {
+    bool reconnect=send && s_story_goaway && s_session_handle && s_session_handle[0];
+    if (reconnect) request_profile(s_key_profile,5);
+    if (send && !reconnect) {
         s_bedtime.next_queued=false;
         s_bedtime.autonomous=true;
         memset(&s_reply_state,0,sizeof(s_reply_state));
@@ -815,6 +817,7 @@ static bool send_story_continuation(esp_websocket_client_handle_t client, const 
         s_end_us=esp_timer_get_time();
     }
     portEXIT_CRITICAL(&s_mux);
+    if (reconnect) { announce_rekey(frame->epoch); return true; }
     if (!send) return true;
     return send_text(client,"{\"clientContent\":{\"turns\":[{\"role\":\"user\",\"parts\":[{\"text\":\""
         "Kể tiếp một đoạn truyện ru ngủ bằng tiếng Việt, khoảng 100 đến 180 từ, tiếp nối đoạn trước. "
@@ -1484,7 +1487,11 @@ static void transport_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(20)); continue;
         }
         hisu_gemini_key_t profile=select_key_profile();
-        if (hisu_settings_get_gemini_profile(profile,key) != ESP_OK) { fail(epoch, generation); continue; }
+        if (hisu_settings_get_gemini_profile(profile,key) != ESP_OK) {
+            memset(key,0,sizeof(s_send_workspace->key));
+            (void)hisu_network_set_performance(false);
+            fail(epoch, generation); continue;
+        }
         ESP_LOGI(TAG,"Live credential profile=%u (0=Chat, 1=Chat backup, 2=Reader, 3=Translate)",(unsigned)profile);
         snprintf(headers, sizeof(s_send_workspace->headers), "x-goog-api-key: %s\r\n", key);
         memset(key, 0, sizeof(s_send_workspace->key));
@@ -1502,7 +1509,9 @@ static void transport_task(void *arg)
         memset(headers, 0, sizeof(s_send_workspace->headers));
         if (!client) {
             destroy_connection_transport(&connection);
-            free(connection.message); fail(epoch, generation); continue;
+            free(connection.message);
+            (void)hisu_network_set_performance(false);
+            fail(epoch, generation); continue;
         }
         if (hisu_network_set_performance(true) != ESP_OK) ESP_LOGW(TAG, "Cannot request Wi-Fi performance mode");
         esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, websocket_event, &connection);

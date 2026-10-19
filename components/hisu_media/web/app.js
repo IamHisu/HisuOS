@@ -161,6 +161,7 @@ if (typeof document !== 'undefined') {
     el('wifi-empty').hidden = aps.length > 0 || !state.enabled || state.scanning;
     el('wifi-scan').disabled = wifiBusy || state.scanning;
     el('wifi-connect').disabled = wifiBusy || state.scanning || state.joining;
+    el('wifi-use-saved').disabled = wifiBusy || state.scanning || state.joining || !state.enabled;
     el('wifi-hidden').disabled = wifiBusy || state.scanning || state.joining || !state.enabled;
   }
   function openWifiDialog(ssid = '') {
@@ -168,6 +169,7 @@ if (typeof document !== 'undefined') {
     el('wifi-password').value = ''; el('wifi-password').required = Boolean(ssid);
     el('wifi-is-hidden').checked = false;
     el('wifi-hidden-option').hidden = Boolean(ssid);
+    el('wifi-use-saved').hidden = !ssid || !wifiState?.aps.find(ap => ap.ssid === ssid)?.saved;
     el('wifi-dialog-title').textContent = ssid || 'Thêm mạng';
     el('wifi-dialog').showModal();
     el(ssid ? 'wifi-password' : 'wifi-ssid').focus();
@@ -176,13 +178,22 @@ if (typeof document !== 'undefined') {
     const ap = wifiState?.aps.find(ap => ap.ssid === ssid);
     if (!ap || !ap.supported || wifiBusy || wifiState.joining || wifiState.scanning) return;
     if (wifiState.connected && wifiState.ssid === ssid) return;
-    if (ap.saved && (ap.password_rejected || (wifiState.error && wifiState.ssid === ssid))) openWifiDialog(ssid);
+    if (ap.saved && ap.password_rejected) openWifiDialog(ssid);
     else if (ap.saved) void wifiAction('/wifi/join',{ssid,password:'',saved:true});
     else if (!ap.secure) void wifiAction('/wifi/join',{ssid,password:''});
     else openWifiDialog(ssid);
   }
   el('wifi-hidden').onclick = () => openWifiDialog();
   el('wifi-cancel').onclick = () => el('wifi-dialog').close();
+  el('wifi-use-saved').onclick = () => {
+    const ssid = el('wifi-ssid').value;
+    const ap = wifiState?.aps.find(ap => ap.ssid === ssid);
+    if (!el('wifi-ssid').readOnly || !ap?.saved || !ap.supported || !wifiState.enabled ||
+        wifiBusy || wifiState.joining || wifiState.scanning) return;
+    el('wifi-password').value = '';
+    el('wifi-dialog').close();
+    void wifiAction('/wifi/join',{ssid,password:'',saved:true});
+  };
   el('wifi-dialog').addEventListener('close',() => { el('wifi-password').value = ''; });
   async function wifiAction(path, data) {
     if (!token || wifiBusy) return;

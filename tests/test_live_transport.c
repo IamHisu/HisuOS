@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <assert.h>
 #include <stdio.h>
+#include <setjmp.h>
 #include "live_transport_mock.h"
 #undef pdMS_TO_TICKS
 #define pdMS_TO_TICKS(ms) ((ms) / 10)
@@ -150,7 +151,13 @@ esp_err_t hisu_settings_get_gemini_profile(hisu_gemini_key_t profile,char out[12
 }
 bool hisu_settings_has_gemini_profile(hisu_gemini_key_t profile) { return mock_profiles[profile]; }
 uint32_t hisu_settings_gemini_revision(void) { return mock_key_revision; }
-esp_err_t hisu_network_set_performance(bool active) { return ESP_OK; }
+static bool mock_performance;
+static unsigned mock_performance_off_calls;
+esp_err_t hisu_network_set_performance(bool active) {
+    mock_performance=active;
+    if (!active) ++mock_performance_off_calls;
+    return ESP_OK;
+}
 static int save_queue(QueueHandle_t queue, const void *data) {
     if (queue == s_input) {
         if (full_input) return pdFALSE;
@@ -173,6 +180,8 @@ static void event(live_event_t kind, uint32_t generation, const char *text) {
     }
 }
 static void reset(void) {
+    mock_performance=false; mock_performance_off_calls=0;
+    mock_client_init_failure=false; mock_live_alloc_left=-1;
     for (unsigned i=0;i<HISU_GEMINI_KEY_COUNT;++i) mock_profiles[i]=true;
     s_primary_retry_us=0; s_key_revision=mock_key_revision=0; s_backup_configured=true;
     if (s_reminder) { free(s_reminder->pcm); free(s_reminder); s_reminder=NULL; }
@@ -1222,9 +1231,54 @@ static void story_resumption_tests(void) {
     receive("{\"sessionResumptionUpdate\":{\"resumable\":false}}");
     assert(!s_session_handle);
     reset(); receive("{\"goAway\":{}}"); assert(s_failed); /* No blind replay/reconnect for ordinary Chat. */
+    reset(); s_key_profile=HISU_GEMINI_READER;
+    s_bedtime.active=s_bedtime.autonomous=true; s_bedtime.deadline_us=mock_now+1800000000;
+    deadline=s_bedtime.deadline_us; s_reply_state.audio=true;
+    receive("{\"sessionResumptionUpdate\":{\"resumable\":true,\"newHandle\":\"mock-resume-token\"}}");
+    finish_spoken_reply(s_epoch,s_generation);
+    assert(s_bedtime.next_queued && sent_count==1 && sent[0].kind==8);
+    input_t next=sent[0];
+    receive("{\"goAway\":{\"timeLeft\":\"1s\"}}"); /* Arrives after playback has drained. */
+    unsigned sends=mock_text_sends;
+    assert(send_story_continuation((void *)1,&next));
+    assert(mock_text_sends==sends && !s_turn.response_pending && s_rekey_pending);
+    assert(s_resume_kind==5 && events[LIVE_REKEY]==1);
+    connection.epoch=next.epoch;
+    websocket_event(&connection,0,WEBSOCKET_EVENT_DISCONNECTED,NULL);
+    assert(!s_failed && !events[LIVE_SLEEP]);
+    assert(send_story_continuation((void *)1,&next) && events[LIVE_REKEY]==1);
+    assert(apply_key_handoff(next.epoch) && s_bedtime.deadline_us==deadline);
+    assert(s_key_profile==HISU_GEMINI_READER && s_resume_connection);
+    assert(send_story_continuation((void *)1,&next) && mock_text_sends==sends);
+    voice_live_close();
+    assert(send_story_continuation((void *)1,&next) && !s_active && !s_rekey_pending);
+    reset();
+}
+static jmp_buf transport_stop;
+static void stop_transport_on_idle(void) { longjmp(transport_stop,1); }
+static void startup_failure_tests(void) {
+    for (unsigned mode=0;mode<3;++mode) {
+        reset();
+        assert(hisu_network_set_performance(true)==ESP_OK);
+        request_profile(HISU_GEMINI_READER,2);
+        assert(apply_key_handoff(s_epoch));
+        s_send_workspace=calloc(1,sizeof(*s_send_workspace));
+        s_send_storage=calloc(1,SEND_SAMPLES*sizeof(int16_t)+ENCODED_CAPACITY+SEND_BODY_CAPACITY);
+        assert(s_send_workspace && s_send_storage);
+        if (mode==0) mock_profiles[HISU_GEMINI_READER]=false;
+        if (mode==1) mock_live_alloc_left=0;
+        if (mode==2) mock_client_init_failure=true;
+        mock_delay_hook=stop_transport_on_idle;
+        if (!setjmp(transport_stop)) transport_task(NULL);
+        assert(s_failed && !mock_performance && mock_performance_off_calls==1);
+        assert(!s_send_workspace->key[0] && !s_send_workspace->headers[0]);
+        mock_live_alloc_left=-1;
+        voice_live_deinit();
+    }
     reset();
 }
 int main(void) {
+    startup_failure_tests();
     story_resumption_tests();
     key_routing_tests();
     interpreter_tests();

@@ -216,7 +216,10 @@ static void failed(esp_err_t error)
 
 static void cancel_join(void)
 {
-    if (!s_want_connection || s_had_connection) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool connected=s_status.connected;
+    xSemaphoreGive(s_lock);
+    if (!s_want_connection || connected) return;
     s_want_connection=s_save_candidate=false; s_deadline=s_retry_at=0;
     memset(s_password,0,sizeof(s_password));
     if (s_started) esp_wifi_disconnect();
