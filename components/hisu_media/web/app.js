@@ -124,8 +124,11 @@ if (typeof document !== 'undefined') {
       online:'Có Internet',captive:'Mạng yêu cầu đăng nhập',offline:'Wi-Fi chưa có Internet'}[state.internet] || 'Đang kiểm tra Internet…';
     const warning = state.connected && ['captive','offline'].includes(state.internet);
     el('wifi-enabled').checked = state.enabled;
+    const joinError = state.disconnect_reason === 201 ? 'Không tìm thấy mạng Wi-Fi' :
+      [202,204,15].includes(state.disconnect_reason) || state.error === 258 ? 'Sai mật khẩu hoặc mạng từ chối kết nối' :
+      state.error === 263 ? 'Hết thời gian kết nối' : 'Không thể kết nối Wi-Fi. Hãy thử lại';
     el('wifi-status').textContent = state.scanning ? 'Đang quét…' : state.joining ? `Đang kết nối ${state.ssid}…` :
-      state.connected ? `Đã kết nối Wi-Fi: ${state.ssid} · ${internet} · ${state.ip}` : state.error ? `Kết nối thất bại (${state.error})` : state.enabled ? 'Chưa kết nối' : 'Wi-Fi đã tắt';
+      state.connected ? `Đã kết nối Wi-Fi: ${state.ssid} · ${internet} · ${state.ip}` : state.error ? joinError : state.enabled ? 'Chưa kết nối' : 'Wi-Fi đã tắt';
     const aps = [...state.aps].sort((a,b) => Number(b.ssid === state.ssid && state.connected) - Number(a.ssid === state.ssid && state.connected) || Number(b.saved) - Number(a.saved) || b.rssi - a.rssi);
     const names = new Set(aps.map(ap => ap.ssid));
     for (const [ssid,row] of wifiRows) if (!names.has(ssid)) { row.remove(); wifiRows.delete(ssid); }

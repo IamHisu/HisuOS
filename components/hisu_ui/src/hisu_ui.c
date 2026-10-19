@@ -996,6 +996,9 @@ static bool handle_wifi_key(hisu_key_t key)
 {
     if (s_model.page != UI_WIFI_PAGE && s_model.page != UI_WIFI_PASSWORD) return false;
     if (key == HISU_KEY_BACK) {
+        if (s_model.page==UI_WIFI_PAGE && s_network.joining && hisu_network_cancel_join()!=ESP_OK) {
+            s_error="Chưa thể hủy kết nối"; render(); return true;
+        }
         s_wifi_select_after_scan = false;
         memset(s_password, 0, sizeof(s_password)); s_pass_length = 0;
         s_model.page = s_model.page == UI_WIFI_PASSWORD ? UI_WIFI_PAGE : UI_MENU;
@@ -1048,7 +1051,7 @@ static bool handle_wifi_key(hisu_key_t key)
             } else if (s_pass_choice == 36) s_pass_mode = (s_pass_mode + 1) % 3;
             else if (s_pass_choice == 37 && s_pass_length) s_password[--s_pass_length] = 0;
             else if (s_pass_choice == 38) {
-                if (!s_pass_length || !hisu_network_valid_password(s_password)) s_error = "Cần 8-63 ký tự";
+                if (!s_pass_length || !hisu_network_valid_password(s_password)) s_error = "8-63 ký tự hoặc 64 hex";
                 else if (hisu_network_join(s_join_ssid, s_password) != ESP_OK) s_error = "Wi-Fi đang bận";
                 else {
                     memset(s_password, 0, sizeof(s_password)); s_pass_length = 0; s_model.page = UI_WIFI_PAGE;

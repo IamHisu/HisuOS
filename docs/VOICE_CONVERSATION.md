@@ -40,7 +40,7 @@ BOOT ngắn hoặc gọi “Hi Su” trong phiên hủy audio cũ bằng generat
 
 ## Giới hạn và xử lý lỗi
 
-Input queue chứa tối đa 24 frame 40ms, đặt trong PSRAM; không block task fetch. Message WebSocket tối đa 128KiB, reassemble cả các event chia nhỏ và continuation frames. Audio output queue có tối đa 48 items và 512KiB PCM. Nếu tràn, sai JSON/base64/audio format hoặc kết nối lỗi thì đóng phiên thay vì mất audio âm thầm. Kết nối/setup timeout 15 giây, chờ phản hồi tối đa 60 giây. Server `goAway` đóng phiên; gọi lại để tạo kết nối mới. Chưa tự nối lại hoặc phục hồi phiên.
+Input queue chứa tối đa 256 frame 40ms trong PSRAM; không block task fetch. Message WebSocket tối đa 128KiB, hỗ trợ các event chia nhỏ và continuation frames. Output queue tối đa 96 items và 1536KiB PCM, cấp phát theo nhu cầu. Khi đầy, nhận audio/phụ đề/chốt lượt chờ theo tiến độ playback; chỉ lỗi nếu không có tiến độ trong 3 giây. Không bỏ PCM cũ. Setup timeout 15 giây, phản hồi timeout sau 60 giây không có audio mới. Kể chuyện bật nén ngữ cảnh và dùng session resumption sau `goAway`, tại cuối đoạn đã phát hết, cùng key và giữ nguyên giờ tự tắt. Thiếu handle hoặc mất kết nối trước khi nhận đủ đoạn vẫn dừng; Chat thường chưa tự phục hồi sau mất mạng. Xem [Bedtime Stories](BEDTIME_STORIES.md).
 
 Live khai báo function tool `set_flashlight(enabled)` để bật/tắt đèn pin bằng giọng nói; tool response gửi lại trên cùng kết nối. Điều khiển menu/nút vẫn dùng được. Gemini key phải có quyền/quota cho model Live; compile không xác nhận API thật.
 

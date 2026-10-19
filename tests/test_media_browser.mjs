@@ -150,6 +150,13 @@ try {
     assert.equal(await page.locator('#wifi-password').inputValue(),'');
     assert.equal(await page.locator('#wifi-dialog').isVisible(),false);
     const savedRow=page.locator('.wifi-row').filter({hasText:'Saved home'});
+    for (const [reason,error,text] of [[201,263,'Không tìm thấy mạng Wi-Fi'],[202,258,'Sai mật khẩu hoặc mạng từ chối kết nối'],[0,263,'Hết thời gian kết nối']]) {
+      wifi.connected=false; wifi.disconnect_reason=reason; wifi.error=error;
+      await page.locator('#wifi-scan').click();
+      await page.waitForFunction(text=>document.getElementById('wifi-status').textContent.includes(text),text);
+      assert.equal((await page.locator('#wifi-status').textContent()).includes(`(${error})`),false);
+    }
+    wifi.connected=true; wifi.error=0; wifi.disconnect_reason=0;
     for (const internet of ['unknown','checking']) {
       wifi.internet=internet; wifi.internet_check_paused=true;
       await page.waitForFunction(()=>document.getElementById('wifi-status').textContent.includes('Kiểm tra Internet sau khi đóng Setting'));

@@ -2,6 +2,7 @@
 
 static const char voice_live_setup[] =
     "{\"setup\":{\"model\":\"models/gemini-3.8-live\","
+    "\"contextWindowCompression\":{\"slidingWindow\":{}},\"sessionResumption\":@@HISU_RESUME@@,"
     "\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],"
     "\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Erinome\"}}}},"
     "\"systemInstruction\":{\"parts\":[{\"text\":\"Bạn là Hi Su, một trợ lý AI giọng nói dễ thương, thông minh, "

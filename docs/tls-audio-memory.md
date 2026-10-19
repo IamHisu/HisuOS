@@ -127,14 +127,16 @@ no retry on failed/short writes. Real throughput and delay need a board test.
 
 ## Bounded Downlink Backpressure
 
-Reply PCM retains the 512 KiB/96-item limits. When the byte budget or output
-queue is temporarily full, the receive path retries every 10 ms for at most
-100 ms, releasing reservations after failed enqueue and checking epoch/turn
-cancellation each time. There is no indefinite socket pause and no dropping
-old samples or moving subtitle/control markers. Prolonged overload still fails
-the current session explicitly; this is not lossless recovery from sustained
-overload. Control/caption enqueue failures retain their existing failure policy.
-Host tests cover byte/slot pressure, recovery, timeout, cancellation and accounting.
+Reply PCM has 1536 KiB/96-item limits, allocated as needed in PSRAM rather than
+reserved upfront. The receive path polls every 10 ms when either limit is reached,
+releasing failed byte reservations. Its three-second stall deadline resets only
+when playback advances, not merely when queue occupancy changes. Captions and the
+completion marker use the same ordered wait, so a full slot queue cannot alone
+terminate a healthy long reply. Epoch/cancellation checks still abort stale work.
+No old PCM or markers are dropped. A stalled consumer still fails explicitly.
+Host tests include a progressing consumer taking longer than three seconds,
+stalls, byte/slot recovery, cancellation and accounting. Hardware memory pressure,
+WSS control-message latency and sustained playback still need board measurements.
 
 The reminder TLS path uses a small atomic network-link snapshot, not `aps[12]`
 on each nested stack frame. Logs report stack low-water marks after TTS and WSS

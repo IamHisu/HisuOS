@@ -138,9 +138,22 @@ int main(void) {
     scan(); assert(!strcmp(s_ssid, "Strong"));
     fail_current(true); scan();
     assert(!strcmp(s_ssid, "Backup"));
-    assert(s_status.error == ESP_OK && s_status.aps[0].password_rejected);
+    assert(s_status.error == ESP_OK && !s_status.aps[0].password_rejected);
     fail_current(false); mock_now += 60000000; scan();
-    assert(!strcmp(s_ssid, "Backup")); /* Rejected password stays blocked. */
+    assert(!strcmp(s_ssid, "Strong")); /* One handshake timeout is not a bad-password verdict. */
+
+    reset(); saved("Home",true,-30); strcpy(s_ssid,"Home"); strcpy(s_password,"wrongpass");
+    s_save_candidate=true; record_join_failure(true);
+    assert(auto_join_allowed("Home")); scan();
+    assert(!strcmp(s_password,"password123") && !s_save_candidate);
+    for (unsigned i=0;i<3;++i) { record_join_failure(true); mock_now+=60000000; }
+    assert(!auto_join_allowed("Home") && join_failure("Home",false)->password_rejected);
+    mock_now+=600000000;
+    assert(auto_join_allowed("Home") && !join_failure("Home",false)->password_rejected);
+    s_want_connection=true; s_had_connection=false; s_started=true;
+    cancel_join(); assert(!s_want_connection && !s_password[0] && !s_deadline && !s_status.joining);
+    s_want_connection=s_had_connection=s_status.connected=true;
+    cancel_join(); assert(s_status.connected && s_want_connection);
 
     reset(); saved("Cafe", false, 0); scan();
     assert(!s_want_connection && mock_connects == 0);

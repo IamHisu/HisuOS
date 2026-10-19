@@ -32,7 +32,18 @@ stops bedtime mode and requests screen sleep rather than leaving an error screen
 
 Internet and Gemini quota are required for the entire session; 30 minutes is a
 maximum timer duration, not a guarantee of uninterrupted generation. No offline
-story library or automatic reconnect/resume is implemented. It does not use the
+story library is implemented. Setup enables sliding-window context compression
+and session resumption. During bedtime, a server goAway schedules a same-key
+reconnect after the current segment's PCM and DMA have drained, using the latest
+bounded resumption handle in PSRAM. The board deadline is preserved, not restarted;
+the resumed synthetic turn cannot invoke settings or other side-effect tools.
+Completed queued audio may finish after a planned server close. Missing handles,
+rejected/expired handles, a close before the segment is fully received, or other
+network errors still stop the story. This does not guarantee uninterrupted
+30-120 minute operation and does not resume ordinary Chat or arbitrary outages.
+Handles are never logged, written to flash, or reused across role/key changes.
+Reference: [Google Live session management](https://ai.google.dev/gemini-api/docs/live-api/session-management).
+It does not use the
 short reminder TTS endpoint. No extra sound effects, pitch processing or EQ.
 
 Host tests in `tools/test-voice.ps1` cover duration validation/defaults, segment

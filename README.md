@@ -96,6 +96,12 @@ MultiNet cần flash cả partition table và model bằng `idf.py -p COM6 flash
 
 ## Setup Wi-Fi
 
+Mật khẩu mới nhập sai không chặn mật khẩu đã lưu trước đó. Mật khẩu đã lưu chỉ
+bị tạm chặn sau 3 lỗi xác thực liên tiếp và được thử lại sau 10 phút; timeout bắt
+tay đơn lẻ chưa được xem là sai mật khẩu. BACK hủy lần kết nối đang chạy; không
+xóa mạng đã lưu hay ngắt một kết nối đã thành công. Không thấy AP thì kết thúc
+lần thử ngay. Log sau quét có mức stack thấp nhất để kiểm tra trên board.
+
 Mở menu → Wi-Fi. Vol−/Vol+ di chuyển danh sách, BOOT chọn mạng hoặc Quét lại/Bật-tắt Wi-Fi/Trở lại. Giữ BOOT để về menu. Danh sách có icon mức sóng; SSID dài được rút gọn để vừa màn hình. Khi tắt Wi-Fi, chỉ còn Bật Wi-Fi và Trở lại.
 
 Bàn phím 8×5: nhấn Vol− sang phải, Vol+ xuống hàng; giữ 1 giây bắt đầu lặp cùng hướng mỗi 180ms và vòng lại ở mép. Nhả sau giữ không phát thêm nhấn ngắn. BOOT chọn ký tự. `Aa` đổi chữ thường/chữ hoa/ký hiệu; `<` xóa, `OK` kết nối, `X` hủy. Phím `SP` trong bảng ký hiệu là dấu cách. Mật khẩu chỉ hiển thị dấu `*`, được xóa khỏi buffer UI khi gửi/hủy; firmware không log credential.

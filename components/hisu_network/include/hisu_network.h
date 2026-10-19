@@ -40,6 +40,7 @@ void hisu_network_get_link(hisu_network_link_t *out);
 esp_err_t hisu_network_scan(void);
 esp_err_t hisu_network_provision_scan(void);
 esp_err_t hisu_network_join(const char *ssid, const char *password);
+esp_err_t hisu_network_cancel_join(void);
 esp_err_t hisu_network_provision(const char *ssid, const char *password);
 esp_err_t hisu_network_provision_ex(const char *ssid, const char *password, bool hidden);
 esp_err_t hisu_network_enable(bool enabled);

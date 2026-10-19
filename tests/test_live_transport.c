@@ -236,7 +236,8 @@ static void check_tool(const char *name, const char *args, bool success) {
 }
 static void device_tool_tests(void) {
     reset();
-    cJSON *setup=cJSON_Parse(voice_live_setup); assert(setup);
+    char *setup_body=build_setup(); assert(setup_body);
+    cJSON *setup=cJSON_Parse(setup_body); free(setup_body); assert(setup);
     cJSON *config=cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"generationConfig");
     cJSON *instruction=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"systemInstruction"),"parts"),0),"text");
     assert(strstr(instruction->valuestring,"A name-only greeting must include audible speech"));
@@ -1161,6 +1162,11 @@ static void bedtime_tests(void) {
     reset();
 }
 static void release_output_on_delay(void) { full_output=false; s_queued_audio_bytes=0; }
+static void advance_audio_on_delay(void) {
+    ++s_audio_progress;
+    if (mock_now>=4000000) release_output_on_delay();
+    else mock_delay_hook=advance_audio_on_delay;
+}
 static void cancel_audio_wait(void) { (void)voice_live_interrupt(s_generation+1); }
 static void reply_backpressure_tests(void) {
     for (unsigned mode=0; mode<5; ++mode) {
@@ -1168,7 +1174,7 @@ static void reply_backpressure_tests(void) {
         output_t audio={.epoch=s_epoch,.generation=s_generation,.bytes=4,.pcm=calloc(1,4)};
         int64_t started=mock_now;
         if (mode==0 || mode==2 || mode==4) full_output=true;
-        else s_queued_audio_bytes=512*1024;
+        else s_queued_audio_bytes=REPLY_AUDIO_LIMIT;
         if (mode<2) mock_delay_hook=release_output_on_delay;
         if (mode==4) mock_delay_hook=cancel_audio_wait;
         int result=queue_reply_audio(&audio);
@@ -1177,13 +1183,49 @@ static void reply_backpressure_tests(void) {
         if (mode<2) assert(output_count==1 && s_queued_audio_bytes==4 && mock_now-started==10000);
         else {
             free(audio.pcm);
-            assert(!output_count && s_queued_audio_bytes==(mode==3 ? 512*1024 : 0));
-            assert(mock_now-started==(mode==4 ? 10000 : 100000));
+            assert(!output_count && s_queued_audio_bytes==(mode==3 ? REPLY_AUDIO_LIMIT : 0));
+            assert(mock_now-started==(mode==4 ? 10000 : 3000000));
         }
     }
+    reset(); full_output=true; mock_now=0;
+    output_t audio={.epoch=s_epoch,.generation=s_generation,.bytes=4,.pcm=calloc(1,4)};
+    mock_delay_hook=advance_audio_on_delay;
+    assert(queue_reply_audio(&audio)==1 && mock_now>=4000000); /* Healthy playback may wait longer than 3s. */
+    reset();
+}
+static void story_resumption_tests(void) {
+    reset(); s_key_profile=HISU_GEMINI_READER;
+    s_bedtime.active=s_bedtime.autonomous=true; s_bedtime.deadline_us=mock_now+1800000000;
+    int64_t deadline=s_bedtime.deadline_us;
+    receive("{\"sessionResumptionUpdate\":{\"resumable\":true,\"newHandle\":\"private-token\\\"test\"}}");
+    assert(s_session_handle && !strcmp(s_session_handle,"private-token\"test"));
+    s_reply_state.audio=true;
+    receive("{\"goAway\":{\"timeLeft\":\"60s\"}}");
+    assert(s_story_goaway && !s_failed && !s_rekey_pending);
+    connection_t connection={.epoch=s_epoch};
+    websocket_event(&connection,0,WEBSOCKET_EVENT_DISCONNECTED,NULL);
+    assert(!s_failed); /* Fully received audio may finish after planned socket closure. */
+    uint32_t epoch=s_epoch, generation=s_generation;
+    finish_spoken_reply(epoch,generation);
+    assert(s_rekey_pending && s_resume_kind==5 && events[LIVE_REKEY]==1);
+    assert(apply_key_handoff(epoch) && s_key_profile==HISU_GEMINI_READER && s_bedtime.deadline_us==deadline);
+    char *body=build_setup(); assert(body);
+    cJSON *json=cJSON_Parse(body); free(body); assert(json);
+    cJSON *setup=cJSON_GetObjectItem(json,"setup");
+    assert(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"contextWindowCompression"),"slidingWindow"));
+    cJSON *handle=cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"sessionResumption"),"handle");
+    assert(cJSON_IsString(handle) && !strcmp(handle->valuestring,"private-token\"test")); cJSON_Delete(json);
+    s_ready=true; input_t wake={.epoch=s_epoch,.generation=s_generation};
+    assert(send_wake((void *)1,&wake) && strstr(mock_last_text,"Do not repeat or recap"));
+    assert(s_bedtime.autonomous && s_bedtime.deadline_us==deadline);
+    check_tool("set_volume","{\"percent\":50}",false);
+    receive("{\"sessionResumptionUpdate\":{\"resumable\":false}}");
+    assert(!s_session_handle);
+    reset(); receive("{\"goAway\":{}}"); assert(s_failed); /* No blind replay/reconnect for ordinary Chat. */
     reset();
 }
 int main(void) {
+    story_resumption_tests();
     key_routing_tests();
     interpreter_tests();
     bedtime_tests();
