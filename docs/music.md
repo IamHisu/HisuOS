@@ -134,8 +134,10 @@ allows playback of a member only after the offered reply finishes speaking and
 the next real user turn supplies a non-overflowing transcript within 60 seconds.
 Re-offering replaces the list; a new search, cancellation or new session invalidates
 it. Single-track confirmation remains supported. For multiple songs, play_music
-requires a 1-based position matching the offered id plus selection_text equal to
-the FULL current input transcript, not a selected substring. A conservative evidence
+accepts the selected id alone. Firmware maps it to the offered position and
+validates the actual received full user transcript. Legacy position and
+selection_text fields remain accepted, but a supplied position must match;
+a model-provided transcript never grants authorization. A conservative evidence
 validator accepts explicit ordinal choices or an unambiguous full title/artist,
 with common selection prefixes and polite suffixes. It never substring-matches a
 shared artist or interprets generic assent as a choice. Negative, conditional,
@@ -144,8 +146,11 @@ clarification. Matching folds ASCII case and whitespace; Vietnamese UTF-8 accent
 remain intact. Unaccented ordinal forms are supported, but arbitrary spelling,
 accent/case variations and complex language may need clarification. This is an
 authorization check, not a substitute for Gemini's conversational understanding or
-a guarantee that speech recognition is correct. A clear supported selection is
-the confirmation; it does not need another confirmation question.
+a guarantee that speech recognition is correct. An explicit request such as "chọn đại 1 bài", "bạn chọn đi" or "bài nào cũng được" also authorizes choosing any member of the spoken offer, with the same offered-id and actual-transcript checks. Generic assent still does not choose a song. A clear supported selection is
+the confirmation; it does not need another confirmation question. Supported
+ordinal forms include "bài số 3", "bài số ba", "bài ba", "số 3" and "3".
+After rejection, the model must call offer_music again before asking a new
+confirmation question: a spoken question alone does not renew the offer.
 Host tests validate list bounds, duplicates, unknown ids, order, every selected id,
 replacement, missing spoken reply, late transcription, evidence mismatch, vague
 assent, shared identifiers and negative/conditional choices, not model understanding.

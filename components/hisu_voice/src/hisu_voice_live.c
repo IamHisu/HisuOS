@@ -200,6 +200,7 @@ static bool music_selection_evidence(unsigned position,const char *text)
     count=s_music_offer.count; memcpy(ids,s_music_offer.ids,sizeof(ids));
     portEXIT_CRITICAL(&s_mux);
     if (!position || position>count || count>3) return false;
+    if (music_choice_delegated(text)) return true;
     unsigned ordinal=music_choice_ordinal(text);
     if (ordinal) return ordinal==position;
     unsigned title_matches=0,artist_matches=0,title_position=0,artist_position=0;
@@ -824,6 +825,7 @@ static void websocket_event(void *arg, esp_event_base_t base, int32_t id, void *
         if (socket >= 0 && setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) == 0)
             ESP_LOGI(TAG, "WSS low-latency TCP enabled");
         else ESP_LOGW(TAG, "Cannot enable WSS TCP_NODELAY");
+        log_audio_heap("WSS connected RAM");
         portENTER_CRITICAL(&s_mux); connection->connected = true; portEXIT_CRITICAL(&s_mux);
     }
     else if (id == WEBSOCKET_EVENT_ERROR || id == WEBSOCKET_EVENT_DISCONNECTED) {
@@ -831,9 +833,15 @@ static void websocket_event(void *arg, esp_event_base_t base, int32_t id, void *
         if (id==WEBSOCKET_EVENT_ERROR && event && request_chat_backup(connection->epoch,
             event->error_handle.esp_ws_handshake_status_code,NULL)) return;
         if (id == WEBSOCKET_EVENT_ERROR && event) {
-            ESP_LOGW(TAG, "WSS error: handshake=%d TLS=0x%x",
-                     event->error_handle.esp_ws_handshake_status_code,
-                     (unsigned)event->error_handle.esp_tls_stack_err);
+            /* The client only initializes TLS/socket fields for TCP errors.
+             * Other error events can contain stale stack bytes there. */
+            bool tcp=event->error_handle.error_type==WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT;
+            ESP_LOGW(TAG, "WSS error: type=%d handshake=%d transport=0x%x TLS=%d flags=0x%x socket_errno=%d",
+                     event->error_handle.error_type,event->error_handle.esp_ws_handshake_status_code,
+                     tcp ? (unsigned)event->error_handle.esp_tls_last_esp_err : 0,
+                     tcp ? event->error_handle.esp_tls_stack_err : 0,
+                     tcp ? (unsigned)event->error_handle.esp_tls_cert_verify_flags : 0,
+                     tcp ? event->error_handle.esp_transport_sock_errno : 0);
             log_audio_heap("WSS failure RAM");
         }
         portENTER_CRITICAL(&s_mux); uint32_t generation = s_generation; portEXIT_CRITICAL(&s_mux);
@@ -878,6 +886,9 @@ static bool send_text(esp_websocket_client_handle_t client, const char *text)
     int64_t elapsed = (esp_timer_get_time() - started) / 1000;
     if (elapsed > 100) ESP_LOGW(TAG, "Slow WSS send: %lld ms, bytes=%u, pending=%u", (long long)elapsed,
                                 (unsigned)length, (unsigned)uxQueueMessagesWaiting(s_input));
+    if (sent != (int)length)
+        ESP_LOGW(TAG,"WSS send failed: sent=%d expected=%u elapsed=%lld ms timeout=%u ms",
+                 sent,(unsigned)length,(long long)elapsed,(unsigned)WSS_SEND_TIMEOUT_MS);
     return sent == (int)length;
 }
 static bool send_wake(esp_websocket_client_handle_t client, const input_t *frame)
@@ -1250,7 +1261,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
             cJSON_AddBoolToObject(value,"confirmation_required",true);
             cJSON_AddStringToObject(value,"next_action",count==1 ?
                 "Say the exact title and artist, ask if this is the right track, then WAIT for the user's next answer. Do not play yet." :
-                "Read all numbered titles and artists in this exact order, ask the user to choose, then WAIT. On their NEXT turn map an unambiguous number/title/artist to its id and play_music. Vague agreement is not a choice: ask which song. Never pick a default or play yet.");
+                "Read all numbered titles and artists in this exact order, ask the user to choose, then WAIT. On their NEXT turn map an unambiguous number/title/artist to its id and play_music. Vague agreement is not a choice: ask which song. If the NEXT user explicitly asks you to choose any song, pick one from this list and call play_music with its id. Firmware checks the actual received user selection. Do not play yet.");
         }
     } else if (!strcmp(name->valuestring,"play_music") || !strcmp(name->valuestring,"play_next_music")) {
         bool next=!strcmp(name->valuestring,"play_next_music");
@@ -1275,15 +1286,23 @@ static char *execute_tool(const input_t *frame, bool *end_session)
             if (!waiting || esp_timer_get_time()>=transcript_deadline) break;
             vTaskDelay(pdMS_TO_TICKS(10));
         }
-        bool evidence=valid && proof && music_selection_evidence((unsigned)position,selection->valuestring);
+        /* Authorize from received speech, not a model's copy of the transcript.
+         * Older callers may still send position/selection_text; id alone is enough. */
+        char actual_selection[sizeof(s_confirmation)]; unsigned offered_position=0;
+        portENTER_CRITICAL(&s_mux);
+        memcpy(actual_selection,s_confirmation,sizeof(actual_selection));
+        for (unsigned i=0;valid && i<s_music_offer.count;++i)
+            if (!strcmp(s_music_offer.ids[i],song->valuestring)) offered_position=i+1;
+        portEXIT_CRITICAL(&s_mux);
+        bool evidence=valid && offered_position && (!proof || (unsigned)position==offered_position) &&
+            music_selection_evidence(offered_position,actual_selection);
         portENTER_CRITICAL(&s_mux);
         bool confirmed=valid && s_active && !s_failed && s_epoch==frame->epoch && s_generation==frame->generation &&
             s_music_offer.pending && s_music_offer.spoken && s_music_offer.epoch==frame->epoch &&
             frame->generation==s_music_offer.generation+1 && music_offer_contains(song->valuestring) &&
             esp_timer_get_time()<=s_music_offer.deadline && s_confirmation[0] && !s_confirmation_overflow;
         if (confirmed && s_music_offer.count>1)
-            confirmed=evidence && (unsigned)position<=s_music_offer.count &&
-                !strcmp(s_music_offer.ids[position-1],song->valuestring) && !strcmp(s_confirmation,selection->valuestring);
+            confirmed=evidence && !strcmp(s_confirmation,actual_selection);
         if (next) {
             bool found=false;
             for (unsigned i=0;valid && i<s_music_choice_count;++i)
@@ -1294,11 +1313,15 @@ static char *execute_tool(const input_t *frame, bool *end_session)
         }
         if (confirmed) s_music_offer.pending=false;
         portEXIT_CRITICAL(&s_mux);
+        if (!next && (!valid || !confirmed)) {
+            ESP_LOGW(TAG,"Music selection rejected: args=%d offer_position=%u supplied_position=%d evidence=%d input_bytes=%u",
+                valid,offered_position,position,evidence,(unsigned)strlen(actual_selection));
+        }
         if (valid && !confirmed) {
             err=ESP_ERR_INVALID_STATE;
             cJSON_AddStringToObject(value,"code",next ? "music_next_unavailable" : "music_confirmation_required");
             cJSON_AddStringToObject(value,"error",next ? "Next music needs resumed music context, new actual user input and a DIFFERENT known id." : "A new user confirmation of the proposed track is required before playback.");
-            cJSON_AddStringToObject(value,"next_action",next ? "Search for a different song if no different choice is available. Never replay the last id or invent input." : "For multiple offered songs, supply matching position and selection_text copied verbatim from the FULL current input transcript. It must explicitly select a numbered song or an unambiguous full title/artist. Vague assent, negation or complex phrasing needs re-offering and clarification. Never invent or trim evidence. For one specific song, offer it and wait for confirmation.");
+            cJSON_AddStringToObject(value,"next_action",next ? "Search for a different song if no different choice is available. Never replay the last id or invent input." : "Firmware validates the actual received user transcript. For a clear selection, send the matching offered id; position and selection_text are optional legacy evidence. If clarification is needed, you MUST call offer_music again with the intended id (or ids for the list) BEFORE speaking the confirmation question, then WAIT for the next real user turn. A verbal confirmation question alone does not renew the offer. Never retry play_music on generic assent to an old multi-song list.");
         }
         if (valid && confirmed) {
             free(s_pending_music); s_pending_music = NULL;
