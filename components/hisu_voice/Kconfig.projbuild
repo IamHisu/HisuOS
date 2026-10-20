@@ -1,4 +1,10 @@
 menu "Hi Su voice"
+    config HISU_MEMORY_SUMMARY_MODEL
+        string "Gemini text model for post-session memory extraction"
+        default "gemini-3.5-flash-lite"
+        help
+            Uses only the primary Chat key while idle, online and externally
+            powered or battery >=20%. No model/key fallback. Requires quota.
     config HISU_VOICE_TTS_MODEL
         string "Gemini model for online reminder speech"
         default "gemini-2.5-flash-preview-tts"

@@ -133,13 +133,22 @@ titles and artists. Firmware stores only the bounded list of three ids, and
 allows playback of a member only after the offered reply finishes speaking and
 the next real user turn supplies a non-overflowing transcript within 60 seconds.
 Re-offering replaces the list; a new search, cancellation or new session invalidates
-it. Single-track confirmation remains supported. Gemini interprets ordinal/title/
-artist choices; firmware does not parse Vietnamese keywords or independently prove
-that a transcript selects the id Gemini supplies. The prompt requires clarification
-and re-offering on vague agreement, never defaulting to the first item. A clear
-selection is the confirmation; it does not need another confirmation question.
+it. Single-track confirmation remains supported. For multiple songs, play_music
+requires a 1-based position matching the offered id plus selection_text equal to
+the FULL current input transcript, not a selected substring. A conservative evidence
+validator accepts explicit ordinal choices or an unambiguous full title/artist,
+with common selection prefixes and polite suffixes. It never substring-matches a
+shared artist or interprets generic assent as a choice. Negative, conditional,
+quoted, multi-choice or unknown forms fail closed and require re-offering and
+clarification. Matching folds ASCII case and whitespace; Vietnamese UTF-8 accents
+remain intact. Unaccented ordinal forms are supported, but arbitrary spelling,
+accent/case variations and complex language may need clarification. This is an
+authorization check, not a substitute for Gemini's conversational understanding or
+a guarantee that speech recognition is correct. A clear supported selection is
+the confirmation; it does not need another confirmation question.
 Host tests validate list bounds, duplicates, unknown ids, order, every selected id,
-replacement, missing spoken reply and late transcription, not model understanding.
+replacement, missing spoken reply, late transcription, evidence mismatch, vague
+assent, shared identifiers and negative/conditional choices, not model understanding.
 The worker tests compile the actual implementation with HTTP, crypto, MP3 and
 RTOS mocks; they do not establish hardware decoding quality or live Gemini selection.
 Live endpoint/header checks and a successful firmware build are separate from

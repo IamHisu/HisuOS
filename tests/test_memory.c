@@ -5,8 +5,8 @@
 
 static void reboot(void)
 {
-    free(s_data); free(s_snapshot); free(s_recent);
-    s_data = s_snapshot = NULL; s_recent = NULL; s_lock = NULL;
+    free(s_data); free(s_snapshot); free(s_recent); free(s_summary_source);
+    s_data = s_snapshot = NULL; s_recent = s_summary_source = NULL; s_lock = NULL;
     mock_flash_budget = -1;
     assert(hisu_memory_init() == ESP_OK);
 }
@@ -26,6 +26,58 @@ static void mutate_during_flash(void)
     uint32_t id;
     assert(hisu_memory_remember("New fact during save", 0, &id) == ESP_OK);
 }
+static uint32_t summary_ticket(const char *statement)
+{
+    hisu_memory_summary_begin_turn(); hisu_memory_recent(true,statement); hisu_memory_summary_request();
+    uint32_t ticket=0; char *json=hisu_memory_summary_snapshot(&ticket);
+    assert(json && strstr(json,statement) && hisu_memory_summary_current(ticket)); free(json); return ticket;
+}
+static void summary_tests(void)
+{
+    const char *proposal="{\"facts\":[{\"fact\":\"Thích trả lời ngắn\",\"evidence\":\"Đừng nói dài, mình thích trả lời ngắn\",\"replace_id\":0,\"expected_fact\":\"\"}]}";
+    reset(); hisu_memory_recent(false,"Assistant invented a user preference"); hisu_memory_summary_request();
+    uint32_t ticket=0; assert(!hisu_memory_summary_snapshot(&ticket));
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    unsigned writes=mock_flash_operations,stored=0;
+    assert(hisu_memory_summary_apply(ticket,proposal,&stored)==ESP_OK && stored==1 && s_data->count==1);
+    assert(mock_flash_operations==writes && hisu_memory_pending() && !hisu_memory_summary_current(ticket));
+    assert(hisu_memory_flush()==ESP_OK); reboot(); assert(s_data->count==1);
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    assert(hisu_memory_summary_apply(ticket,proposal,&stored)==ESP_OK && stored==0 && s_data->count==1);
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    assert(hisu_memory_summary_apply(ticket,"{\"facts\":[{\"fact\":\"Valid\",\"evidence\":\"mình thích trả lời ngắn\",\"replace_id\":0,\"expected_fact\":\"\"},{\"fact\":\"Bad\",\"evidence\":\"Assistant invented this\",\"replace_id\":0,\"expected_fact\":\"\"}]}",&stored)==ESP_ERR_INVALID_ARG);
+    assert(s_data->count==1 && stored==0 && hisu_memory_summary_current(ticket));
+    assert(hisu_memory_summary_apply(ticket,"{\"facts\":[],\"tools\":[]}",&stored)==ESP_ERR_INVALID_ARG);
+    assert(hisu_memory_summary_apply(ticket,"{\"facts\":[]} trailing",&stored)==ESP_ERR_INVALID_ARG);
+    assert(hisu_memory_summary_apply(ticket,"{\"facts\":[[[[[[[[]]]]]]]]}",&stored)==ESP_ERR_INVALID_ARG);
+    assert(hisu_memory_summary_apply(ticket,"{\"facts\":[{\"fact\":\"bad\\u0000hidden\"}]}",&stored)==ESP_ERR_INVALID_ARG);
+    assert(hisu_memory_summary_apply(ticket,"{\"facts\":[{},{},{},{}]}",&stored)==ESP_ERR_INVALID_ARG);
+    uint32_t id=s_data->facts[0].id;
+    assert(hisu_memory_forget(id)==ESP_OK && !hisu_memory_summary_current(ticket));
+    hisu_memory_recent(true,"Đừng nói dài, mình thích trả lời ngắn"); /* Late transcript of deleted turn is blocked. */
+    hisu_memory_summary_request(); assert(!hisu_memory_summary_snapshot(&id));
+    assert(hisu_memory_summary_apply(ticket,proposal,&stored)==ESP_ERR_INVALID_STATE && !s_data->count);
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    assert(hisu_memory_set_enabled(false)==ESP_OK && hisu_memory_set_enabled(true)==ESP_OK);
+    assert(hisu_memory_summary_apply(ticket,proposal,&stored)==ESP_ERR_INVALID_STATE);
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    assert(hisu_memory_clear()==ESP_OK && hisu_memory_summary_apply(ticket,proposal,&stored)==ESP_ERR_INVALID_STATE);
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    hisu_memory_summary_begin_turn(); assert(!hisu_memory_summary_current(ticket));
+    reset();
+    for (unsigned i=0;i<HISU_MEMORY_COUNT;++i) {
+        char fact[32]; snprintf(fact,sizeof(fact),"Old %u",i); assert(hisu_memory_remember(fact,0,&id)==ESP_OK);
+    }
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    assert(hisu_memory_summary_apply(ticket,proposal,&stored)==ESP_OK && stored==0 && s_data->count==HISU_MEMORY_COUNT);
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    assert(hisu_memory_summary_apply(ticket,"{\"facts\":[{\"fact\":\"Updated\",\"evidence\":\"mình thích trả lời ngắn\",\"replace_id\":1,\"expected_fact\":\"Wrong old fact\"}]}",&stored)==ESP_ERR_INVALID_ARG);
+    assert(hisu_memory_summary_apply(ticket,"{\"facts\":[{\"fact\":\"Updated\",\"evidence\":\"mình thích trả lời ngắn\",\"replace_id\":1,\"expected_fact\":\"Old 0\"}]}",&stored)==ESP_OK && stored==1);
+    assert(s_data->count==HISU_MEMORY_COUNT && s_data->facts[0].id==1 && !strcmp(s_data->facts[0].text,"Updated"));
+    ticket=summary_ticket("Đừng nói dài, mình thích trả lời ngắn");
+    assert(hisu_memory_remember("Concurrent update",1,&id)==ESP_OK && !hisu_memory_summary_current(ticket));
+    reset();
+}
 int main(void)
 {
     assert(!hisu_memory_pending());
@@ -42,7 +94,7 @@ int main(void)
     memset(limit, 'a', sizeof(limit)); limit[256] = 0;
     assert(hisu_memory_fact_valid(limit)); limit[256] = 'a'; limit[257] = 0;
     assert(!hisu_memory_fact_valid(limit));
-    reset();
+    summary_tests(); reset();
     uint32_t id, same;
     unsigned writes = mock_flash_operations;
     assert(hisu_memory_remember("Likes quiet music", 0, &id) == ESP_OK && id == 1);
@@ -166,8 +218,8 @@ int main(void)
     mock_flash[HISU_MEMORY_OFFSET + s_slot * HISU_MEMORY_SLOT_BYTES + sizeof(hisu_memory_record_t)] ^= 1;
     reboot();
     assert(s_data->count == 1 && !strcmp(s_data->facts[0].text,"CRC fallback old"));
-    free(s_data); free(s_snapshot); free(s_recent); s_lock = NULL;
-    s_data = s_snapshot = NULL; s_recent = NULL;
+    free(s_data); free(s_snapshot); free(s_recent); free(s_summary_source); s_lock = NULL;
+    s_data = s_snapshot = NULL; s_recent = s_summary_source = NULL;
     mock_alloc_budget = 1;
     assert(hisu_memory_init() == ESP_ERR_NO_MEM && !s_lock && !s_data && !s_snapshot && !s_recent);
     mock_alloc_budget = -1;

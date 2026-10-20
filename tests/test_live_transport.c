@@ -8,6 +8,9 @@
 #include "../components/hisu_voice/src/hisu_voice_live.c"
 
 static bool mock_memory_enabled = true;
+void hisu_memory_summary_request(void) {}
+void hisu_memory_summary_begin_turn(void) {}
+bool voice_memory_summary_poll(bool (*idle)(void)) { return false; }
 static hisu_power_status_t mock_alert_power;
 static int mock_alert_index = -1;
 static unsigned mock_alert_played, mock_alert_reads;
@@ -17,6 +20,7 @@ void hisu_feedback_init(void) {}
 size_t hisu_feedback_size(unsigned index) { return !mock_feedback_missing && index<4 ? 24000 : 0; }
 esp_err_t hisu_feedback_read(unsigned index,size_t offset,void *pcm,size_t bytes) {
     assert(voice_live_feedback_busy());
+    assert(!s_idle_maintenance);
     assert(index<4 && offset+bytes<=24000 && !(bytes&1U));
     if (mock_feedback_read_error) return ESP_FAIL;
     int16_t *samples=pcm;
@@ -270,7 +274,7 @@ static void device_tool_tests(void) {
     cJSON *setup=cJSON_Parse(setup_body); free(setup_body); assert(setup);
     cJSON *config=cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"generationConfig");
     cJSON *instruction=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"systemInstruction"),"parts"),0),"text");
-    assert(strstr(instruction->valuestring,"reply with one very short natural spoken phrase"));
+    assert(strstr(instruction->valuestring,"Do not add a second greeting"));
     assert(!strncmp(instruction->valuestring,"Bạn là Hi Su",strlen("Bạn là Hi Su")));
     assert(strstr(instruction->valuestring,"Luôn nói tiếng Việt tự nhiên"));
     assert(strstr(instruction->valuestring,"thiết bị cá nhân chạy HisuOS"));
@@ -442,6 +446,10 @@ static void startup_feedback_tests(void)
     assert(!s_speaker_enabled && !s_feedback.kind && !play_feedback());
     assert(!voice_live_feedback_busy());
     assert(s_start.seen&(1U<<VOICE_START_CUE));
+    voice_live_feedback(false); s_idle_maintenance=true; written=mock_i2s_written_bytes;
+    assert(!play_feedback() && s_feedback.kind==1 && mock_i2s_written_bytes==written);
+    s_idle_maintenance=false;
+    assert(play_feedback() && mock_i2s_written_bytes>written);
     device_settings[HISU_SETTING_SPEAKER]=0; voice_live_feedback(true); written=mock_i2s_written_bytes;
     assert(play_feedback() && mock_i2s_written_bytes==written);
     device_settings[HISU_SETTING_SPEAKER]=1; device_settings[HISU_SETTING_VOLUME]=0;
@@ -484,6 +492,10 @@ static void startup_feedback_tests(void)
 
 static void reminder_tests(void)
 {
+    reset();
+    voice_live_close(); mock_alert_power=(hisu_power_status_t){.valid=true,.percent=80};
+    assert(idle_for_memory_summary());
+    mock_schedule_due=true; assert(!idle_for_memory_summary());
     reset();
     check_tool("get_clock","{}",true);
     check_tool("set_schedule","{\"text\":\"Đi sửa xe\",\"local_time\":\"2027-01-15T10:00:00\"}",true);
@@ -629,7 +641,26 @@ static void extended_tool_tests(void) {
 }
 
 static void wake_reply_tests(void) {
+    reset(); s_ready=false; voice_live_feedback(false);
+    receive("{\"setupComplete\":{}}");
+    assert(events[LIVE_READY]==1 && sent_count==0 && !s_turn.response_pending);
+    announce_initial_listening(); assert(!events[LIVE_LISTENING] && voice_live_feedback_busy());
+    s_feedback.kind=0; s_feedback_playing=true;
+    announce_initial_listening(); assert(!events[LIVE_LISTENING]);
+    s_feedback_playing=false; announce_initial_listening();
+    assert(events[LIVE_LISTENING]==1 && !voice_live_feedback_busy() && !mock_text_sends);
+    receive("{\"setupComplete\":{}}"); announce_initial_listening();
+    assert(events[LIVE_READY]==1 && events[LIVE_LISTENING]==1 && sent_count==0);
+    input_t obsolete_wake={.epoch=s_epoch,.generation=s_generation};
+    assert(send_wake((void *)1,&obsolete_wake) && !s_turn.response_pending && !mock_text_sends);
+    reset(); s_ready=false; receive("{\"setupComplete\":{}}");
+    voice_live_close(); announce_initial_listening(); assert(!events[LIVE_LISTENING]);
+    reset(); s_ready=false; receive("{\"setupComplete\":{}}");
+    assert(voice_live_interrupt(11)); announce_initial_listening();
+    assert(events[LIVE_LISTENING]==1 && last_generation==11 && !mock_text_sends);
+    /* Mode/bootstrap speech retains the existing fenced response path. */
     reset(); s_ready=false;
+    s_resume_kind=4;
     receive("{\"setupComplete\":{}}");
     assert(events[LIVE_READY]==1 && sent_count==1 && sent[0].kind==6);
     receive("{\"setupComplete\":{}}");
@@ -642,7 +673,7 @@ static void wake_reply_tests(void) {
     cJSON *turn=cJSON_GetArrayItem(cJSON_GetObjectItem(content,"turns"),0);
     assert(!strcmp(cJSON_GetObjectItem(turn,"role")->valuestring,"user"));
     cJSON *part=cJSON_GetArrayItem(cJSON_GetObjectItem(turn,"parts"),0);
-    assert(!strcmp(cJSON_GetObjectItem(part,"text")->valuestring,"Hi Su")); cJSON_Delete(wire);
+    assert(strstr(cJSON_GetObjectItem(part,"text")->valuestring,"ordinary conversation is ready")); cJSON_Delete(wire);
     receive(audio_done);
     assert(output_count==3 && output[0].cue==1 && output[2].done && events[LIVE_TEXT]==0);
     playback_caption_t caption={0};
@@ -652,6 +683,7 @@ static void wake_reply_tests(void) {
     assert(!s_turn.response_pending); /* Normal playback completion opens listening again. */
 
     reset(); s_ready=false;
+    s_resume_kind=4;
     assert(voice_live_interrupt(11));
     receive("{\"setupComplete\":{}}");
     assert(sent_count==1 && sent[0].generation==11);
@@ -659,24 +691,24 @@ static void wake_reply_tests(void) {
     receive(audio_done);
     assert(output_count==3 && output[2].generation==11);
 
-    reset(); s_ready=false; receive("{\"setupComplete\":{}}");
+    reset(); s_ready=false; s_resume_kind=4; receive("{\"setupComplete\":{}}");
     input_t wake=sent[0];
     assert(voice_live_interrupt(11));
     assert(send_wake((void *)1,&wake) && mock_text_sends==0); /* Superseded before send. */
-    reset(); s_ready=false; receive("{\"setupComplete\":{}}");
+    reset(); s_ready=false; s_resume_kind=4; receive("{\"setupComplete\":{}}");
     wake=sent[0]; voice_live_close();
     assert(send_wake((void *)1,&wake) && mock_text_sends==0);
 
-    reset(); s_ready=false; receive("{\"setupComplete\":{}}");
+    reset(); s_ready=false; s_resume_kind=4; receive("{\"setupComplete\":{}}");
     assert(send_wake((void *)1,&sent[0]));
     assert(voice_live_interrupt(11) && s_turn.obsolete_turns==1);
     receive(audio_done);
     assert(output_count==0 && events[LIVE_TEXT]==0); /* Interrupted greeting is discarded. */
 
-    reset(); s_ready=false; full_input=true;
+    reset(); s_ready=false; s_resume_kind=4; full_input=true;
     receive("{\"setupComplete\":{}}");
     assert(events[LIVE_ERROR]==1 && !voice_live_ready());
-    reset(); s_ready=false; receive("{\"setupComplete\":{}}");
+    reset(); s_ready=false; s_resume_kind=4; receive("{\"setupComplete\":{}}");
     mock_send_failure=true;
     assert(!send_wake((void *)1,&sent[0])); /* Caller fails the session on send error. */
 }
@@ -789,6 +821,24 @@ static void offer_test_list(void)
 }
 static void music_list_offer_tests(void)
 {
+    assert(music_choice_ordinal("Chọn bài thứ hai nha.")==2);
+    assert(music_choice_ordinal("MO BAI THU 3 NHE!")==3);
+    assert(!music_choice_ordinal("không chọn bài thứ hai"));
+    assert(!music_choice_ordinal("bài thứ hai?"));
+    assert(!music_choice_ordinal("\"bài thứ hai\""));
+    assert(music_choice_phrase("Mở Sóng Gió đi.","Sóng Gió"));
+    assert(!music_choice_phrase("Không mở Sóng Gió","Sóng Gió"));
+    assert(!music_choice_phrase("Mở Sóng Gió và Hồng Nhan","Sóng Gió"));
+    char oversized[180]; memset(oversized,'a',sizeof(oversized)-1); oversized[sizeof(oversized)-1]=0;
+    assert(!music_choice_phrase(oversized,"a"));
+    reset(); offer_test_list();
+    strcpy(s_music_choices[0].title,"Lạc Trôi");
+    assert(music_selection_evidence(2,"Mở Lạc Trôi đi."));
+    assert(!music_selection_evidence(1,"Mở Lạc Trôi đi."));
+    assert(!music_selection_evidence(2,"Jack, K-ICM"));
+    strcpy(s_music_choices[0].artist,"Sơn Tùng M-TP");
+    assert(music_selection_evidence(2,"Sơn Tùng M-TP"));
+    assert(!music_selection_evidence(1,"Sơn Tùng M-TP"));
     reset(); check_tool("search_music","{\"query\":\"test\"}",true);
     const char *invalid[]={"{}","{\"ids\":[]}","{\"ids\":[\"song1\",\"song2\",\"qYD31k5TVTCQ\",\"extra\"]}",
         "{\"ids\":[\"song1\",\"song1\"]}","{\"ids\":[\"unknown\"]}","{\"ids\":[7]}",
@@ -804,7 +854,7 @@ static void music_list_offer_tests(void)
         char wire[150]; snprintf(wire,sizeof(wire),"{\"serverContent\":{\"inputTranscription\":{\"text\":\"Bài thứ %u\"}}}",selected+1);
         receive(wire);
         static const char *const ids[]={"song2","qYD31k5TVTCQ","song1"};
-        char args[96]; snprintf(args,sizeof(args),"{\"id\":\"%s\"}",ids[selected]);
+        char args[180]; snprintf(args,sizeof(args),"{\"id\":\"%s\",\"position\":%u,\"selection_text\":\"Bài thứ %u\"}",ids[selected],selected+1,selected+1);
         bool ended=false; cJSON *result=invoke_tool("play_music",args,&ended);
         /* Model maps meaning; firmware validates membership and turn boundaries. */
         assert(ended && cJSON_IsTrue(cJSON_GetObjectItem(result,"ok")) && s_pending_music);
@@ -830,7 +880,28 @@ static void music_list_offer_tests(void)
     reset(); offer_test_list(); s_reply_state.audio=true; finish_spoken_reply(s_epoch,s_generation);
     assert(voice_live_begin(s_generation+1)); live_turn_end(&s_turn);
     mock_delay_hook=late_music_transcript;
-    bool ended=false; cJSON *result=invoke_tool("play_music","{\"id\":\"song2\"}",&ended);
+    check_tool("play_music","{\"id\":\"song2\",\"position\":1,\"selection_text\":\"Đúng rồi\"}",false);
+    assert(!s_pending_music);
+    const char *rejected[]={"Ừ","Được","Không chọn bài thứ hai","Bài thứ hai hay thứ ba","Bạn nói bài thứ hai à?","Nếu chọn bài thứ hai thì sao", "Jack, K-ICM"};
+    for (unsigned i=0;i<sizeof(rejected)/sizeof(*rejected);++i) {
+        reset(); offer_test_list(); s_reply_state.audio=true; finish_spoken_reply(s_epoch,s_generation);
+        assert(voice_live_begin(s_generation+1)); live_turn_end(&s_turn);
+        snprintf(s_confirmation,sizeof(s_confirmation),"%s",rejected[i]);
+        char args[300]; snprintf(args,sizeof(args),"{\"id\":\"qYD31k5TVTCQ\",\"position\":2,\"selection_text\":\"%s\"}",rejected[i]);
+        check_tool("play_music",args,false); assert(!s_pending_music);
+    }
+    reset(); offer_test_list(); s_reply_state.audio=true; finish_spoken_reply(s_epoch,s_generation);
+    assert(voice_live_begin(s_generation+1)); live_turn_end(&s_turn); strcpy(s_confirmation,"Bài thứ hai");
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\"}",false);
+    check_tool("play_music","{\"id\":\"song1\",\"position\":2,\"selection_text\":\"Bài thứ hai\"}",false);
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":1,\"selection_text\":\"Bài thứ hai\"}",false);
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":2.5,\"selection_text\":\"Bài thứ hai\"}",false);
+    strcpy(s_confirmation,"Sóng Gió");
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":2,\"selection_text\":\"Sóng Gió\"}",false); /* Mock choices share this title. */
+    strcpy(s_confirmation,"Không chọn bài thứ hai");
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":2,\"selection_text\":\"Bài thứ hai\"}",false);
+    strcpy(s_confirmation,"Bài thứ hai nha");
+    bool ended=false; cJSON *result=invoke_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":2,\"selection_text\":\"Bài thứ hai nha\"}",&ended);
     assert(ended && cJSON_IsTrue(cJSON_GetObjectItem(result,"ok"))); cJSON_Delete(result);
     reset();
 }

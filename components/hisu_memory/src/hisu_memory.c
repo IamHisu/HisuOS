@@ -1,5 +1,6 @@
 #include "hisu_memory.h"
 #include "hisu_memory_model.h"
+#include "hisu_memory_json_guard.h"
 #include "esp_partition.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -13,11 +14,20 @@ static SemaphoreHandle_t s_lock;
 static const esp_partition_t *s_partition;
 static hisu_memory_data_t *s_data, *s_snapshot;
 static char *s_recent;
+static char *s_summary_source;
+static uint32_t s_summary_ticket;
+static bool s_summary_requested;
+static bool s_summary_blocked,s_summary_new_turn;
 static bool s_recent_user, s_dirty, s_flushing, s_purge;
 static uint32_t s_revision, s_sequence;
 static int s_slot = -1;
 static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
+static void summary_clear_locked(void)
+{
+    memset(s_summary_source,0,HISU_MEMORY_RECENT_BYTES+1);
+    s_summary_requested=false; s_summary_blocked=true; s_summary_new_turn=true; ++s_summary_ticket;
+}
 static bool erased(const void *data, size_t bytes)
 {
     const uint8_t *p = data;
@@ -30,13 +40,16 @@ esp_err_t hisu_memory_init(void)
     if (s_lock) return ESP_ERR_INVALID_STATE;
     s_slot = -1; s_sequence = s_revision = 0;
     s_dirty = s_flushing = s_purge = false;
+    s_summary_ticket=1; s_summary_requested=false;
+    s_summary_blocked=false; s_summary_new_turn=true;
     s_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "storage");
     if (!s_partition || s_partition->size < HISU_MEMORY_OFFSET + 2U * HISU_MEMORY_SLOT_BYTES)
         return ESP_ERR_NOT_FOUND;
     s_data = heap_caps_calloc(1, sizeof(*s_data), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_snapshot = heap_caps_calloc(1, sizeof(*s_snapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_recent = heap_caps_calloc(1, HISU_MEMORY_RECENT_BYTES + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_data || !s_snapshot || !s_recent) goto no_memory;
+    s_summary_source=heap_caps_calloc(1,HISU_MEMORY_RECENT_BYTES+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!s_data || !s_snapshot || !s_recent || !s_summary_source) goto no_memory;
     s_data->next_id = 1; s_data->enabled = 1;
     bool found = false, occupied[2] = {false, false};
     for (int slot = 0; slot < 2; ++slot) {
@@ -45,8 +58,8 @@ esp_err_t hisu_memory_init(void)
         esp_err_t err = esp_partition_read(s_partition, offset, &header, sizeof(header));
         if (err == ESP_OK) err = esp_partition_read(s_partition, offset + sizeof(header), s_snapshot, sizeof(*s_snapshot));
         if (err != ESP_OK) {
-            free(s_data); free(s_snapshot); free(s_recent);
-            s_data = s_snapshot = NULL; s_recent = NULL;
+            free(s_data); free(s_snapshot); free(s_recent); free(s_summary_source);
+            s_data = s_snapshot = NULL; s_recent = s_summary_source = NULL;
             return err;
         }
         occupied[slot] = !erased(&header, sizeof(header)) || !erased(s_snapshot, sizeof(*s_snapshot));
@@ -61,8 +74,8 @@ esp_err_t hisu_memory_init(void)
     s_lock = xSemaphoreCreateMutex();
     if (s_lock) return ESP_OK;
 no_memory:
-    free(s_data); free(s_snapshot); free(s_recent);
-    s_data = s_snapshot = NULL; s_recent = NULL;
+    free(s_data); free(s_snapshot); free(s_recent); free(s_summary_source);
+    s_data = s_snapshot = NULL; s_recent = s_summary_source = NULL;
     return ESP_ERR_NO_MEM;
 }
 
@@ -77,7 +90,7 @@ esp_err_t hisu_memory_remember(const char *fact, uint32_t replace_id, uint32_t *
             *id = replace_id;
             if (strcmp(s_data->facts[i].text, fact)) {
                 memset(s_data->facts[i].text, 0, sizeof(s_data->facts[i].text));
-                strcpy(s_data->facts[i].text, fact); s_dirty = true; ++s_revision;
+                strcpy(s_data->facts[i].text, fact); s_dirty = true; ++s_revision; ++s_summary_ticket;
             }
             unlock(); return ESP_OK;
         }
@@ -92,7 +105,7 @@ esp_err_t hisu_memory_remember(const char *fact, uint32_t replace_id, uint32_t *
     hisu_memory_fact_t *entry = &s_data->facts[s_data->count++];
     entry->id = s_data->next_id++;
     strcpy(entry->text, fact); *id = entry->id;
-    s_dirty = true; ++s_revision;
+    s_dirty = true; ++s_revision; ++s_summary_ticket;
     unlock(); return ESP_OK;
 }
 
@@ -120,7 +133,7 @@ esp_err_t hisu_memory_evict_and_remember(const char *fact, uint32_t evict_id,
     memset(entry, 0, sizeof(*entry));
     entry->id = s_data->next_id++;
     strcpy(entry->text, fact); *id = entry->id;
-    s_dirty = true; ++s_revision;
+    s_dirty = true; ++s_revision; summary_clear_locked();
     unlock(); return ESP_OK;
 }
 
@@ -132,7 +145,7 @@ esp_err_t hisu_memory_forget(uint32_t id)
         memmove(&s_data->facts[i], &s_data->facts[i + 1], (s_data->count - i - 1) * sizeof(s_data->facts[0]));
         memset(&s_data->facts[--s_data->count], 0, sizeof(s_data->facts[0]));
         memset(s_recent, 0, HISU_MEMORY_RECENT_BYTES + 1);
-        s_dirty = true; ++s_revision; unlock(); return ESP_OK;
+        summary_clear_locked(); s_dirty = true; ++s_revision; unlock(); return ESP_OK;
     }
     unlock(); return ESP_ERR_NOT_FOUND;
 }
@@ -145,6 +158,7 @@ esp_err_t hisu_memory_clear(void)
     memset(s_data, 0, sizeof(*s_data));
     s_data->next_id = next; s_data->enabled = enabled;
     memset(s_recent, 0, HISU_MEMORY_RECENT_BYTES + 1);
+    summary_clear_locked();
     s_dirty = true; ++s_revision; unlock(); return ESP_OK;
 }
 
@@ -152,7 +166,9 @@ esp_err_t hisu_memory_set_enabled(bool enabled)
 {
     if (!s_lock) return ESP_ERR_INVALID_STATE;
     lock();
-    if (s_data->enabled != (uint32_t)enabled) { s_data->enabled = enabled; s_dirty = true; ++s_revision; }
+    if (s_data->enabled != (uint32_t)enabled) {
+        s_data->enabled = enabled; s_dirty = true; ++s_revision; summary_clear_locked();
+    }
     unlock(); return ESP_OK;
 }
 
@@ -227,6 +243,18 @@ void hisu_memory_recent(bool user, const char *text)
     size_t bytes = strlen(text);
     if (bytes > HISU_MEMORY_RECENT_BYTES / 2) return;
     lock();
+    if (user && s_data->enabled && !s_summary_blocked) {
+        size_t n=strlen(s_summary_source);
+        bool separator=n && s_summary_new_turn;
+        size_t added=bytes+(separator ? 1U : 0U);
+        if (n+added>HISU_MEMORY_RECENT_BYTES) {
+            size_t discard=n+added-HISU_MEMORY_RECENT_BYTES;
+            while (discard<n && ((unsigned char)s_summary_source[discard]&0xc0)==0x80) ++discard;
+            memmove(s_summary_source,s_summary_source+discard,n-discard+1); n-=discard;
+        }
+        if (separator) s_summary_source[n++]='\n';
+        memcpy(s_summary_source+n,text,bytes+1); s_summary_new_turn=false; ++s_summary_ticket;
+    }
     const char *label = user ? "\nUser: " : "\nHi Su: ";
     bool prefix = !s_recent[0] || user != s_recent_user;
     size_t used = strlen(s_recent), added = bytes + (prefix ? strlen(label) : 0);
@@ -245,7 +273,97 @@ void hisu_memory_recent(bool user, const char *text)
 void hisu_memory_clear_recent(void)
 {
     if (!s_lock) return;
-    lock(); memset(s_recent, 0, HISU_MEMORY_RECENT_BYTES + 1); unlock();
+    lock(); memset(s_recent, 0, HISU_MEMORY_RECENT_BYTES + 1); summary_clear_locked(); unlock();
+}
+
+void hisu_memory_summary_request(void)
+{
+    if (!s_lock) return;
+    lock(); if (s_data->enabled && s_summary_source[0]) s_summary_requested=true; unlock();
+}
+void hisu_memory_summary_begin_turn(void)
+{
+    if (!s_lock) return;
+    lock(); s_summary_blocked=false; s_summary_new_turn=true; ++s_summary_ticket; unlock();
+}
+bool hisu_memory_summary_current(uint32_t ticket)
+{
+    if (!s_lock) return false;
+    lock(); bool current=s_data->enabled && s_summary_requested && ticket==s_summary_ticket; unlock(); return current;
+}
+void hisu_memory_summary_done(uint32_t ticket)
+{
+    if (!s_lock) return;
+    lock(); if (ticket==s_summary_ticket) summary_clear_locked(); unlock();
+}
+char *hisu_memory_summary_snapshot(uint32_t *ticket)
+{
+    if (!s_lock || !ticket) return NULL;
+    lock(); bool ready=s_data->enabled && s_summary_requested && s_summary_source[0]; unlock();
+    if (!ready) return NULL;
+    const size_t capacity=HISU_MEMORY_COUNT*(HISU_MEMORY_FACT_BYTES*2+64)+HISU_MEMORY_RECENT_BYTES*6+512;
+    char *out=heap_caps_calloc(1,capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!out) return NULL;
+    lock();
+    size_t used=(size_t)snprintf(out,capacity,"{\"known_facts\":");
+    bool ok=s_data->enabled && s_summary_requested && s_summary_source[0] && write_facts(out,capacity,&used,false);
+    static const char field[]=",\"user_statements\":";
+    if (ok && used+sizeof(field)<capacity) { memcpy(out+used,field,sizeof(field)); used+=sizeof(field)-1; }
+    else ok=false;
+    cJSON *source=ok ? cJSON_CreateString(s_summary_source) : NULL;
+    ok=source && cJSON_PrintPreallocated(source,out+used,(int)(capacity-used),false);
+    cJSON_Delete(source);
+    if (ok) { used+=strlen(out+used); ok=used+2<capacity; }
+    if (ok) { out[used++]='}'; out[used]=0; *ticket=s_summary_ticket; }
+    unlock();
+    if (!ok) { free(out); return NULL; }
+    return out;
+}
+esp_err_t hisu_memory_summary_apply(uint32_t ticket,const char *proposals,unsigned *stored)
+{
+    if (stored) *stored=0;
+    if (!s_lock) return ESP_ERR_INVALID_STATE;
+    if (!proposals || strlen(proposals)>4096 || strstr(proposals,"\\u0000") || !hisu_memory_json_shallow(proposals,6)) return ESP_ERR_INVALID_ARG;
+    cJSON *root=cJSON_ParseWithOpts(proposals,NULL,true);
+    const cJSON *facts=cJSON_GetObjectItemCaseSensitive(root,"facts");
+    bool valid=cJSON_IsObject(root) && cJSON_GetArraySize(root)==1 && cJSON_IsArray(facts) && cJSON_GetArraySize(facts)<=3;
+    hisu_memory_data_t *stage=valid ? heap_caps_calloc(1,sizeof(*stage),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT) : NULL;
+    if (!valid || !stage) { cJSON_Delete(root); return valid ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG; }
+    lock();
+    if (!s_data->enabled || !s_summary_requested || ticket!=s_summary_ticket) {
+        unlock(); free(stage); cJSON_Delete(root); return ESP_ERR_INVALID_STATE;
+    }
+    *stage=*s_data; unsigned changed=0;
+    const cJSON *item;
+    cJSON_ArrayForEach(item,facts) {
+        const cJSON *fact=cJSON_GetObjectItemCaseSensitive(item,"fact"),*evidence=cJSON_GetObjectItemCaseSensitive(item,"evidence");
+        const cJSON *replace=cJSON_GetObjectItemCaseSensitive(item,"replace_id"),*expected=cJSON_GetObjectItemCaseSensitive(item,"expected_fact");
+        valid=cJSON_IsObject(item) && cJSON_GetArraySize(item)==4 && cJSON_IsString(fact) && hisu_memory_fact_valid(fact->valuestring) &&
+            cJSON_IsString(evidence) && hisu_memory_fact_valid(evidence->valuestring) && strlen(evidence->valuestring)>=8 &&
+            strstr(s_summary_source,evidence->valuestring) && cJSON_IsNumber(replace) && replace->valuedouble>=0 &&
+            replace->valuedouble<INT32_MAX && replace->valuedouble==replace->valueint && cJSON_IsString(expected);
+        if (!valid) break;
+        uint32_t index=stage->count;
+        for (uint32_t i=0;i<stage->count;++i) if (!strcmp(stage->facts[i].text,fact->valuestring)) { index=i; break; }
+        if (index<stage->count) continue;
+        if (replace->valueint) {
+            for (uint32_t i=0;i<stage->count;++i) if (stage->facts[i].id==(uint32_t)replace->valueint) { index=i; break; }
+            if (index==stage->count || strcmp(stage->facts[index].text,expected->valuestring)) { valid=false; break; }
+        } else {
+            if (expected->valuestring[0]) { valid=false; break; }
+            if (stage->count==HISU_MEMORY_COUNT) continue;
+            if (stage->next_id>=INT32_MAX) { valid=false; break; }
+            stage->facts[index].id=stage->next_id++; ++stage->count;
+        }
+        memset(stage->facts[index].text,0,sizeof(stage->facts[index].text));
+        strcpy(stage->facts[index].text,fact->valuestring); ++changed;
+    }
+    if (valid) {
+        if (changed) { *s_data=*stage; s_dirty=true; ++s_revision; }
+        summary_clear_locked(); if (stored) *stored=changed;
+    }
+    unlock(); free(stage); cJSON_Delete(root);
+    return valid ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
 bool hisu_memory_pending(void)

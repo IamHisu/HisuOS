@@ -83,6 +83,9 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         s_reply[0] = s_utterance[0] = 0;
         s_session.state = VOICE_PROCESSING;
         (void)hisu_ui_post_status(HISU_UI_THINKING, text);
+    } else if (event == LIVE_LISTENING) {
+        s_reply[0]=s_utterance[0]=0;
+        if (voice_session_finish(&s_session,generation,now_ms())) post_listening();
     } else if (event == LIVE_TEXT) {
         if (voice_live_uses_memory()) hisu_memory_recent(false, text);
         voice_caption_append(s_reply, sizeof(s_reply), text);

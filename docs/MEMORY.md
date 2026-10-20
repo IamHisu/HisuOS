@@ -1,8 +1,9 @@
 # Hisu Memory
 
 This is an independent HisuOS implementation, not the MimiClaw agent loop. Gemini
-Live selects facts through bounded device tools; no filesystem, second model,
-vector database or background task is added.
+Live selects facts through bounded device tools. An optional post-session Gemini
+text extraction now supplements these tools; no filesystem, vector database,
+agent loop or additional background task is added.
 
 ## Two Lifetimes
 
@@ -64,6 +65,63 @@ remote context cannot be retroactively erased: close and reopen a voice session
 to use a fresh context. Local deletion is not a request to delete data already
 sent to the API provider.
 
+## Post-Session Extraction
+
+Closing a session queues extraction only if actual Chat user transcription exists.
+A separate 2048-byte PSRAM buffer contains user text only, not assistant replies,
+Reader stories or interpreter output. Microphone-turn boundaries delimit excerpts;
+streamed chunks of one utterance remain contiguous. This is bounded volatile data,
+not a complete transcript, and is never saved to flash.
+
+The existing live_send worker makes one bounded text request when the device is
+idle, Internet is ONLINE, the Setting hotspot is inactive, and battery reporting
+is valid with either external power or at least 20% battery. Power is checked
+throughout; unplugging below 20%, a new wake/turn, a due reminder, music or output
+cancels/defer the work. Cancellation is cooperative: an individual SDK DNS/TLS/HTTP
+step may take up to its configured timeout (1 second); no zero-latency guarantee.
+Offline wake feedback can play during cancellation. Flash maintenance is finished
+before this HTTP call, and accepted facts are only marked dirty in RAM for the
+normal gated idle flush later.
+
+Default text model: `gemini-3.5-flash-lite`, configurable under Hi Su voice /
+`HISU_MEMORY_SUMMARY_MODEL`. It uses ONLY the primary Chat key, no automatic key,
+model or paid-tier fallback. It does not enable billing. API quota/charges depend
+on the configured Google project; availability/free access is not guaranteed.
+Requests have no tools, maxOutputTokens=1024, JSON Schema output, an 8192-byte
+response ceiling, depth limits before recursive parsing, and a 10-second overall
+deadline. TLS is released before proposal parsing. Logs contain only result code,
+HTTP status, accepted count, cancellation, request count and stack watermark.
+
+There are at most 12 API attempts per boot and at least 10 minutes between normal
+attempts. HTTP errors impose a one-hour cooldown; a failed completed job is dropped,
+not retried automatically. Cancellation retains pending data for a later idle
+opportunity after 30 seconds, still within the attempt cap. Preconditions/missing
+key do not rotate credentials or consume an API attempt. A reboot clears pending
+data and these in-RAM counters; this is not a persistent daily quota limiter.
+
+The model proposes at most three stable facts, prioritizing user corrections,
+preferred address, preferences, habits and projects. Known facts and user text are
+explicitly untrusted data. Each proposal needs a verbatim 8-256-byte evidence span
+from user text, valid fact UTF-8 <=256 bytes, and only the supported fields. Existing
+facts can be corrected only with the same id and exact expected old text. Validation
+is atomic: one invalid proposal rejects the batch. Exact duplicates are skipped;
+semantic deduplication and sensitive-data exclusion remain model instructions, not
+a deterministic privacy guarantee. Facts can be reviewed/deleted in Setting > Device.
+
+At 24 facts, background extraction skips new additions; it does NOT evict unrelated
+facts. Corrections still work. The existing Live remember/evict_id workflow remains
+available for semantic eviction during a conversation. No prompt/tool self-editing.
+
+Turning automatic memory off prevents collection and transmission. Forget, clear,
+clear recent, disabling/re-enabling memory and eviction clear queued source data
+and invalidate in-flight results. Late chunks of that user turn are suppressed
+until a new microphone turn. Every new input turn, source change or memory edit
+also invalidates stale snapshots before commit. Deletion cannot retract requests
+already sent to Google or erase an already-open Live remote context.
+
+Sources: [Google model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite),
+[structured JSON output](https://ai.google.dev/gemini-api/docs/generate-content/structured-output).
+
 ## Storage and Flash Ownership
 
 The existing `storage` partition is unchanged. Shared layout constants reserve
@@ -96,7 +154,9 @@ control. Old records are erased after successful commits, but this is not a
 forensic secure-erasure guarantee. Flash remains unencrypted.
 
 Persistent data and snapshot buffers use about 12.5 KiB PSRAM, plus a 2 KiB recent
-excerpt. JSON buffers and connection setup are bounded transient PSRAM buffers;
+excerpt and 2 KiB user-only extraction buffer. Extraction also temporarily stages
+one roughly 6.25 KiB fact table for atomic validation. JSON/request/response and
+connection setup buffers are bounded transient allocations;
 facts serialize one at a time to limit internal-heap peaks. No new task stack is
 reserved. The component retains the 2048-byte stack-frame compiler guard.
 
@@ -106,7 +166,12 @@ reserved. The component retains the 2048-byte stack-frame compiler guard.
 It tests bounds/UTF-8, duplicates, corrections, disabled mode, reboot recall,
 torn payload/header writes, power loss before retirement, removal of old text,
 atomic full-capacity eviction, stale target rejection and fresh-id behavior,
-changes during a save and cleanup after allocation failure. Voice host tests
+changes during a save and cleanup after allocation failure. It also tests extracted
+fact evidence, all-or-nothing proposals, full capacity, corrections, disabled mode,
+stale snapshots, deletion and suppression of late source fragments. `tools/test-alert.ps1`
+also runs the real summary HTTP client with mocked transport: battery 20%/charging,
+idle/online/setup gates, cancellation, quota cooldown, bounded response/timeout,
+TLS cleanup and per-boot request cap. No real key or network call is used. Voice host tests
 cover the three tools and dynamic setup escaping. Browser tests cover memory
 controls, confirmation, safe text rendering and overflow at 1280/390/320 pixels.
 

@@ -4,13 +4,24 @@ Wake acceptance queues one of three short Leda Live acknowledgments from flash.
 They rotate without a flash write. A fourth clip reports connection failure and
 directs the user to the specific on-screen error. These are recordings, not a
 network request per wake. Missing/corrupt clips do not fall back to a beep.
-The regular Gemini greeting still follows once setup is ready; early microphone
-capture and removing that greeting are not part of this change.
+Ordinary fresh Chat sends no synthetic "Hi Su" turn and requests no second Gemini
+greeting. Once setup is ready and feedback has finished (or is missing/muted),
+live_play publishes LIVE_LISTENING once for the current generation. The frontend
+then applies its normal 300 ms guard before capture. Setup alone does not start
+capture while feedback is queued/playing. Mode handoffs, backup credentials,
+story continuation and music-finished announcements retain their bootstrap turns.
+Closing or changing the session invalidates a pending listening notification.
 
 Playback uses live_play, its existing reserved I2S channel and stereo workspace,
 plus a 512-byte mono read buffer. Capture is gated while feedback is pending or
 playing. Volume/mute and critical-battery safeguards apply. A changed epoch or
 generation cancels old feedback. A cue acknowledges wake, not microphone readiness.
+Feedback waits for any already-started idle flash maintenance to finish. A pending
+or playing cue prevents new memory/schedule maintenance from being claimed by
+live_send. Claims share s_mux, avoiding the check/start race without a flash read
+buffer or blocking the microphone task. Existing flash writes may still delay wake.
+Each cue logs live_play stack high-water bytes and warns below 1536; no task-stack
+increase is assumed without board measurements.
 
 `tools/prepare-feedback-audio.py` uses GEMINI_DEV_API_KEY on the PC, generates four
 Leda Live clips with Southern Vietnamese pronunciation instructions, and stops

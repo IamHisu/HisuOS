@@ -22,3 +22,11 @@ void hisu_memory_clear_recent(void);
 bool hisu_memory_pending(void);
 /* Caller must serialize with voice/music startup; flash is never written by tools. */
 esp_err_t hisu_memory_flush(void);
+/* Volatile, user-only post-session extraction; never writes flash directly. */
+void hisu_memory_summary_request(void);
+void hisu_memory_summary_begin_turn(void);
+char *hisu_memory_summary_snapshot(uint32_t *ticket);
+bool hisu_memory_summary_current(uint32_t ticket);
+void hisu_memory_summary_done(uint32_t ticket);
+/* Strict JSON proposals, max three. No deletion or unrelated eviction. */
+esp_err_t hisu_memory_summary_apply(uint32_t ticket,const char *proposals,unsigned *stored);
