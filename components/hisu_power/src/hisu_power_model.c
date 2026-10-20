@@ -1,5 +1,13 @@
 #include <stdint.h>
 
+int hisu_power_saving_next(int active, int valid, int external_power, int percent)
+{
+    if (!valid || percent < 0 || percent > 100) return active != 0;
+    if (external_power || percent >= 15) return 0;
+    if (percent <= 10) return 1;
+    return active != 0;
+}
+
 /* Profile adapted from Muse's Zhengchen board, Apache-2.0.
  * Copyright (c) Meta Platforms, Inc. and affiliates. See licenses/NOTICE.md.
  */

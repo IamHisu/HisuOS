@@ -14,6 +14,16 @@ dll.hisu_ui_model_key.argtypes = [ctypes.POINTER(Model), ctypes.c_int]
 dll.hisu_ui_model_key.restype = None
 dll.hisu_ui_adjust.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
 dll.hisu_ui_adjust.restype = ctypes.c_int
+
+dll.hisu_ui_battery_bars.argtypes = [ctypes.c_int, ctypes.c_int]
+dll.hisu_ui_battery_bars.restype = ctypes.c_int
+
+dll.hisu_ui_battery_color.argtypes = [ctypes.c_int, ctypes.c_uint]
+dll.hisu_ui_battery_color.restype = ctypes.c_uint
+dll.hisu_ui_battery_pulse.argtypes = [ctypes.c_uint]
+dll.hisu_ui_battery_pulse.restype = ctypes.c_uint
+dll.hisu_ui_battery_charge_bar.argtypes = [ctypes.c_int, ctypes.c_int]
+dll.hisu_ui_battery_charge_bar.restype = ctypes.c_int
 dll.hisu_ui_valid_utf8.argtypes = [ctypes.c_char_p, ctypes.c_uint]
 dll.hisu_ui_valid_utf8.restype = ctypes.c_int
 dll.hisu_ui_overlay_dark_ink.argtypes = [ctypes.c_char_p] + [ctypes.c_uint] * 3 + [ctypes.c_int] * 5
@@ -31,6 +41,48 @@ dll.hisu_power_remaining_seconds.restype = ctypes.c_int64
 
 
 class UiModelTests(unittest.TestCase):
+    def test_only_next_unfilled_battery_bar_pulses(self):
+        active = dll.hisu_ui_battery_charge_bar
+        for percent in range(101):
+            expected = min(3, percent // 20) if percent < 100 else -1
+            self.assertEqual(active(1, percent), expected)
+            self.assertEqual(active(0, percent), -1)
+        self.assertEqual(active(1, -2147483648), 0)
+        self.assertEqual(active(1, 2147483647), -1)
+
+    def test_only_one_battery_bar_is_red_others_match_frame(self):
+        color = dll.hisu_ui_battery_color
+        for frame in (0x000000, 0xffffff):
+            for bars in range(5):
+                self.assertEqual(color(bars, frame), 0xef4444 if bars == 1 else frame)
+            for percent in range(101):
+                active = dll.hisu_ui_battery_charge_bar(1, percent)
+                bars = active + 1 if active >= 0 else 4
+                self.assertEqual(color(bars, frame), 0xef4444 if bars == 1 else frame)
+
+    def test_charging_bar_blinks_fully_on_and_off(self):
+        pulse = dll.hisu_ui_battery_pulse
+        self.assertEqual(pulse(0), 255)
+        self.assertEqual(pulse(799), 255)
+        self.assertEqual(pulse(800), 0)
+        self.assertEqual(pulse(1599), 0)
+        self.assertEqual(pulse(1600), 255)
+        for ms in range(3201):
+            value = pulse(ms)
+            self.assertEqual(value, 255 if ms % 1600 < 800 else 0)
+            self.assertEqual(value, pulse(ms + 1600))
+
+    def test_battery_icon_merges_top_two_old_levels(self):
+        bars = dll.hisu_ui_battery_bars
+        for percent in range(101):
+            self.assertEqual(bars(1, percent), min(4, (percent + 19) // 20))
+            self.assertEqual(bars(0, percent), 0)
+        for percent, expected in ((-2147483648, 0), (-1, 0), (0, 0),
+                                  (1, 1), (20, 1), (21, 2), (40, 2),
+                                  (41, 3), (60, 3), (61, 4), (80, 4),
+                                  (81, 4), (100, 4), (2147483647, 4)):
+            self.assertEqual(bars(1, percent), expected)
+
     def test_overlay_rgb565_colors(self):
         choose = dll.hisu_ui_overlay_dark_ink
         for pixel, expected in ((0x0000, 0), (0xffff, 1), (0xf800, 0), (0x07e0, 1), (0x001f, 0)):

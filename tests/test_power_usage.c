@@ -71,7 +71,31 @@ static void battery_cycle_tests(void) {
     assert(view.battery_seconds==45 && view.previous_battery_seconds==210);
 }
 
+static void battery_saver_tests(void) {
+    reset_power();
+    hisu_power_status_t power={.valid=true,.percent=11}, view;
+    update_power(power); hisu_power_get(&view); assert(!view.power_saving);
+    power.percent=10; update_power(power); hisu_power_get(&view); assert(view.power_saving);
+    power.percent=14; update_power(power); hisu_power_get(&view); assert(view.power_saving);
+    power.valid=false; update_power(power); hisu_power_get(&view); assert(view.power_saving);
+    power.valid=true; power.percent=15; update_power(power); hisu_power_get(&view); assert(!view.power_saving);
+    power.percent=0; update_power(power); hisu_power_get(&view); assert(view.power_saving);
+    power.external_power=true; update_power(power); hisu_power_get(&view); assert(!view.power_saving);
+    power.external_power=false; update_power(power); hisu_power_get(&view); assert(view.power_saving);
+    assert(!mock_power_writes); /* Runtime policy never overwrites saved settings. */
+    for (int percent=0;percent<=100;++percent) {
+        assert(hisu_power_saving_next(0,1,0,percent)==(percent<=10));
+        assert(hisu_power_saving_next(1,1,0,percent)==(percent<15));
+        assert(!hisu_power_saving_next(1,1,1,percent));
+    }
+    assert(hisu_power_saving_next(1,0,0,0));
+    assert(!hisu_power_saving_next(0,0,0,0));
+    assert(hisu_power_saving_next(1,1,0,-1));
+    assert(!hisu_power_saving_next(0,1,0,101));
+}
+
 int main(void) {
+    battery_saver_tests();
     assert(hisu_settings_init()==ESP_OK);
     hisu_power_usage_record_t legacy={.version=1,.flags=1,.last_percent=20,
         .battery_us=100000000,.screen_on_us=80000000,.screen_sleep_us=20000000};

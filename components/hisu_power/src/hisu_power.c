@@ -47,6 +47,11 @@ static void remember_battery_run(void)
 static void update_power(hisu_power_status_t status)
 {
     account_usage();
+    status.power_saving = hisu_power_saving_next(s_status.power_saving,
+        status.valid, status.external_power, status.percent) != 0;
+    if (status.power_saving != s_status.power_saving)
+        ESP_LOGI("POWER", "Battery saver %s: %d%% external=%d",
+            status.power_saving ? "on" : "off", status.percent, status.external_power);
     if (status.valid) {
         bool known = s_usage.flags & USAGE_KNOWN;
         bool previous_external = s_usage.flags & USAGE_EXTERNAL;

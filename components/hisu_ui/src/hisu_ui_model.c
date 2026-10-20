@@ -1,5 +1,31 @@
 #include "hisu_ui_model.h"
 
+int hisu_ui_battery_bars(int valid, int percent)
+{
+    if (!valid || percent <= 0) return 0;
+    /* Preserve the old lower levels; merge the fourth and fifth into full. */
+    if (percent > 60) return HISU_UI_BATTERY_BARS;
+    return (percent + 19) / 20;
+}
+
+unsigned hisu_ui_battery_color(int bars, unsigned frame_color)
+{
+    return bars == 1 ? 0xef4444 : frame_color;
+}
+
+unsigned hisu_ui_battery_pulse(unsigned elapsed_ms)
+{
+    return elapsed_ms % 1600 < 800 ? 255 : 0;
+}
+
+int hisu_ui_battery_charge_bar(int valid, int percent)
+{
+    if (!valid || percent >= 100) return -1;
+    if (percent <= 0) return 0;
+    /* The last bar covers the merged 60-100% range. */
+    return percent >= 60 ? 3 : percent / 20;
+}
+
 int hisu_ui_adjust(int setting, int value, int direction)
 {
     if (direction != -1 && direction != 1) return value;

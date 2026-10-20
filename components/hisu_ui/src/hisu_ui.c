@@ -97,8 +97,19 @@ static atomic_uint s_music_meter;
 static unsigned s_music_energy;
 static hisu_network_status_t s_network;
 static hisu_power_status_t s_power;
-static lv_obj_t *s_battery_body, *s_battery_bars[5], *s_battery_tip, *s_battery_charge;
+static lv_obj_t *s_battery_body, *s_battery_bars[HISU_UI_BATTERY_BARS], *s_battery_tip, *s_battery_charge;
 static lv_obj_t *s_battery_outline, *s_battery_tip_outline, *s_charge_outline;
+static lv_timer_t *s_battery_timer;
+
+static void animate_battery(lv_timer_t *timer)
+{
+    (void)timer;
+    if (!s_battery_body || s_asleep) return;
+    unsigned opacity = hisu_ui_battery_pulse((unsigned)(esp_timer_get_time() / 1000 % 1600));
+    int active = hisu_ui_battery_charge_bar(s_power.valid, s_power.percent);
+    for (int i = 0; i < HISU_UI_BATTERY_BARS; ++i)
+        lv_obj_set_style_bg_opa(s_battery_bars[i], i == active ? (lv_opa_t)opacity : LV_OPA_COVER, 0);
+}
 typedef struct { lv_obj_t *root, *arcs[3], *dot, *outline[3], *dot_outline, *warning; } wifi_icon_t;
 static wifi_icon_t s_idle_wifi;
 static int s_wifi_selected, s_wifi_first;
@@ -373,22 +384,34 @@ static void update_idle_status(void)
     }
     hisu_power_get(&s_power);
     hisu_network_get(&s_network);
-    int percent = s_power.percent < 0 ? 0 : s_power.percent > 100 ? 100 : s_power.percent;
-    lv_color_t color = overlay_color(2, 200, 10, 28, 16);
-    lv_color_t outline = lv_color_hex(color.red ? 0x000000 : 0xffffff);
+    lv_color_t ink = overlay_color(2, 200, 10, 28, 16);
+    lv_color_t outline = lv_color_hex(ink.red ? 0x000000 : 0xffffff);
+    bool charging = s_power.valid && s_power.external_power;
+    int charge_bar = charging ? hisu_ui_battery_charge_bar(s_power.valid, s_power.percent) : -1;
+    bool pulsing = charge_bar >= 0;
+    if (pulsing && !s_battery_timer) {
+        s_battery_timer = lv_timer_create(animate_battery, 80, NULL);
+        animate_battery(NULL);
+    } else if (!pulsing && s_battery_timer) {
+        lv_timer_delete(s_battery_timer); s_battery_timer = NULL;
+    }
     lv_obj_set_style_border_color(s_battery_outline, outline, 0);
     lv_obj_set_style_bg_color(s_battery_tip_outline, outline, 0);
-    lv_obj_set_style_border_color(s_battery_body, color, 0);
-    lv_obj_set_style_bg_color(s_battery_tip, color, 0);
-    int bars = s_power.valid ? (percent + 19) / 20 : 0;
-    for (int i = 0; i < 5; ++i) {
+    lv_obj_set_style_border_color(s_battery_body, ink, 0);
+    lv_obj_set_style_bg_color(s_battery_tip, ink, 0);
+    int bars = hisu_ui_battery_bars(s_power.valid, s_power.percent);
+    if (pulsing) bars = charge_bar + 1;
+    lv_color_t color = lv_color_hex(hisu_ui_battery_color(bars, ink.red ? 0xffffff : 0x000000));
+    for (int i = 0; i < HISU_UI_BATTERY_BARS; ++i) {
         lv_obj_set_style_bg_color(s_battery_bars[i], color, 0);
-        if (i < bars && !s_power.external_power) lv_obj_remove_flag(s_battery_bars[i], LV_OBJ_FLAG_HIDDEN);
+        unsigned opacity = i == charge_bar ? hisu_ui_battery_pulse((unsigned)(esp_timer_get_time() / 1000 % 1600)) : LV_OPA_COVER;
+        lv_obj_set_style_bg_opa(s_battery_bars[i], (lv_opa_t)opacity, 0);
+        if (i < bars) lv_obj_remove_flag(s_battery_bars[i], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(s_battery_bars[i], LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_set_style_line_color(s_battery_charge, color, 0);
-    lv_obj_set_style_line_color(s_charge_outline, outline, 0);
-    if (s_power.valid && s_power.external_power) {
+    lv_obj_set_style_line_color(s_battery_charge, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_line_color(s_charge_outline, lv_color_hex(0x101010), 0);
+    if (charging) {
         lv_obj_remove_flag(s_battery_charge, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(s_charge_outline, LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -423,32 +446,33 @@ static void render_idle_status(lv_obj_t *root)
     s_battery_outline = lv_obj_create(panel);
     lv_obj_remove_style_all(s_battery_outline);
     lv_obj_set_pos(s_battery_outline, 44, 4);
-    lv_obj_set_size(s_battery_outline, 26, 16);
+    lv_obj_set_size(s_battery_outline, 27, 16);
     lv_obj_set_style_border_width(s_battery_outline, 1, 0);
     lv_obj_set_style_radius(s_battery_outline, 4, 0);
     s_battery_body = lv_obj_create(panel);
     lv_obj_remove_style_all(s_battery_body);
     lv_obj_set_pos(s_battery_body, 45, 5);
-    lv_obj_set_size(s_battery_body, 24, 14);
+    lv_obj_set_size(s_battery_body, 25, 14);
     lv_obj_set_style_border_width(s_battery_body, 2, 0);
     lv_obj_set_style_radius(s_battery_body, 3, 0);
     lv_obj_remove_flag(s_battery_body, LV_OBJ_FLAG_SCROLLABLE);
-    for (int i = 0; i < 5; ++i) {
+    /* Equal 1 px inset on every side, with 1 px gaps between the four bars. */
+    for (int i = 0; i < HISU_UI_BATTERY_BARS; ++i) {
         s_battery_bars[i] = lv_obj_create(panel);
         lv_obj_remove_style_all(s_battery_bars[i]);
-        lv_obj_set_pos(s_battery_bars[i], 50 + i * 3, 9);
-        lv_obj_set_size(s_battery_bars[i], 2, 6);
+        lv_obj_set_pos(s_battery_bars[i], 48 + i * 5, 8);
+        lv_obj_set_size(s_battery_bars[i], 4, 8);
         lv_obj_set_style_radius(s_battery_bars[i], 1, 0);
         lv_obj_set_style_bg_opa(s_battery_bars[i], LV_OPA_COVER, 0);
     }
     s_battery_tip_outline = lv_obj_create(panel);
     lv_obj_remove_style_all(s_battery_tip_outline);
-    lv_obj_set_pos(s_battery_tip_outline, 68, 9);
+    lv_obj_set_pos(s_battery_tip_outline, 69, 9);
     lv_obj_set_size(s_battery_tip_outline, 4, 6);
     lv_obj_set_style_bg_opa(s_battery_tip_outline, LV_OPA_COVER, 0);
     s_battery_tip = lv_obj_create(panel);
     lv_obj_remove_style_all(s_battery_tip);
-    lv_obj_set_pos(s_battery_tip, 69, 10);
+    lv_obj_set_pos(s_battery_tip, 70, 10);
     lv_obj_set_size(s_battery_tip, 2, 4);
     lv_obj_set_style_bg_opa(s_battery_tip, LV_OPA_COVER, 0);
     static const lv_point_precise_t bolt[] = {{3, 0}, {1, 4}, {5, 4}, {3, 8}};
@@ -1182,6 +1206,7 @@ static void render(void)
         ? s_model.value != 0 : hisu_settings_get(HISU_SETTING_THEME) == 1;
     if (s_face_timer) { lv_timer_delete(s_face_timer); s_face_timer = NULL; }
     if (s_music_timer) { lv_timer_delete(s_music_timer); s_music_timer=NULL; }
+    if (s_battery_timer) { lv_timer_delete(s_battery_timer); s_battery_timer=NULL; }
     s_music_view=NULL;
     s_face_caption = NULL;
     s_face_eyes[0] = s_face_eyes[1] = NULL;
@@ -1209,7 +1234,8 @@ static void render(void)
         header(s_items[s_model.selected]);
         if (s_model.selected == UI_BATTERY) {
             char text[64];
-            if (s_power.valid) snprintf(text, sizeof(text), "Pin: ~%d%%", s_power.percent);
+            if (s_power.valid) snprintf(text, sizeof(text), "Pin: ~%d%%%s", s_power.percent,
+                s_power.power_saving ? " (tiết kiệm)" : "");
             else snprintf(text, sizeof(text), "Pin: Đang đo");
             label(root, text, 12, 48, 216, 0x86dbaf);
             usage_text(text, sizeof(text), "Dùng pin", s_power.battery_seconds);
@@ -1557,6 +1583,8 @@ static void ui_task(void *arg)
         }
         if (now - s_last_service_refresh >= 1000) {
             s_last_service_refresh = now;
+            /* Keep the temporary brightness cap current during conversation too. */
+            hisu_power_get(&s_power);
             hisu_media_status_t media; hisu_media_get(&media);
             /* Revision advances only after the new wallpaper is persisted successfully. */
             if (media.revision != seen_wallpaper_revision) {
@@ -1576,12 +1604,14 @@ static void ui_task(void *arg)
             }
         }
         // Never turn the screen off during settings or active conversation.
+        timeout = hisu_ui_power_timeout(s_power.power_saving, timeout);
         if (timeout && s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && now - s_activity_ms >= timeout * 1000LL) {
             s_asleep = true;
         }
         int brightness = s_model.page == UI_FLASHLIGHT_PAGE ? flashlight_brightness(now) :
             s_asleep ? 0 : s_model.page == UI_EDIT && s_model.selected == UI_BRIGHTNESS
             ? s_model.value : hisu_settings_get(HISU_SETTING_BRIGHTNESS);
+        brightness = hisu_ui_power_brightness(s_power.power_saving, brightness);
         if (brightness != s_applied_brightness) {
             err = hisu_board_set_brightness(brightness);
             if (err == ESP_OK) {
@@ -1591,7 +1621,7 @@ static void ui_task(void *arg)
             else ESP_LOGW("UI", "Backlight: %s", esp_err_to_name(err));
         }
         if (s_idle_gif) {
-            if (s_asleep) lv_gif_pause(s_idle_gif);
+            if (s_asleep || s_power.power_saving) lv_gif_pause(s_idle_gif);
             else lv_gif_resume(s_idle_gif);
         }
         ui_run_timers(wake_timer);
