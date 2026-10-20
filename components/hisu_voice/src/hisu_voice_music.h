@@ -20,6 +20,7 @@ esp_err_t hisu_music_resolve(hisu_music_track_t *track);
 esp_err_t hisu_music_play(const hisu_music_track_t *track, hisu_music_pcm_fn output);
 bool hisu_music_cancel(void);
 bool hisu_music_current(uint32_t ticket);
+bool hisu_music_completed(uint32_t ticket);
 void hisu_music_finish(uint32_t ticket);
 
 bool hisu_music_valid_id(const char *id);

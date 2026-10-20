@@ -27,3 +27,5 @@ esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle);
 esp_err_t hisu_ui_post_flashlight(bool enabled);
 /* Ephemeral expression for the current reply; never persisted to flash. */
 esp_err_t hisu_ui_post_expression(hisu_face_t face);
+/* Lock-free audio meter; no LVGL calls or status-queue traffic from the audio worker. */
+void hisu_ui_music_level(unsigned level);

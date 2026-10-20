@@ -57,6 +57,16 @@ static void post_listening(void)
 static void live_event(live_event_t event, uint32_t generation, const char *text)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (event==LIVE_MUSIC_FINISHED) {
+        if (s_session.state==VOICE_IDLE && hisu_music_completed(generation)) {
+            voice_session_open(&s_session,now_ms());
+            s_session.state=VOICE_PROCESSING;
+            s_reply[0]=s_utterance[0]=0;
+            voice_live_resume_music(s_session.generation);
+            (void)hisu_ui_post_status(HISU_UI_THINKING,"");
+        }
+        xSemaphoreGive(s_lock); return;
+    }
     if (event == LIVE_MUSIC || event == LIVE_MUSIC_LOADING || event == LIVE_MUSIC_ERROR) {
         if (s_session.state == VOICE_IDLE && hisu_music_current(generation))
             (void)hisu_ui_post_status(event == LIVE_MUSIC_ERROR ? HISU_UI_ERROR :
@@ -104,6 +114,10 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         s_session.state=VOICE_PROCESSING;
         s_reply[0]=s_utterance[0]=0;
         (void)hisu_ui_post_status(HISU_UI_THINKING, "");
+    } else if (event==LIVE_MUSIC_HANDOFF) {
+        voice_session_close(&s_session); voice_live_close();
+        s_reply[0]=s_utterance[0]=0;
+        (void)hisu_ui_post_status(HISU_UI_MUSIC_LOADING,"");
     } else if (event == LIVE_END || event == LIVE_SLEEP) {
         voice_session_close(&s_session); voice_live_close();
         (void)hisu_ui_post_status(event==LIVE_SLEEP ? HISU_UI_SLEEP : HISU_UI_IDLE, "");

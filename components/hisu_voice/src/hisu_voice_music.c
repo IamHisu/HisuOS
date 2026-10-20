@@ -21,6 +21,13 @@ static portMUX_TYPE s_music_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_ticket;
 static bool s_busy;
 
+bool hisu_music_completed(uint32_t ticket)
+{
+    portENTER_CRITICAL(&s_music_mux);
+    bool completed=!s_busy && ticket==s_ticket;
+    portEXIT_CRITICAL(&s_music_mux);
+    return completed;
+}
 bool hisu_music_current(uint32_t ticket)
 {
     portENTER_CRITICAL(&s_music_mux);

@@ -1,6 +1,7 @@
 #include "hisu_ui.h"
 #include "hisu_ui_model.h"
 #include "hisu_ui_timing.h"
+#include "hisu_ui_music.h"
 #include "hisu_board.h"
 #include "hisu_settings.h"
 #include "hisu_network.h"
@@ -90,6 +91,10 @@ static lv_obj_t *s_face_eyes[2], *s_face_cuts[2], *s_face_caption;
 static lv_timer_t *s_face_timer;
 static hisu_face_t s_expression;
 static int s_face_state;
+static lv_obj_t *s_music_view;
+static lv_timer_t *s_music_timer;
+static atomic_uint s_music_meter;
+static unsigned s_music_energy;
 static hisu_network_status_t s_network;
 static hisu_power_status_t s_power;
 static lv_obj_t *s_battery_body, *s_battery_bars[5], *s_battery_tip, *s_battery_charge;
@@ -836,8 +841,112 @@ static void update_face_subtitle(int state, const char *text)
     animate_face(NULL);
 }
 
+void hisu_ui_music_level(unsigned level)
+{
+    if (level>255) level=255;
+    uint32_t stamp=(uint32_t)(esp_timer_get_time()/20000)&0xffffffU;
+    atomic_store(&s_music_meter,(stamp<<8)|level);
+}
+
+static void music_rect(lv_layer_t *layer, const lv_area_t *origin, int x, int y, int w, int h,
+    uint32_t color, unsigned opacity, int radius)
+{
+    lv_draw_rect_dsc_t dsc; lv_draw_rect_dsc_init(&dsc);
+    dsc.bg_color=lv_color_hex(color); dsc.bg_opa=(lv_opa_t)opacity; dsc.radius=radius;
+    lv_area_t area={origin->x1+x,origin->y1+y,origin->x1+x+w-1,origin->y1+y+h-1};
+    lv_draw_rect(layer,&dsc,&area);
+}
+
+static void draw_music(lv_event_t *event)
+{
+    lv_layer_t *layer=lv_event_get_layer(event);
+    lv_area_t origin; lv_obj_get_coords(s_music_view,&origin);
+    hisu_music_frame_t frame; hisu_music_frame(tick_ms(),s_music_energy,&frame);
+    for (unsigned x=0;x<240;x+=12) {
+        uint32_t color=hisu_music_color(x+6);
+        for (int half=0;half<2;++half) {
+            lv_draw_rect_dsc_t dsc; lv_draw_rect_dsc_init(&dsc);
+            dsc.bg_color=lv_color_hex(color); dsc.bg_opa=LV_OPA_COVER;
+            dsc.bg_grad.dir=LV_GRAD_DIR_VER; dsc.bg_grad.stops_count=2;
+            for (int j=0;j<2;++j) {
+                dsc.bg_grad.stops[j].color=lv_color_hex(color);
+                dsc.bg_grad.stops[j].frac=(uint8_t)(j*255);
+                dsc.bg_grad.stops[j].opa=(lv_opa_t)(j==half ? 0 : 44+frame.energy/2);
+            }
+            int y=half ? 86 : 0,h=half ? 78 : 86;
+            lv_area_t area={origin.x1+(int)x,origin.y1+y,origin.x1+(int)x+11,origin.y1+y+h-1};
+            lv_draw_rect(layer,&dsc,&area);
+        }
+    }
+    music_rect(layer,&origin,0,82,240,9,0x83cfff,25+frame.energy/5,0);
+    music_rect(layer,&origin,0,86,240,1,0xeaffff,205,0);
+    for (int i=0;i<HISU_MUSIC_BARS;++i) {
+        hisu_music_bar_t bar=frame.bars[i];
+        if (i%3==0 && bar.x>2 && bar.x<237)
+            music_rect(layer,&origin,bar.x-2,84-bar.height,5,bar.height*2+5,bar.color,70,2);
+        music_rect(layer,&origin,bar.x,86-bar.height,1,bar.height*2+1,0xffffff,235,0);
+    }
+    for (int i=0;i<HISU_MUSIC_NOTES;++i) {
+        hisu_music_note_t note=frame.notes[i];
+        music_rect(layer,&origin,note.x-2,note.y-2,note.size+4,note.size+2,note.color,35+frame.energy/5,7);
+        music_rect(layer,&origin,note.x,note.y,note.size,note.size-2,0xffffff,240,4);
+        music_rect(layer,&origin,note.x+note.size-1,note.y-17,1,19,0xffffff,240,0);
+        if (note.kind==1) {
+            music_rect(layer,&origin,note.x+11,note.y-2,note.size,note.size-2,0xffffff,240,4);
+            music_rect(layer,&origin,note.x+note.size+10,note.y-19,1,19,0xffffff,240,0);
+            music_rect(layer,&origin,note.x+note.size,note.y-18,11,2,0xffffff,240,0);
+        } else if (!note.kind) {
+            music_rect(layer,&origin,note.x+note.size,note.y-17,4,2,0xffffff,240,1);
+            music_rect(layer,&origin,note.x+note.size+3,note.y-15,2,5,0xffffff,240,1);
+        }
+    }
+    lv_draw_line_dsc_t line; lv_draw_line_dsc_init(&line);
+    line.color=lv_color_hex(0xffffff); line.opa=245; line.width=2;
+    line.round_start=line.round_end=1;
+    for (unsigned curve=0;curve<HISU_MUSIC_CLEF_CURVES;++curve) {
+        hisu_music_point_t previous=hisu_music_clef_point(curve,0,frame.clef_x,frame.clef_y,frame.clef_size);
+        for (unsigned step=1;step<=HISU_MUSIC_CLEF_STEPS;++step) {
+            hisu_music_point_t point=hisu_music_clef_point(curve,step,frame.clef_x,frame.clef_y,frame.clef_size);
+            line.p1=(lv_point_precise_t){origin.x1+previous.x,origin.y1+previous.y};
+            line.p2=(lv_point_precise_t){origin.x1+point.x,origin.y1+point.y};
+            lv_draw_line(layer,&line); previous=point;
+        }
+    }
+}
+
+static void animate_music(lv_timer_t *timer)
+{
+    (void)timer;
+    if (!s_music_view) return;
+    unsigned meter=atomic_load(&s_music_meter);
+    unsigned age=(((uint32_t)(esp_timer_get_time()/20000))-(meter>>8))&0xffffffU;
+    unsigned level=s_status.status==HISU_UI_MUSIC && age<6 ? meter&255U : 0;
+    s_music_energy=level>s_music_energy ? level : (s_music_energy*3+level)/4;
+    lv_obj_invalidate(s_music_view);
+}
+
+static void render_music(int state, const char *text)
+{
+    lv_obj_t *root=lv_screen_active();
+    lv_obj_set_style_bg_color(root,lv_color_hex(0x000000),0);
+    lv_obj_t *title=label(root,state==HISU_UI_MUSIC_LOADING ? "Đang tải nhạc" : "Đang phát",12,2,216,0xa1a9a5);
+    lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    s_music_view=lv_obj_create(root);
+    lv_obj_remove_style_all(s_music_view);
+    lv_obj_remove_flag(s_music_view,LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(s_music_view,0,22); lv_obj_set_size(s_music_view,240,164);
+    lv_obj_add_event_cb(s_music_view,draw_music,LV_EVENT_DRAW_MAIN,NULL);
+    lv_obj_t *caption=label(root,text && text[0] ? text : "",10,188,220,0xeeeeee);
+    lv_obj_set_height(caption,46);
+    lv_label_set_long_mode(caption,LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(caption,LV_TEXT_ALIGN_CENTER,0);
+    s_music_energy=0;
+    s_music_timer=lv_timer_create(animate_music,50,NULL);
+}
+
 static void render_subtitle(int state, const char *text)
 {
+    if (state==HISU_UI_MUSIC || state==HISU_UI_MUSIC_LOADING) { render_music(state,text); return; }
     bool face = face_status(state);
     lv_obj_t *root = lv_screen_active();
     if (face) {
@@ -1072,6 +1181,8 @@ static void render(void)
     s_light_theme = (s_model.page == UI_EDIT && s_model.selected == UI_THEME)
         ? s_model.value != 0 : hisu_settings_get(HISU_SETTING_THEME) == 1;
     if (s_face_timer) { lv_timer_delete(s_face_timer); s_face_timer = NULL; }
+    if (s_music_timer) { lv_timer_delete(s_music_timer); s_music_timer=NULL; }
+    s_music_view=NULL;
     s_face_caption = NULL;
     s_face_eyes[0] = s_face_eyes[1] = NULL;
     lv_obj_clean(root);

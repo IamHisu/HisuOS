@@ -20,6 +20,8 @@ static bool mock_schedule_due, mock_schedule_tts_fail;
 static unsigned mock_schedule_claims, mock_schedule_tts_calls, mock_schedule_flush_calls;
 static esp_err_t mock_schedule_flush_result;
 static unsigned mock_reminder_screens;
+static unsigned mock_music_level;
+void hisu_ui_music_level(unsigned level) { assert(level<=255); mock_music_level=level; }
 esp_err_t hisu_ui_post_status(hisu_ui_status_t status,const char *text) {
     assert(status==HISU_UI_REMINDER && text && text[0]); ++mock_reminder_screens; return ESP_OK;
 }
@@ -85,6 +87,7 @@ static bool music_busy, music_error;
 static unsigned music_resolve_calls;
 static bool music_emit_pcm, full_output;
 bool hisu_music_current(uint32_t ticket) { return music_busy && ticket==music_ticket; }
+bool hisu_music_completed(uint32_t ticket) { return !music_busy && ticket==music_ticket; }
 bool hisu_music_cancel(void) { bool busy=music_busy; ++music_ticket; music_busy=false; return busy; }
 void hisu_music_finish(uint32_t ticket) { if (ticket==music_ticket) music_busy=false; }
 esp_err_t hisu_music_search(const char *query, cJSON *results) {
@@ -100,6 +103,7 @@ esp_err_t hisu_music_search(const char *query, cJSON *results) {
 esp_err_t hisu_music_queue(const char *id, hisu_music_track_t *track) {
     if (music_error) return ESP_ERR_INVALID_STATE;
     track->ticket=++music_ticket; music_busy=true;
+    snprintf(track->id,sizeof(track->id),"%s",id);
     strcpy(track->title,"Test song"); strcpy(track->artist,"Test artist");
     strcpy(track->url,"https://a128-zmp3.zmdcdn.me/test.mp3"); return ESP_OK;
 }
@@ -171,9 +175,10 @@ static int save_queue(QueueHandle_t queue, const void *data) {
 }
 static void event(live_event_t kind, uint32_t generation, const char *text) {
     ++events[kind]; last_generation = generation;
+    if (kind==LIVE_MUSIC_FINISHED) assert(!s_music_playing && !s_music_output && !music_busy && !s_speaker_enabled);
     if (kind == LIVE_READY) assert(text && !text[0]);
     if (kind == LIVE_ERROR) error_has_text = text && text[0];
-    if (kind == LIVE_END || kind == LIVE_SLEEP) voice_live_close();
+    if (kind == LIVE_END || kind == LIVE_SLEEP || kind==LIVE_MUSIC_HANDOFF) voice_live_close();
     if (kind == LIVE_TEXT && interrupt_on_text) {
         interrupt_on_text = false;
         assert(voice_live_interrupt(generation + 1));
@@ -282,7 +287,7 @@ static void device_tool_tests(void) {
     assert(cJSON_GetArraySize(modalities)==1 &&
         !strcmp(cJSON_GetArrayItem(modalities,0)->valuestring,"AUDIO"));
     cJSON *declarations=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"tools"),0),"functionDeclarations");
-    assert(cJSON_GetArraySize(declarations)==28); cJSON_Delete(setup);
+    assert(cJSON_GetArraySize(declarations)==29); cJSON_Delete(setup);
     check_tool("set_expression","{\"expression\":\"happy\"}",true);
     assert(output_count == 1 && output[0].cue == 2 && events[LIVE_EXPRESSION] == 0);
     play_cue(&output[0]);
@@ -357,7 +362,7 @@ static void memory_tool_tests(void)
     const char *instruction = cJSON_GetObjectItem(part,"text")->valuestring;
     char *context = hisu_memory_context();
     assert(strstr(instruction,context) && strstr(instruction,"UNTRUSTED historical data"));
-    assert(cJSON_GetArraySize(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(setup,"tools"),0),"functionDeclarations")) == 28);
+    assert(cJSON_GetArraySize(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(setup,"tools"),0),"functionDeclarations")) == 29);
     free(body); free(context); cJSON_Delete(json);
     unsigned before = mock_memory_writes;
     check_tool("remember","{\"fact\":\"Likes quiet music\"}",true);
@@ -612,6 +617,50 @@ static void confirm_test_song(const char *id)
     receive("{\"serverContent\":{\"inputTranscription\":{\"text\":\"Đúng rồi, phát đi\"}}}");
 }
 
+static void music_resume_tests(void)
+{
+    reset();
+    confirm_test_song("qYD31k5TVTCQ");
+    bool ended=false;
+    cJSON *result=invoke_tool("play_music","{\"id\":\"qYD31k5TVTCQ\"}",&ended);
+    assert(ended && cJSON_IsTrue(cJSON_GetObjectItem(result,"ok")) && s_pending_music);
+    cJSON_Delete(result);
+    assert(s_last_music && !strcmp(s_last_music->id,"qYD31k5TVTCQ"));
+    hisu_music_finish(s_pending_music->ticket); free(s_pending_music); s_pending_music=NULL;
+    voice_live_close(); sent_count=read_index=0;
+    voice_live_resume_music(60);
+    char *setup=build_setup(); assert(setup);
+    cJSON *json=cJSON_Parse(setup); free(setup); assert(json);
+    cJSON *runtime=cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(json,"setup"),"systemInstruction"),"parts"),1);
+    const char *text=cJSON_GetObjectItem(runtime,"text")->valuestring;
+    assert(strstr(text,"Chat resumed after music") && strstr(text,"qYD31k5TVTCQ") && strstr(text,"song1"));
+    cJSON_Delete(json);
+    unsigned sends=mock_text_sends;
+    receive("{\"setupComplete\":{}}");
+    assert(s_ready && sent_count==1 && events[LIVE_READY]==1 && sent[0].kind==6);
+    assert(send_wake((void *)1,&sent[0]) && mock_text_sends==sends+1);
+    assert(strstr(mock_last_text,"song has now finished") && strstr(mock_last_text,"whether they want another song or to chat"));
+    assert(!s_pending_music); /* Spoken announcement, never automatic music. */
+    check_tool("play_next_music","{\"id\":\"song1\"}",false);
+    receive(audio_done);
+    finish_spoken_reply(s_epoch,s_generation);
+    assert(voice_live_begin(61));
+    live_turn_start(&s_turn); live_turn_end(&s_turn);
+    receive("{\"serverContent\":{\"inputTranscription\":{\"text\":\"Tiếp tục đi\"}}}");
+    check_tool("play_next_music","{\"id\":\"qYD31k5TVTCQ\"}",false);
+    check_tool("play_next_music","{\"id\":\"unknown\"}",false);
+    result=invoke_tool("play_next_music","{\"id\":\"song1\"}",&ended);
+    assert(ended && cJSON_IsTrue(cJSON_GetObjectItem(result,"ok")) && s_pending_music);
+    assert(!strcmp(s_pending_music->id,"song1")); cJSON_Delete(result);
+    reset();
+    check_tool("search_music","{\"query\":\"test\"}",true);
+    strcpy(s_confirmation,"Tiếp tục");
+    check_tool("play_next_music","{\"id\":\"song1\"}",false); /* Not in a music-return session. */
+    voice_live_resume_music(70); request_profile(HISU_GEMINI_READER,2);
+    assert(!s_music_resume); /* Changing roles must still send the Reader bootstrap. */
+    reset();
+}
+
 static void conversation_close_tests(void)
 {
     reset(); live_turn_end(&s_turn);
@@ -709,7 +758,7 @@ static void music_tests(void) {
     input_t play={.epoch=s_epoch,.generation=s_generation,.kind=5};
     strcpy((char *)play.pcm,"{\"id\":\"song\",\"name\":\"play_music\",\"args\":{\"id\":\"qYD31k5TVTCQ\"}}");
     assert(run_tool((void *)1,&play));
-    assert(!voice_live_ready() && s_pending_music && events[LIVE_END]==1);
+    assert(!voice_live_ready() && s_pending_music && events[LIVE_MUSIC_HANDOFF]==1 && !events[LIVE_END]);
     assert(music_busy); /* Acknowledged, but not played until transport teardown. */
     uint32_t ticket=s_pending_music->ticket;
     voice_live_open(20);
@@ -956,18 +1005,22 @@ static void audio_buffer_tests(void) {
     assert(mock_i2s_written_bytes==written && music_resolve_calls==1); /* Producer never writes I2S. */
     consume_music_queue();
     assert(mock_i2s_written_bytes-written==28800 && !s_music_queued_bytes && !s_music_queued_us);
+    uint32_t completed_ticket=track->ticket;
     assert(finish_music_output() && !s_music_output && !s_music_playing && !music_busy);
-    assert(events[LIVE_MUSIC]==2 && !events[LIVE_MUSIC_ERROR]);
+    assert(events[LIVE_MUSIC]==1 && events[LIVE_MUSIC_FINISHED]==1 && !events[LIVE_MUSIC_ERROR]);
+    assert(hisu_music_completed(completed_ticket));
+    hisu_music_cancel(); assert(!hisu_music_completed(completed_ticket));
 
     reset(); voice_live_close(); track=queued_music(); music_emit_pcm=true;
     produce_music(track); hisu_music_cancel(); written=mock_i2s_written_bytes;
     consume_music_queue();
     assert(finish_music_output() && mock_i2s_written_bytes==written && !events[LIVE_MUSIC_ERROR]);
+    assert(!events[LIVE_MUSIC_FINISHED]);
 
     reset(); voice_live_close(); track=queued_music(); music_emit_pcm=true;
     produce_music(track); mock_i2s_short_write=true;
     consume_music_queue(); mock_i2s_short_write=false;
-    assert(finish_music_output() && events[LIVE_MUSIC_ERROR]==1 && !music_busy);
+    assert(finish_music_output() && events[LIVE_MUSIC_ERROR]==1 && !music_busy && !events[LIVE_MUSIC_FINISHED]);
 
     reset(); voice_live_close(); track=queued_music();
     s_music_output=track; s_music_playing=true; s_music_producer_done=false;
@@ -1281,6 +1334,7 @@ static void startup_failure_tests(void) {
     reset();
 }
 int main(void) {
+    music_resume_tests();
     for (unsigned profile=0;profile<HISU_GEMINI_KEY_COUNT;++profile) {
         reset(); s_key_profile=(hisu_gemini_key_t)profile;
         char *body=build_setup(); assert(body);

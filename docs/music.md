@@ -7,8 +7,9 @@ The source is unofficial and availability is not guaranteed.
 ## Voice Flow
 
 - Ask Hisu for a song, preferably including the artist.
-- Gemini calls `search_music`, compares up to five titles/artists, then calls
-  `play_music` with the selected result's ID. It must not invent IDs or substitute
+- Gemini calls `search_music`, compares up to five titles/artists, and calls
+  `offer_music`. It speaks the selected title/artist and waits for confirmation
+  in a new user turn before `play_music`. It must not invent IDs or substitute
   a different song after an error.
 - Successful `play_music` means the exact ID is queued, not already resolved or
   audible. Queuing does no HTTP. Hisu closes/destroys the Gemini connection and
@@ -16,9 +17,41 @@ The source is unofficial and availability is not guaranteed.
   on the existing transport worker. Decoded PCM is copied into the existing
   output queue in PSRAM; the playback worker only feeds I2S. Source failures at
   this stage use the dismissible music-error screen.
-- The screen shows loading, then playing with the title and artist.
+- Voice teardown posts music-loading directly, never the wallpaper in between.
+  The screen shows loading, then playing with the title and artist.
 - Say Hi Su to cancel music and open voice chat, or press BOOT/Back to stop.
-- End of track returns to the idle screen. Playback errors remain dismissible.
+- Natural end of track drains PCM and the I2S ring, closes the speaker, releases
+  music/network ownership, then opens Chat. Hi Su briefly announces that the song
+  ended and asks whether to play another song or chat, then returns to listening.
+  No repeated greeting or automatic song is generated. Normal listening timeout still
+  applies. Playback errors remain dismissible; manual cancellation never reopens
+  Chat by itself. A completed-ticket check fences a late finish against cancel,
+  wake and newer playback.
+- The resumed session receives bounded volatile metadata for the last song and
+  up to five search results, explicitly marked as untrusted data. It is not a
+  restoration of the old WebSocket or its entire conversation transcript.
+- In this resumed context only, a new real user request such as "tiếp tục"
+  authorizes Gemini to choose a different song and call `play_next_music`
+  immediately without another confirmation. The tool rejects the last ID,
+  unknown IDs, missing input and ordinary non-resumed sessions. A specifically
+  named new song still follows the normal offer/confirm flow. Silence never
+  starts a next song; AI interprets the request, not a local keyword matcher.
+
+## Music Display
+
+The 240x240 screen uses a black background, softly fading rainbow light,
+96 thin white mirrored waveform strokes, a curved treble clef, six floating
+single/beamed notes and a separate title/artist band. The existing UI task
+updates it at 20 FPS; there is no image decoder, new framebuffer, task or FFT.
+A lock-free meter samples the actual volume-scaled playback PCM after successful
+speaker writes. Height and glow react to the amplitude envelope with a short
+decay; stale/muted/starved audio decays to the quiet baseline. Note positions
+continue floating over time. This is audio-reactive decoration, not an estimated
+BPM or a measured frequency spectrum. Timers are deleted whenever the view exits.
+
+`node tests/test_music_visual.mjs` renders the native geometry to Canvas and
+checks silence/loudness/motion screenshots. It mirrors LVGL primitives and does
+not replace testing TFT frame rate and audio on the physical device.
 
 ## Boundaries
 
