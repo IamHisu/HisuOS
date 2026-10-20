@@ -46,6 +46,9 @@ esp_err_t hisu_network_provision_ex(const char *ssid, const char *password, bool
 esp_err_t hisu_network_enable(bool enabled);
 /* Worker applies Wi-Fi power saving changes; voice tasks never own the radio. */
 esp_err_t hisu_network_set_performance(bool active);
+typedef struct { bool enabled; int64_t applied_us; esp_err_t error; } hisu_network_performance_t;
+/* Last driver result, not merely the queued request. */
+void hisu_network_get_performance(hisu_network_performance_t *out);
 /* Physical setup portal radio lifecycle; password is for the board screen only. */
 esp_err_t hisu_network_setup(bool enabled);
 bool hisu_network_valid_password(const char *password);

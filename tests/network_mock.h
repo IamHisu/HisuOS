@@ -47,7 +47,8 @@ enum { WPA3_SAE_PWE_BOTH };
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
 static int mock_wifi_ps;
-static esp_err_t esp_wifi_set_ps(int mode) { mock_wifi_ps = mode; return ESP_OK; }
+static esp_err_t mock_wifi_ps_error;
+static esp_err_t esp_wifi_set_ps(int mode) { mock_wifi_ps = mode; return mock_wifi_ps_error; }
 static int64_t mock_now = 1000000;
 static wifi_ap_record_t mock_aps[32];
 static uint16_t mock_count;

@@ -2,6 +2,8 @@
 #include "hisu_voice_live_message.h"
 #include "hisu_voice_live_turn.h"
 #include "hisu_voice_live_setup.h"
+#include "hisu_voice_latency.h"
+#include "hisu_feedback.h"
 #include "hisu_ui_music.h"
 #include "hisu_voice_music.h"
 #include "hisu_voice_caption.h"
@@ -70,6 +72,59 @@ static void log_audio_heap(const char *phase)
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_epoch, s_generation;
 static bool s_active, s_ready, s_failed;
+static voice_start_t s_start;
+static struct { unsigned kind; uint32_t epoch, generation; } s_feedback;
+static bool s_feedback_playing;
+bool voice_live_feedback_busy(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool busy=s_feedback.kind || s_feedback_playing;
+    portEXIT_CRITICAL(&s_mux); return busy;
+}
+static void start_mark(uint32_t epoch, voice_start_phase_t phase)
+{
+    portENTER_CRITICAL(&s_mux);
+    if (s_start.epoch==epoch && !s_start.reported) voice_start_mark(&s_start,phase,esp_timer_get_time());
+    portEXIT_CRITICAL(&s_mux);
+}
+static void report_start(uint32_t epoch, const char *reason)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool report=s_start.epoch==epoch && !s_start.reported;
+    voice_start_t snapshot=s_start;
+    if (report) s_start.reported=true;
+    portEXIT_CRITICAL(&s_mux);
+    if (!report) return;
+    hisu_network_performance_t perf; hisu_network_get_performance(&perf);
+    long long applied=perf.enabled && perf.applied_us ?
+        (perf.applied_us>snapshot.started_us ? (long long)((perf.applied_us-snapshot.started_us)/1000) : 0) : -1;
+    ESP_LOGI(TAG,"Start timing (%s): epoch=%u ui_q=%lld perf_req=%lld perf_applied=%lld perf_err=%d "
+        "wss_start=%lld wss_connected=%lld setup_sent=%lld setup_ready=%lld audio_rx=%lld "
+        "first_write=%lld mic_eligible=%lld cue_write=%lld ms; build=%lld send=%lld ms bytes=%u connections=%u",
+        reason,(unsigned)epoch,voice_start_ms(&snapshot,VOICE_START_UI),voice_start_ms(&snapshot,VOICE_START_PERF),
+        applied,(int)perf.error,voice_start_ms(&snapshot,VOICE_START_WSS),voice_start_ms(&snapshot,VOICE_START_CONNECTED),
+        voice_start_ms(&snapshot,VOICE_START_SETUP),voice_start_ms(&snapshot,VOICE_START_READY),
+        voice_start_ms(&snapshot,VOICE_START_RX),voice_start_ms(&snapshot,VOICE_START_PLAY),
+        voice_start_ms(&snapshot,VOICE_START_MIC),voice_start_ms(&snapshot,VOICE_START_CUE),
+        (long long)(snapshot.build_us/1000),(long long)(snapshot.send_us/1000),
+        (unsigned)snapshot.setup_bytes,snapshot.connections);
+}
+void voice_live_ui_queued(uint32_t generation)
+{
+    portENTER_CRITICAL(&s_mux); uint32_t epoch=generation==s_generation ? s_epoch : 0; portEXIT_CRITICAL(&s_mux);
+    if (epoch) start_mark(epoch,VOICE_START_UI);
+}
+void voice_live_listening(uint32_t generation)
+{
+    portENTER_CRITICAL(&s_mux); uint32_t epoch=s_active && s_ready && generation==s_generation ? s_epoch : 0; portEXIT_CRITICAL(&s_mux);
+    if (epoch) { start_mark(epoch,VOICE_START_MIC); report_start(epoch,"listening"); }
+}
+void voice_live_feedback(bool error)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_feedback.kind=error ? 2 : 1; s_feedback.epoch=s_epoch; s_feedback.generation=s_generation;
+    portEXIT_CRITICAL(&s_mux);
+}
 static live_turn_t s_turn;
 static struct {
     unsigned pending_tools;
@@ -121,11 +176,19 @@ static uint32_t s_music_choices_epoch;
 static music_choice_t *s_last_music;
 static bool s_music_resume;
 static struct {
-    char id[41];
+    char ids[3][41];
+    unsigned count;
     uint32_t epoch, generation;
     int64_t deadline;
     bool pending, spoken;
 } s_music_offer; /* Protected by s_mux; only a later real user turn may confirm. */
+/* Caller holds s_mux; consent is limited to this exact offered list. */
+static bool music_offer_contains(const char *id)
+{
+    for (unsigned i=0;i<s_music_offer.count;++i)
+        if (!strcmp(s_music_offer.ids[i],id)) return true;
+    return false;
+}
 typedef struct { hisu_schedule_event_t event; int16_t *pcm; size_t bytes; } reminder_t;
 static reminder_t *s_reminder;
 /* Volatile, monotonic timer: never stored in flash or applied to a later session. */
@@ -191,6 +254,7 @@ static bool apply_key_handoff(uint32_t epoch)
     bool change=s_active && !s_failed && epoch==s_epoch && s_rekey_pending;
     if (change) {
         ++s_epoch; s_key_profile=s_next_profile; s_ready=false;
+        s_start.epoch=s_epoch;
         s_rekey_pending=s_rekey_announced=false;
         s_confirmation[0]=0; s_confirmation_overflow=false;
         s_reboot_pending=false; s_music_offer.pending=false; s_music_choices_epoch=s_music_resume ? s_epoch : 0;
@@ -275,7 +339,17 @@ static void fail_with_message(uint32_t epoch, uint32_t generation, const char *m
     bool bedtime=notify && s_bedtime.active;
     if (notify) { s_failed = true; s_ready = false; s_bedtime.active=s_bedtime.next_queued=false; }
     portEXIT_CRITICAL(&s_mux);
-    if (notify) s_callback(bedtime ? LIVE_SLEEP : LIVE_ERROR, generation, bedtime ? "" : message);
+    if (notify) {
+        report_start(epoch,"failed");
+        s_callback(bedtime ? LIVE_SLEEP : LIVE_ERROR, generation, bedtime ? "" : message);
+        if (!bedtime) {
+            portENTER_CRITICAL(&s_mux);
+            if ((s_epoch==epoch && s_failed) || (s_epoch==epoch+1 && !s_active)) {
+                s_feedback.kind=2; s_feedback.epoch=s_epoch; s_feedback.generation=s_generation;
+            }
+            portEXIT_CRITICAL(&s_mux);
+        }
+    }
 }
 static void fail(uint32_t epoch, uint32_t generation)
 {
@@ -283,9 +357,16 @@ static void fail(uint32_t epoch, uint32_t generation)
 }
 void voice_live_open(uint32_t generation)
 {
+    voice_live_open_at(generation,esp_timer_get_time());
+}
+void voice_live_open_at(uint32_t generation, int64_t wake_us)
+{
     (void)hisu_music_cancel();
     portENTER_CRITICAL(&s_mux);
     ++s_epoch; s_generation = generation; s_active = true; s_ready = s_failed = false;
+    uint32_t opened_epoch=s_epoch;
+    s_start=(voice_start_t){.epoch=s_epoch,.started_us=wake_us};
+    s_feedback.kind=0;
     s_key_profile=HISU_GEMINI_CHAT; s_rekey_pending=s_rekey_announced=false; s_resume_kind=0;
     s_handoff_readonly=false;
     s_music_resume=false;
@@ -298,10 +379,14 @@ void voice_live_open(uint32_t generation)
     live_turn_reset(&s_turn); s_interrupt_deadline = 0;
     memset(&s_reply_state, 0, sizeof(s_reply_state));
     portEXIT_CRITICAL(&s_mux);
+    (void)hisu_network_set_performance(true);
+    start_mark(opened_epoch,VOICE_START_PERF);
 }
 void voice_live_close(void)
 {
     portENTER_CRITICAL(&s_mux);
+    uint32_t closed_epoch=s_epoch;
+    bool keep_performance=s_pending_music || s_music_playing;
     ++s_epoch; s_active = s_ready = false;
     s_rekey_pending=s_rekey_announced=false; s_handoff_text[0]=0;
     s_story_goaway=s_resume_connection=false;
@@ -314,7 +399,10 @@ void voice_live_close(void)
     s_confirmation_overflow=false; s_music_offer.pending=false; s_music_choices_epoch=0;
     live_turn_reset(&s_turn); s_interrupt_deadline = 0;
     memset(&s_reply_state, 0, sizeof(s_reply_state));
+    s_feedback.kind=0;
     portEXIT_CRITICAL(&s_mux);
+    report_start(closed_epoch,"closed");
+    if (!keep_performance) (void)hisu_network_set_performance(false);
 }
 void voice_live_resume_music(uint32_t generation)
 {
@@ -556,6 +644,7 @@ static void parse_message(connection_t *connection)
         portEXIT_CRITICAL(&s_mux);
         if (!first_setup) { cJSON_Delete(json); return; }
         ESP_LOGI(TAG, "Gemini Live setup ready");
+        start_mark(connection->epoch,VOICE_START_READY);
         ESP_LOGI(TAG, "RAM internal free=%u min=%u largest=%u; PSRAM free=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -660,7 +749,10 @@ static void parse_message(connection_t *connection)
                 int64_t received_us=esp_timer_get_time();
                 portENTER_CRITICAL(&s_mux);
                 if (connection->epoch == s_epoch && generation == s_generation) {
-                    if (!s_reply_state.rx_bytes) s_reply_state.rx_first_us=received_us;
+                    if (!s_reply_state.rx_bytes) {
+                        s_reply_state.rx_first_us=received_us;
+                        if (s_start.epoch==connection->epoch) voice_start_mark(&s_start,VOICE_START_RX,received_us);
+                    }
                     else if (received_us-s_reply_state.rx_last_us>s_reply_state.max_rx_gap_us)
                         s_reply_state.max_rx_gap_us=received_us-s_reply_state.rx_last_us;
                     s_reply_state.rx_bytes+=bytes; s_reply_state.rx_last_us=received_us;
@@ -698,6 +790,7 @@ static void websocket_event(void *arg, esp_event_base_t base, int32_t id, void *
     connection_t *connection = arg;
     esp_websocket_event_data_t *event = data;
     if (id == WEBSOCKET_EVENT_CONNECTED) {
+        start_mark(connection->epoch,VOICE_START_CONNECTED);
         int socket = connection->tls ? esp_transport_get_socket(connection->tls) : -1;
         int enabled = 1;
         if (socket >= 0 && setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) == 0)
@@ -1082,24 +1175,50 @@ static char *execute_tool(const input_t *frame, bool *end_session)
         }
     } else if (!strcmp(name->valuestring,"offer_music")) {
         const cJSON *song=cJSON_GetObjectItemCaseSensitive(args,"id");
-        valid=cJSON_IsObject(args) && cJSON_GetArraySize(args)==1 && cJSON_IsString(song) && hisu_music_valid_id(song->valuestring);
-        const music_choice_t *choice=NULL;
-        if (valid) for (unsigned i=0; i<s_music_choice_count; ++i)
-            if (!strcmp(s_music_choices[i].id,song->valuestring)) { choice=&s_music_choices[i]; break; }
+        const cJSON *ids=cJSON_GetObjectItemCaseSensitive(args,"ids");
+        unsigned count=cJSON_IsArray(ids) ? (unsigned)cJSON_GetArraySize(ids) : 1;
+        valid=cJSON_IsObject(args) && cJSON_GetArraySize(args)==1 && count>=1 && count<=3 &&
+            ((cJSON_IsString(song) && !ids) || (cJSON_IsArray(ids) && !song));
+        const music_choice_t *choices[3]={0};
+        for (unsigned n=0;valid && n<count;++n) {
+            const cJSON *item=ids ? cJSON_GetArrayItem(ids,(int)n) : song;
+            valid=cJSON_IsString(item) && hisu_music_valid_id(item->valuestring);
+            if (!valid) break;
+            for (unsigned i=0;i<s_music_choice_count;++i)
+                if (!strcmp(s_music_choices[i].id,item->valuestring)) { choices[n]=&s_music_choices[i]; break; }
+            for (unsigned i=0;i<n;++i) if (choices[n] && choices[i]==choices[n]) valid=false;
+        }
+        bool found=valid;
+        for (unsigned i=0;found && i<count;++i) if (!choices[i]) found=false;
         portENTER_CRITICAL(&s_mux);
-        bool available=valid && choice && s_music_choices_epoch==frame->epoch && frame->epoch==s_epoch && frame->generation==s_generation;
+        bool available=found && s_music_choices_epoch==frame->epoch && frame->epoch==s_epoch && frame->generation==s_generation;
         if (available) {
-            strcpy(s_music_offer.id,choice->id); s_music_offer.epoch=frame->epoch; s_music_offer.generation=frame->generation;
+            for (unsigned i=0;i<count;++i) strcpy(s_music_offer.ids[i],choices[i]->id);
+            s_music_offer.count=count; s_music_offer.epoch=frame->epoch; s_music_offer.generation=frame->generation;
             s_music_offer.pending=true; s_music_offer.spoken=false; s_music_offer.deadline=esp_timer_get_time()+60000000;
         }
         portEXIT_CRITICAL(&s_mux);
         if (valid && !available) err=ESP_ERR_INVALID_STATE;
         if (available) {
-            cJSON_AddStringToObject(value,"id",choice->id);
-            cJSON_AddStringToObject(value,"title",choice->title);
-            cJSON_AddStringToObject(value,"artist",choice->artist);
+            if (count==1) {
+                cJSON_AddStringToObject(value,"id",choices[0]->id);
+                cJSON_AddStringToObject(value,"title",choices[0]->title);
+                cJSON_AddStringToObject(value,"artist",choices[0]->artist);
+            }
+            cJSON *songs=cJSON_AddArrayToObject(value,"songs");
+            for (unsigned i=0;i<count;++i) {
+                cJSON *item=cJSON_CreateObject();
+                if (!item || !songs || !cJSON_AddItemToArray(songs,item)) { cJSON_Delete(item); err=ESP_ERR_NO_MEM; break; }
+                cJSON_AddNumberToObject(item,"position",i+1);
+                cJSON_AddStringToObject(item,"id",choices[i]->id);
+                cJSON_AddStringToObject(item,"title",choices[i]->title);
+                cJSON_AddStringToObject(item,"artist",choices[i]->artist);
+            }
+            if (err!=ESP_OK) { portENTER_CRITICAL(&s_mux); s_music_offer.pending=false; portEXIT_CRITICAL(&s_mux); }
             cJSON_AddBoolToObject(value,"confirmation_required",true);
-            cJSON_AddStringToObject(value,"next_action","Say the exact title and artist, ask if this is the right track, then WAIT for the user's next answer. Do not play yet.");
+            cJSON_AddStringToObject(value,"next_action",count==1 ?
+                "Say the exact title and artist, ask if this is the right track, then WAIT for the user's next answer. Do not play yet." :
+                "Read all numbered titles and artists in this exact order, ask the user to choose, then WAIT. On their NEXT turn map an unambiguous number/title/artist to its id and play_music. Vague agreement is not a choice: ask which song. Never pick a default or play yet.");
         }
     } else if (!strcmp(name->valuestring,"play_music") || !strcmp(name->valuestring,"play_next_music")) {
         bool next=!strcmp(name->valuestring,"play_next_music");
@@ -1110,7 +1229,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
         while (valid && current(frame->epoch,frame->generation)) {
             portENTER_CRITICAL(&s_mux);
             bool waiting=s_music_offer.pending && s_music_offer.spoken && s_music_offer.epoch==frame->epoch &&
-                frame->generation==s_music_offer.generation+1 && !strcmp(s_music_offer.id,song->valuestring) &&
+                frame->generation==s_music_offer.generation+1 && music_offer_contains(song->valuestring) &&
                 esp_timer_get_time()<=s_music_offer.deadline && !s_confirmation[0] && !s_confirmation_overflow;
             if (next) waiting=s_music_resume && !s_confirmation[0] && !s_confirmation_overflow;
             portEXIT_CRITICAL(&s_mux);
@@ -1120,7 +1239,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
         portENTER_CRITICAL(&s_mux);
         bool confirmed=valid && s_active && !s_failed && s_epoch==frame->epoch && s_generation==frame->generation &&
             s_music_offer.pending && s_music_offer.spoken && s_music_offer.epoch==frame->epoch &&
-            frame->generation==s_music_offer.generation+1 && !strcmp(s_music_offer.id,song->valuestring) &&
+            frame->generation==s_music_offer.generation+1 && music_offer_contains(song->valuestring) &&
             esp_timer_get_time()<=s_music_offer.deadline && s_confirmation[0] && !s_confirmation_overflow;
         if (next) {
             bool found=false;
@@ -1397,16 +1516,24 @@ static char *setup_resumption(char *setup)
     }
     cJSON_free(encoded); free(setup); return result;
 }
+bool voice_live_uses_memory(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool use=!s_interpreter && !s_bedtime.active &&
+        (s_key_profile==HISU_GEMINI_CHAT || s_key_profile==HISU_GEMINI_CHAT_BACKUP);
+    portEXIT_CRITICAL(&s_mux); return use;
+}
 static char *build_setup(void)
 {
-    char *context=hisu_memory_context();
-    char *setup=setup_substitute(voice_live_setup,"@@HISU_MEMORY@@",context ? context : "{\"available\":false}");
-    free(context); if (!setup) return NULL;
     char role[512];
     portENTER_CRITICAL(&s_mux);
     hisu_gemini_key_t profile=s_key_profile;
     const char *language=s_interpreter;
+    bool use_memory=!language && !s_bedtime.active && (profile==HISU_GEMINI_CHAT || profile==HISU_GEMINI_CHAT_BACKUP);
     portEXIT_CRITICAL(&s_mux);
+    char *context=use_memory ? hisu_memory_context() : NULL;
+    char *setup=setup_substitute(voice_live_setup,"@@HISU_MEMORY@@",context ? context : "{\"available\":false}");
+    free(context); if (!setup) return NULL;
     if (profile==HISU_GEMINI_READER) snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: Reader. The user already authorized bedtime narration and its board timer is active. Narrate gently in Vietnamese, 100-180 words per segment. Never call start_sleep_story again or change timer/settings. Do not ask for continuation. Keep original Leda.");
     else if (profile==HISU_GEMINI_TRANSLATE) snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: Interpreter is ALREADY ACTIVE between vi and %s. This overrides the default-off startup rule. Confirm briefly in Vietnamese once, then only translate each utterance into the other language. Do not answer/execute the content, store facts or call start_interpreter again. Mode controls require a deliberate wake/interrupt and successful tool result. Keep original Leda.",language ? language : "en");
     else snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: ordinary Chat. Interpreter is OFF and no bedtime timer is active. Mode changes still require explicit user requests and a successful tool result. Never replay earlier tools or pending commands on a fresh connection.");
@@ -1587,7 +1714,19 @@ static void transport_task(void *arg)
         }
         if (hisu_network_set_performance(true) != ESP_OK) ESP_LOGW(TAG, "Cannot request Wi-Fi performance mode");
         esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, websocket_event, &connection);
+        start_mark(epoch,VOICE_START_WSS);
+        portENTER_CRITICAL(&s_mux); if (s_start.epoch==epoch) ++s_start.connections; portEXIT_CRITICAL(&s_mux);
         if (esp_websocket_client_start(client) != ESP_OK) fail(epoch, generation);
+        int64_t build_started=esp_timer_get_time();
+        char *setup=build_setup(); /* Overlaps the client's asynchronous DNS/TCP/TLS task. */
+        size_t setup_bytes=setup ? strlen(setup) : 0;
+        portENTER_CRITICAL(&s_mux);
+        if (s_start.epoch==epoch) {
+            s_start.build_us=esp_timer_get_time()-build_started;
+            s_start.setup_bytes=setup_bytes;
+        }
+        portEXIT_CRITICAL(&s_mux);
+        if (!setup) fail(epoch,generation);
         bool sent_setup = false;
         int64_t response_deadline = 0;
         int64_t started = esp_timer_get_time();
@@ -1608,10 +1747,14 @@ static void transport_task(void *arg)
             if (!voice_live_ready() && esp_timer_get_time() - started > 15000000) { fail(epoch, generation); break; }
             portENTER_CRITICAL(&s_mux); bool connected = connection.connected; portEXIT_CRITICAL(&s_mux);
             if (connected && !sent_setup) {
-                char *setup = build_setup();
+                int64_t send_started=esp_timer_get_time();
                 sent_setup = setup && send_text(client, setup);
-                free(setup);
+                portENTER_CRITICAL(&s_mux);
+                if (s_start.epoch==epoch) s_start.send_us=esp_timer_get_time()-send_started;
+                portEXIT_CRITICAL(&s_mux);
+                free(setup); setup=NULL;
                 if (!sent_setup) { fail(epoch, generation); break; }
+                start_mark(epoch,VOICE_START_SETUP);
                 ESP_LOGI(TAG,"Live setup sent: model=%s voice=%s PCM=24000 Hz effects=off build=%s %s",
                     HISU_LIVE_MODEL,HISU_LIVE_VOICE,__DATE__,__TIME__);
             }
@@ -1664,6 +1807,7 @@ static void transport_task(void *arg)
             if (!ok) { fail(epoch, generation); break; }
         }
         esp_websocket_client_stop(client);
+        free(setup);
         esp_websocket_client_destroy(client);
         destroy_connection_transport(&connection);
         free(connection.message);
@@ -1751,6 +1895,59 @@ static bool speaker_write(const int16_t *pcm, size_t bytes)
     }
     return true;
 }
+static bool feedback_current(uint32_t epoch, uint32_t generation)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool valid=epoch==s_epoch && generation==s_generation;
+    portEXIT_CRITICAL(&s_mux); return valid;
+}
+static void play_feedback_clip(unsigned kind,uint32_t epoch,uint32_t generation)
+{
+    static unsigned next;
+    unsigned index=3;
+    if (kind==1) {
+        for (unsigned attempt=0;attempt<3;++attempt) {
+            index=next++%3;
+            if (hisu_feedback_size(index)) break;
+        }
+    }
+    size_t bytes=hisu_feedback_size(index);
+    if (!bytes) { ESP_LOGW(TAG,"Offline spoken feedback missing"); return; }
+    hisu_power_status_t power; hisu_power_get(&power);
+    if (!feedback_current(epoch,generation) || hisu_settings_get(HISU_SETTING_SPEAKER)!=1 ||
+        hisu_settings_get(HISU_SETTING_VOLUME)<=0 ||
+        (power.valid && !power.external_power && power.percent<=2)) return;
+    portENTER_CRITICAL(&s_mux); s_playback_idle=false; portEXIT_CRITICAL(&s_mux);
+    if (speaker_open()!=ESP_OK) { ESP_LOGW(TAG,"Offline feedback: speaker unavailable"); return; }
+    bool played=false;
+    int16_t mono[256];
+    for (size_t offset=0;offset<bytes && feedback_current(epoch,generation);) {
+        int volume=hisu_settings_get(HISU_SETTING_VOLUME);
+        if (volume<=0 || hisu_settings_get(HISU_SETTING_SPEAKER)!=1) break;
+        size_t count=(bytes-offset)/2; if (count>256) count=256;
+        if (hisu_feedback_read(index,offset,mono,count*2)!=ESP_OK) break;
+        for (unsigned i=0;i<count;++i)
+            s_speaker_mix[2*i]=s_speaker_mix[2*i+1]=(int16_t)((int32_t)mono[i]*volume/100);
+        if (!speaker_write(s_speaker_mix,count*4)) break;
+        if (!played) start_mark(epoch,VOICE_START_CUE);
+        played=true; offset+=count*2;
+    }
+    if (played && feedback_current(epoch,generation)) vTaskDelay(pdMS_TO_TICKS(70));
+    speaker_close();
+}
+static bool play_feedback(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    unsigned kind=s_music_output ? 0 : s_feedback.kind;
+    uint32_t epoch=s_feedback.epoch,generation=s_feedback.generation;
+    if (kind) { s_feedback.kind=0; s_feedback_playing=true; }
+    portEXIT_CRITICAL(&s_mux);
+    if (!kind) return false;
+    play_feedback_clip(kind,epoch,generation);
+    portENTER_CRITICAL(&s_mux); s_feedback_playing=false; portEXIT_CRITICAL(&s_mux);
+    return true;
+}
+
 static bool music_write(const int16_t *pcm, size_t samples, int rate, int channels)
 {
     if (speaker_open_rate(rate) != ESP_OK) return false;
@@ -2030,6 +2227,7 @@ static void playback_task(void *arg)
     int16_t *stereo=s_speaker_mix;
     for (;;) {
         (void)poll_bedtime();
+        if (play_feedback()) continue;
         observe_battery_policy();
         portENTER_CRITICAL(&s_mux);
         uint32_t epoch = s_epoch, generation = s_generation;
@@ -2112,6 +2310,7 @@ static void playback_task(void *arg)
                 if (!speaker_write(stereo, count * 4)) {
                     fail(audio.epoch, audio.generation); break;
                 }
+                start_mark(audio.epoch,VOICE_START_PLAY);
                 offset += count;
                 portENTER_CRITICAL(&s_mux); ++s_audio_progress; portEXIT_CRITICAL(&s_mux);
             }
@@ -2122,6 +2321,7 @@ static void playback_task(void *arg)
 }
 esp_err_t voice_live_init(live_event_fn callback)
 {
+    hisu_feedback_init();
     s_callback = callback;
     s_send_storage = heap_caps_malloc(SEND_SAMPLES * sizeof(int16_t) + ENCODED_CAPACITY + SEND_BODY_CAPACITY,
                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "alert_mock.h"
 #include "../components/hisu_alert/src/hisu_alert.c"
+#include "../components/hisu_alert/src/hisu_feedback.c"
 #include "../components/hisu_voice/src/hisu_voice_alert_tts.c"
 static bool mock_connected=true;
 void hisu_power_get(hisu_power_status_t *out) { *out=(hisu_power_status_t){.valid=true,.external_power=mock_charging,.percent=80}; }
@@ -36,6 +37,30 @@ int main(int argc, char **argv) {
     assert(!hisu_alert_level(&policy,true,true,5,13000000));
     assert(!hisu_alert_level(&policy,true,true,5,23000000) && !policy.fired);
     assert(!hisu_alert_level(&policy,false,false,10,24000000));
+    reset();
+    hisu_feedback_init(); assert(!hisu_feedback_size(0));
+    for (unsigned i=0;i<HISU_FEEDBACK_COUNT;++i) {
+        size_t base=HISU_FEEDBACK_OFFSET+i*HISU_FEEDBACK_SLOT_BYTES;
+        memset(mock_flash+base+4096,0x12,24000);
+        feedback_record_t header={.magic=0x31434648,.version=1,.index=i,
+            .voice_crc=feedback_crc("Leda:vi-southern-v1",sizeof("Leda:vi-southern-v1")-1),
+            .phrase_crc=feedback_crc(feedback_phrases[i],strlen(feedback_phrases[i])),
+            .bytes=24000,.pcm_crc=feedback_crc(mock_flash+base+4096,24000)};
+        header.header_crc=feedback_crc(&header,sizeof(header));
+        memcpy(mock_flash+base,&header,sizeof(header));
+    }
+    unsigned feedback_writes=mock_flash_writes;
+    hisu_feedback_init();
+    uint8_t feedback_chunk[512];
+    for (unsigned i=0;i<4;++i) assert(hisu_feedback_size(i)==24000);
+    assert(hisu_feedback_read(0,0,feedback_chunk,sizeof(feedback_chunk))==ESP_OK);
+    assert(hisu_feedback_read(0,23998,feedback_chunk,4)==ESP_ERR_INVALID_ARG);
+    assert(hisu_feedback_read(0,1,feedback_chunk,2)==ESP_ERR_INVALID_ARG);
+    mock_flash[HISU_FEEDBACK_OFFSET+4096]^=1;
+    hisu_feedback_init(); assert(!hisu_feedback_size(0) && hisu_feedback_size(1)==24000);
+    mock_flash[HISU_FEEDBACK_OFFSET+HISU_FEEDBACK_SLOT_BYTES+12]^=1;
+    hisu_feedback_init(); assert(!hisu_feedback_size(1));
+    assert(mock_flash_writes==feedback_writes);
     reset();
     assert(hisu_alert_request()==ESP_OK);
     unsigned index;
@@ -113,6 +138,15 @@ int main(int argc, char **argv) {
         assert(fgetc(image)==EOF); fclose(image);
         reboot(); assert(s_status.ready==HISU_ALERT_COUNT);
         puts("PC-generated image accepted by firmware CRC/header validation.");
+    }
+    if (argc==3 && !strcmp(argv[1],"--feedback")) {
+        reset();
+        FILE *image=fopen(argv[2],"rb"); assert(image);
+        size_t bytes=HISU_FEEDBACK_COUNT*HISU_FEEDBACK_SLOT_BYTES;
+        assert(fread(mock_flash+HISU_FEEDBACK_OFFSET,1,bytes,image)==bytes && fgetc(image)==EOF);
+        fclose(image); hisu_feedback_init();
+        for (unsigned i=0;i<4;++i) assert(hisu_feedback_size(i)>=24000);
+        puts("PC-generated spoken feedback accepted by firmware CRC/header validation.");
     }
     puts("Offline alert tests passed: threshold/debounce/charge reset, variants, flash CRC/reboot/torn writes, Leda request, bounded PCM, cancellation, quota failure and cleanup. API/audio mocked.");
     return 0;

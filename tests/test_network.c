@@ -55,6 +55,7 @@ static void reset(void) {
     memset(s_password, 0, sizeof(s_password));
     s_started = s_want_connection = s_save_candidate = s_auto_join = false;
     s_performance = s_performance_requested = false; mock_wifi_ps = -1;
+    s_performance_applied=(hisu_network_performance_t){0}; mock_wifi_ps_error=ESP_OK;
     s_had_connection = false;
     s_deadline = s_retry_at = 0; s_retries = 0;
     s_connection_generation = 0; s_internet_failures = 0;
@@ -84,6 +85,17 @@ static void fail_current(bool rejected) {
     failed(rejected ? ESP_ERR_INVALID_ARG : ESP_ERR_TIMEOUT);
 }
 int main(void) {
+    reset(); hisu_network_performance_t perf;
+    assert(hisu_network_set_performance(true)==ESP_OK);
+    hisu_network_get_performance(&perf); assert(!perf.enabled && !perf.applied_us);
+    s_started=true; apply_performance(true);
+    hisu_network_get_performance(&perf); assert(perf.enabled && perf.applied_us==mock_now && perf.error==ESP_OK);
+    mock_now+=10000; apply_performance(true);
+    hisu_network_get_performance(&perf); assert(perf.applied_us==1000000); /* Duplicate requests preserve onset. */
+    mock_wifi_ps_error=ESP_ERR_INVALID_STATE; apply_performance(false);
+    hisu_network_get_performance(&perf); assert(perf.enabled && perf.error==ESP_ERR_INVALID_STATE);
+    mock_wifi_ps_error=ESP_OK; apply_performance(false);
+    hisu_network_get_performance(&perf); assert(!perf.enabled && perf.applied_us==mock_now);
     hisu_network_link_t link;
     s_lock=NULL; hisu_network_get_link(&link);
     assert(!link.connected && !link.setup_enabled && link.internet==HISU_INTERNET_UNKNOWN);

@@ -9,6 +9,7 @@ if(WIN32)
 endif()
 project(HisuOS VERSION 0.1.0)
 include(cmake/battery_audio.cmake)
+include(cmake/feedback_audio.cmake)
 
 if(CONFIG_USJ_ENABLE_USB_SERIAL_JTAG OR CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED)
     message(FATAL_ERROR "GPIO20 drives the LCD backlight. Disable USB Serial/JTAG and select no secondary console in sdkconfig before building.")

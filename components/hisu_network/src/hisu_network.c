@@ -37,6 +37,7 @@ static int s_retries;
 static int64_t s_deadline, s_retry_at;
 static bool s_auto_join;
 static bool s_performance;
+static hisu_network_performance_t s_performance_applied;
 static bool s_performance_requested; /* Protected by s_lock, including queued requests. */
 static bool s_candidate_hidden;
 static bool s_had_connection;
@@ -595,6 +596,27 @@ static bool roam_without_internet(void)
     return true;
 }
 
+static void apply_performance(bool enabled)
+{
+    xSemaphoreTake(s_lock,portMAX_DELAY);
+    s_performance=enabled; ++s_connection_generation; s_internet_failures=0;
+    bool recheck=!enabled && s_status.connected;
+    if (recheck) s_status.internet=HISU_INTERNET_CHECKING;
+    xSemaphoreGive(s_lock);
+    if (recheck) xTaskNotifyGive(s_probe_task);
+    if (!s_started || !s_status.enabled) return;
+    esp_err_t err=esp_wifi_set_ps(enabled ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
+    xSemaphoreTake(s_lock,portMAX_DELAY);
+    s_performance_applied.error=err;
+    if (err==ESP_OK) {
+        if (!s_performance_applied.applied_us || s_performance_applied.enabled!=enabled)
+            s_performance_applied.applied_us=esp_timer_get_time();
+        s_performance_applied.enabled=enabled;
+    }
+    xSemaphoreGive(s_lock);
+    if (err!=ESP_OK) ESP_LOGW("NETWORK","Wi-Fi power mode: %s",esp_err_to_name(err));
+}
+
 static void worker(void *arg)
 {
     (void)arg;
@@ -610,18 +632,7 @@ static void worker(void *arg)
         command_t command;
         if (xQueueReceive(s_commands, &command, pdMS_TO_TICKS(200)) == pdTRUE) {
             if (command.type == CMD_PERFORMANCE) {
-                xSemaphoreTake(s_lock, portMAX_DELAY);
-                s_performance = command.enabled;
-                ++s_connection_generation;
-                s_internet_failures = 0;
-                bool recheck = !s_performance && s_status.connected;
-                if (recheck) s_status.internet = HISU_INTERNET_CHECKING;
-                xSemaphoreGive(s_lock);
-                if (recheck) xTaskNotifyGive(s_probe_task);
-                if (s_started && s_status.enabled) {
-                    esp_err_t err = esp_wifi_set_ps(s_performance ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
-                    if (err != ESP_OK) ESP_LOGW("NETWORK", "Wi-Fi power mode: %s", esp_err_to_name(err));
-                }
+                apply_performance(command.enabled);
             }
             else if (command.type == CMD_CANCEL) {
                 cancel_join(); next_auto_scan=esp_timer_get_time()+auto_scan_interval_us;
@@ -966,6 +977,13 @@ esp_err_t hisu_network_set_performance(bool active)
     if (err != ESP_OK) s_performance_requested = previous;
     xSemaphoreGive(s_lock);
     return err;
+}
+void hisu_network_get_performance(hisu_network_performance_t *out)
+{
+    if (!out) return;
+    *out=(hisu_network_performance_t){0};
+    if (!s_lock) return;
+    xSemaphoreTake(s_lock,portMAX_DELAY); *out=s_performance_applied; xSemaphoreGive(s_lock);
 }
 
 esp_err_t hisu_network_setup(bool enabled)

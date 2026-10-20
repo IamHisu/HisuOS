@@ -84,7 +84,7 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         s_session.state = VOICE_PROCESSING;
         (void)hisu_ui_post_status(HISU_UI_THINKING, text);
     } else if (event == LIVE_TEXT) {
-        if (!voice_live_interpreter_language()) hisu_memory_recent(false, text);
+        if (voice_live_uses_memory()) hisu_memory_recent(false, text);
         voice_caption_append(s_reply, sizeof(s_reply), text);
         (void)hisu_ui_post_status(HISU_UI_SPEAKING, s_reply);
     } else if (event == LIVE_EXPRESSION) {
@@ -104,7 +104,7 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
             post_listening();
         }
     } else if (event == LIVE_INPUT) {
-        if (!voice_live_interpreter_language()) hisu_memory_recent(true, text);
+        if (voice_live_uses_memory()) hisu_memory_recent(true, text);
         size_t used = strlen(s_utterance), extra = strlen(text);
         if (extra > sizeof(s_utterance) - used - 1) extra = sizeof(s_utterance) - used - 1;
         memcpy(s_utterance + used, text, extra); s_utterance[used + extra] = 0;
@@ -337,6 +337,8 @@ static void detection_task(void *arg)
                          recognized->command_id[0], recognized->string, recognized->prob[0]);
             if (recognized && recognized->num > 0 &&
                 voice_wake_accept(recognized->command_id[0], recognized->prob[0])) {
+                int64_t wake_us=esp_timer_get_time();
+                bool wake_error=false;
                 ESP_LOGI(TAG, "Offline Hey Hisu detected (confidence %.2f)", recognized->prob[0]);
                 /* Wake cancels playback, then opens the usual voice session. */
                 (void)hisu_music_cancel();
@@ -345,19 +347,24 @@ static void detection_task(void *arg)
                 if (hisu_voice_control(false)) {
                     /* Interruption works even if connectivity was lost during the turn. */
                 } else if (!network.connected) {
+                    wake_error=true;
                     (void)hisu_ui_post_status(HISU_UI_ERROR, "Cần Wi-Fi để nghe lệnh");
                 } else if (hisu_network_has_internet_warning(&network)) {
+                    wake_error=true;
                     (void)hisu_ui_post_status(HISU_UI_ERROR, network.internet == HISU_INTERNET_CAPTIVE
                         ? "Wi-Fi yêu cầu đăng nhập" : "Wi-Fi chưa có Internet");
                 } else if (!hisu_settings_has_gemini_key()) {
+                    wake_error=true;
                     (void)hisu_ui_post_status(HISU_UI_ERROR, "Cần API key trong Setting");
                 } else {
                     xSemaphoreTake(s_lock, portMAX_DELAY);
                     voice_session_open(&s_session, now_ms());
-                    voice_live_open(s_session.generation);
+                    voice_live_open_at(s_session.generation,wake_us);
                     (void)hisu_ui_post_status(HISU_UI_THINKING, "Đang kết nối...");
+                    voice_live_ui_queued(s_session.generation);
                     xSemaphoreGive(s_lock);
                 }
+                voice_live_feedback(wake_error);
                 s_multinet->clean(s_multinet_data);
                 continue;
             }
@@ -372,7 +379,8 @@ static void detection_task(void *arg)
                          candidate->raw_string, candidate->prob[0]);
             s_multinet->clean(s_multinet_data);
         }
-        if (snapshot.state != VOICE_WAITING || now_ms() < snapshot.ready_ms || !voice_live_ready()) continue;
+        if (snapshot.state != VOICE_WAITING || now_ms() < snapshot.ready_ms || !voice_live_ready() || voice_live_feedback_busy()) continue;
+        voice_live_listening(snapshot.generation);
         size_t frame = s_afe->get_fetch_chunksize(s_afe_data);
         if (frame > preroll_capacity) frame = preroll_capacity;
         if (preroll_count + frame > preroll_capacity) {

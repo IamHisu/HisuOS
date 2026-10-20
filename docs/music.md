@@ -126,6 +126,20 @@ Host gzip tests exercise the wrapper and split HTTP delivery with a stored-block
 DEFLATE mock; they do not execute the ESP32 ROM implementation.
 
 Run `tools/test-voice.ps1` for protocol, tool handoff and music-worker tests.
+For recommendations, Gemini can offer up to three distinct songs from its latest
+search using `offer_music({ids:[...]})`. A specific requested song still uses
+`offer_music({id:...})`. The response preserves numbered order with exact ids,
+titles and artists. Firmware stores only the bounded list of three ids, and
+allows playback of a member only after the offered reply finishes speaking and
+the next real user turn supplies a non-overflowing transcript within 60 seconds.
+Re-offering replaces the list; a new search, cancellation or new session invalidates
+it. Single-track confirmation remains supported. Gemini interprets ordinal/title/
+artist choices; firmware does not parse Vietnamese keywords or independently prove
+that a transcript selects the id Gemini supplies. The prompt requires clarification
+and re-offering on vague agreement, never defaulting to the first item. A clear
+selection is the confirmation; it does not need another confirmation question.
+Host tests validate list bounds, duplicates, unknown ids, order, every selected id,
+replacement, missing spoken reply and late transcription, not model understanding.
 The worker tests compile the actual implementation with HTTP, crypto, MP3 and
 RTOS mocks; they do not establish hardware decoding quality or live Gemini selection.
 Live endpoint/header checks and a successful firmware build are separate from
