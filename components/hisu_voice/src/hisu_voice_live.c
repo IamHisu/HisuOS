@@ -5,6 +5,7 @@
 #include "hisu_voice_latency.h"
 #include "hisu_voice_music_choice.h"
 #include "hisu_voice_memory_summary.h"
+#include "hisu_voice_lookup.h"
 #include "hisu_feedback.h"
 #include "hisu_ui_music.h"
 #include "hisu_voice_music.h"
@@ -1039,6 +1040,9 @@ static char *execute_tool(const input_t *frame, bool *end_session)
     } else if (translation_only && strcmp(name->valuestring,"set_expression")) {
         valid=true; err=ESP_ERR_INVALID_STATE;
         cJSON_AddStringToObject(value,"error","Interpreter input is text to translate, not permission to operate the device. Only translate. To control or exit, the user must first wake Hi Su or press interrupt, then issue the mode command.");
+    } else if (!strcmp(name->valuestring,"lookup_info")) {
+        valid=true; err=ESP_ERR_INVALID_STATE;
+        cJSON_AddStringToObject(value,"error","Tra cứu đang bận, thiếu bộ nhớ hoặc tham số không hợp lệ. Chưa lấy được dữ liệu; không đoán kết quả và không thử lại liên tục.");
     } else if (!strcmp(name->valuestring,"start_interpreter")) {
         const cJSON *language=cJSON_GetObjectItemCaseSensitive(args,"language");
         const char *target=NULL;
@@ -1168,6 +1172,9 @@ static char *execute_tool(const input_t *frame, bool *end_session)
             err = hisu_memory_forget((uint32_t)memory_id);
             if (err == ESP_OK) cJSON_AddStringToObject(value,"status","pending_idle_flash_removal");
         }
+    } else if (!strcmp(name->valuestring,"search_music") && voice_lookup_busy()) {
+        valid=true; err=ESP_ERR_INVALID_STATE;
+        cJSON_AddStringToObject(value,"error","Đang tra cứu thông tin, chưa thể mở thêm kết nối tìm nhạc. Chờ kết quả hiện tại; không thử liên tục.");
     } else if (!strcmp(name->valuestring,"search_music")) {
         const cJSON *query = cJSON_GetObjectItemCaseSensitive(args,"query");
         valid = cJSON_IsObject(args) && cJSON_GetArraySize(args) == 1 && cJSON_IsString(query) &&
@@ -1475,6 +1482,19 @@ static void log_transport_stack(const char *phase)
 }
 static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
 {
+    cJSON *lookup_call=cJSON_Parse((const char *)frame->pcm);
+    const cJSON *lookup_name=cJSON_GetObjectItemCaseSensitive(lookup_call,"name");
+    const cJSON *lookup_id=cJSON_GetObjectItemCaseSensitive(lookup_call,"id");
+    portENTER_CRITICAL(&s_mux);
+    bool lookup_allowed=!s_handoff_readonly && !s_interpreter && !s_bedtime.active &&
+        s_key_profile==HISU_GEMINI_CHAT;
+    portEXIT_CRITICAL(&s_mux);
+    bool queued=lookup_allowed && current(frame->epoch,frame->generation) && cJSON_IsString(lookup_name) &&
+        !strcmp(lookup_name->valuestring,"lookup_info") && cJSON_IsString(lookup_id) &&
+        voice_lookup_submit(frame->epoch,frame->generation,lookup_id->valuestring,
+            cJSON_GetObjectItemCaseSensitive(lookup_call,"args"),current);
+    cJSON_Delete(lookup_call);
+    if (queued) return true; /* pending_tools stays held until the HTTP result is sent. */
     log_transport_stack("Device tool start");
     bool end_session;
     char *response = execute_tool(frame,&end_session);
@@ -1508,6 +1528,37 @@ static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
     if (reboot) { vTaskDelay(pdMS_TO_TICKS(500)); esp_restart(); }
     if (ok) announce_rekey(frame->epoch);
     return ok;
+}
+
+static bool send_lookup_result(esp_websocket_client_handle_t client)
+{
+    voice_lookup_result_t *job=voice_lookup_take();
+    if (!job) return true;
+    if (!current(job->epoch,job->generation)) { voice_lookup_free(job); return true; }
+    cJSON *root=cJSON_CreateObject(),*tool=cJSON_AddObjectToObject(root,"toolResponse");
+    cJSON *list=cJSON_AddArrayToObject(tool,"functionResponses"),*row=cJSON_CreateObject();
+    cJSON *data=job->response ? cJSON_Parse(job->response) : NULL;
+    if (!data) { data=cJSON_CreateObject(); cJSON_AddBoolToObject(data,"ok",false);
+        cJSON_AddStringToObject(data,"error","Không đủ bộ nhớ để tra cứu."); }
+    bool built=root && tool && list && row && data && cJSON_AddItemToArray(list,row);
+    if (built) {
+        built=cJSON_AddStringToObject(row,"id",job->id) && cJSON_AddStringToObject(row,"name","lookup_info") &&
+            cJSON_AddItemToObject(row,"response",data);
+        if (built) data=NULL;
+    } else cJSON_Delete(row);
+    cJSON_Delete(data);
+    char *body=built ? cJSON_PrintUnformatted(root) : NULL; cJSON_Delete(root);
+    bool ok=true;
+    if (current(job->epoch,job->generation)) {
+        portENTER_CRITICAL(&s_mux);
+        if (job->epoch==s_epoch && job->generation==s_generation) {
+            if (s_reply_state.pending_tools) --s_reply_state.pending_tools;
+            s_reply_state.deferred_complete=false;
+        }
+        portEXIT_CRITICAL(&s_mux);
+        ok=body && send_text(client,body);
+    }
+    cJSON_free(body); voice_lookup_free(job); return ok;
 }
 
 static char *setup_substitute(const char *source, const char *marker, const char *value)
@@ -1638,7 +1689,7 @@ static bool idle_for_alert_prepare(void)
 }
 static bool idle_for_memory_summary(void)
 {
-    if (!idle_for_alert_prepare()) return false;
+    if (voice_lookup_busy() || !idle_for_alert_prepare()) return false;
     hisu_schedule_event_t due;
     return !hisu_schedule_due(time(NULL),&due);
 }
@@ -1706,6 +1757,9 @@ static void transport_task(void *arg)
     int64_t next_memory_save = 0;
     int64_t next_alert_prepare = 0;
     for (;;) {
+        /* Closed-turn jobs must be drained even when there is no WSS connection. */
+        portENTER_CRITICAL(&s_mux); bool lookup_live=s_active && !s_failed; portEXIT_CRITICAL(&s_mux);
+        if (!lookup_live) voice_lookup_free(voice_lookup_take());
         portENTER_CRITICAL(&s_mux);
         bool active = s_active && !s_failed; uint32_t epoch = s_epoch, generation = s_generation;
         bool music_playing = s_music_playing || s_offline_playing;
@@ -1714,7 +1768,7 @@ static void transport_task(void *arg)
         if (memory_idle) s_idle_maintenance = true;
         portEXIT_CRITICAL(&s_mux);
         if (!active || music_playing) {
-            if (memory_idle) prepare_reminder();
+            if (memory_idle && !voice_lookup_busy()) prepare_reminder();
             if (memory_idle && esp_timer_get_time() >= next_memory_save && hisu_memory_pending()) {
                 int64_t save_started=esp_timer_get_time();
                 esp_err_t err = hisu_memory_flush();
@@ -1723,7 +1777,7 @@ static void transport_task(void *arg)
                 if (err != ESP_OK) ESP_LOGW(TAG,"Memory save deferred: %s",esp_err_to_name(err));
                 next_memory_save = esp_timer_get_time() + 5000000;
             }
-            if (memory_idle && esp_timer_get_time() >= next_alert_prepare &&
+            if (memory_idle && !voice_lookup_busy() && esp_timer_get_time() >= next_alert_prepare &&
                 hisu_voice_alert_prepare(idle_for_alert_prepare))
                 next_alert_prepare = esp_timer_get_time() + 22000000;
             portENTER_CRITICAL(&s_mux);
@@ -1811,6 +1865,7 @@ static void transport_task(void *arg)
                 ESP_LOGI(TAG,"Live setup sent: model=%s voice=%s PCM=24000 Hz effects=off build=%s %s",
                     HISU_LIVE_MODEL,HISU_LIVE_VOICE,__DATE__,__TIME__);
             }
+            if (!send_lookup_result(client)) { fail(epoch,generation); break; }
             if (xQueueReceive(s_input, frame, pdMS_TO_TICKS(10)) != pdTRUE) continue;
             if (!current(frame->epoch, frame->generation)) continue;
             bool ok;
@@ -2088,7 +2143,14 @@ static void produce_music(hisu_music_track_t *track)
     (void)hisu_network_set_performance(true);
     s_callback(LIVE_MUSIC_LOADING,track->ticket,"");
     log_audio_heap("Music resolve after WSS teardown RAM");
-    esp_err_t result=hisu_music_resolve(track);
+    /* A cancelled lookup may still be unwinding TLS after Chat closes. */
+    int64_t lookup_deadline=esp_timer_get_time()+12000000;
+    while (voice_lookup_busy() && hisu_music_current(track->ticket) && esp_timer_get_time()<lookup_deadline) {
+        voice_lookup_free(voice_lookup_take());
+        if (voice_lookup_busy()) vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    esp_err_t result=voice_lookup_busy() ? ESP_ERR_TIMEOUT :
+        !hisu_music_current(track->ticket) ? ESP_ERR_INVALID_STATE : hisu_music_resolve(track);
     if (result==ESP_OK && hisu_music_current(track->ticket)) result=hisu_music_play(track,music_enqueue);
     ESP_LOGI(TAG,"Music producer finished: result=%d, minimum stack free=%u bytes",
         (int)result,(unsigned)uxTaskGetStackHighWaterMark(NULL));

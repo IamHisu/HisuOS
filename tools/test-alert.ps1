@@ -30,3 +30,10 @@ $summaryExe = Join-Path $out 'memory-summary-test.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Memory summary HTTP linking failed.' }
 & $summaryExe
 if ($LASTEXITCODE -ne 0) { throw 'Memory summary HTTP tests failed.' }
+& $compiler.FullName /nologo /c /std:c11 /MT /utf-8 /GS- /W3 /wd4101 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_memory\include" "/I$root\components\hisu_power\include" "/I$root\components\hisu_network\include" "/I$root\components\hisu_settings\include" "/I$root\managed_components\espressif__cjson\cJSON" "/Fo$out\" (Join-Path $root 'tests\test_lookup.c')
+if ($LASTEXITCODE -ne 0) { throw 'Lookup HTTP compilation failed.' }
+$lookupExe = Join-Path $out 'lookup-test.exe'
+& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$lookupExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_lookup.obj') (Join-Path $out 'cJSON.obj')
+if ($LASTEXITCODE -ne 0) { throw 'Lookup HTTP linking failed.' }
+& $lookupExe
+if ($LASTEXITCODE -ne 0) { throw 'Lookup HTTP tests failed.' }
