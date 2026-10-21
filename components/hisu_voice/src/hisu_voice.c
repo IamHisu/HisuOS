@@ -1,15 +1,19 @@
 #include "hisu_voice.h"
 #include "hisu_voice_session.h"
 #include "hisu_voice_wake.h"
+#include "hisu_voice_gate.h"
 #include "hisu_voice_music.h"
 #include "hisu_voice_live.h"
 #include "hisu_voice_caption.h"
+#include "hisu_voice_console.h"
 #include "hisu_ui.h"
 #include "hisu_network.h"
 #include "hisu_settings.h"
 #include "hisu_memory.h"
 #include "board_config.h"
 #include "driver/i2s_std.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
 #include "esp_afe_sr_models.h"
 #include "esp_mn_models.h"
 #include "esp_mn_speech_commands.h"
@@ -24,6 +28,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <fcntl.h>
+#include <unistd.h>
 static const char *TAG = "VOICE";
 static i2s_chan_handle_t s_rx;
 static const esp_afe_sr_iface_t *s_afe;
@@ -39,14 +45,25 @@ static bool s_commands_allocated;
 static int16_t *s_mic_pcm, *s_preroll;
 static int32_t *s_mic_raw;
 static atomic_bool s_audio_fault;
+static atomic_bool s_started;
+static voice_console_t s_console;
+static voice_session_t s_console_origin;
+static int64_t s_console_mic_until;
 #define ASR_SAMPLE_RATE 16000
 #define ASR_MAX_SAMPLES (ASR_SAMPLE_RATE * 12)
 #define ASR_MIN_SAMPLES (ASR_SAMPLE_RATE / 2)
 #define ASR_SILENCE_SAMPLES (ASR_SAMPLE_RATE * 7 / 10)
-#define ASR_START_VOLUME_DBFS (-35.0f)
-#define ASR_START_SAMPLES (ASR_SAMPLE_RATE / 5)
 #define ASR_PREROLL_SAMPLES (ASR_SAMPLE_RATE * 6 / 10)
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+static void log_close(const char *reason)
+{
+    ESP_LOGI(TAG,"Conversation close: reason=%s internal=%u largest=%u min=%u PSRAM=%u stack=%u",
+        reason,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT),
+        (unsigned)uxTaskGetStackHighWaterMark(NULL));
+}
 static void post_listening(void)
 {
     const char *language=voice_live_interpreter_language();
@@ -101,6 +118,7 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         else voice_session_finish_utterance(&s_session, generation, now_ms(), s_utterance);
         s_reply[0] = 0;
         if (s_session.state == VOICE_IDLE) {
+            log_close("end_phrase");
             voice_live_close();
             (void)hisu_ui_post_status(HISU_UI_IDLE, "");
         } else {
@@ -122,6 +140,7 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         s_reply[0]=s_utterance[0]=0;
         (void)hisu_ui_post_status(HISU_UI_MUSIC_LOADING,"");
     } else if (event == LIVE_END || event == LIVE_SLEEP) {
+        log_close(event==LIVE_SLEEP ? "sleep_timer" : "model_end_conversation");
         voice_session_close(&s_session); voice_live_close();
         (void)hisu_ui_post_status(event==LIVE_SLEEP ? HISU_UI_SLEEP : HISU_UI_IDLE, "");
     } else if (event == LIVE_DEVICE) {
@@ -129,6 +148,7 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
             s_session.state == VOICE_WAITING ? HISU_UI_LISTENING : HISU_UI_THINKING;
         (void)hisu_ui_post_status(status, s_session.state == VOICE_SPEAKING ? s_reply : "Đã cập nhật thiết bị");
     } else if (event == LIVE_ERROR) {
+        log_close("live_error");
         voice_session_close(&s_session); voice_live_close();
         s_reply[0] = s_utterance[0] = 0;
         (void)hisu_ui_post_status(text[0] ? HISU_UI_ERROR : HISU_UI_IDLE, text);
@@ -137,7 +157,7 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
 }
 bool hisu_voice_control(bool end_session)
 {
-    if (!s_lock) return false;
+    if (!s_lock || !atomic_load(&s_started)) return false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool music = hisu_music_cancel();
     bool active = s_session.state != VOICE_IDLE;
@@ -173,6 +193,126 @@ static void cancel_capture(uint32_t generation)
         (void)hisu_ui_post_status(HISU_UI_ERROR, "Không gửi được âm thanh, gọi Hi Su để thử lại");
     }
     xSemaphoreGive(s_lock);
+}
+
+static bool wake_at(int64_t wake_us)
+{
+    if (!s_lock || !atomic_load(&s_started) || atomic_load(&s_audio_fault)) return false;
+    (void)hisu_music_cancel();
+    if (hisu_voice_control(false)) { voice_live_feedback(false); return true; }
+    hisu_network_status_t network; hisu_network_get(&network);
+    const char *error=!network.connected ? "Cần Wi-Fi để nghe lệnh" :
+        hisu_network_has_internet_warning(&network) ?
+            (network.internet==HISU_INTERNET_CAPTIVE ? "Wi-Fi yêu cầu đăng nhập" : "Wi-Fi chưa có Internet") :
+        !hisu_settings_has_gemini_key() ? "Cần API key trong Setting" : NULL;
+    if (error) (void)hisu_ui_post_status(HISU_UI_ERROR,error);
+    else {
+        xSemaphoreTake(s_lock,portMAX_DELAY);
+        /* A concurrent wake may already have opened this session. */
+        if (s_session.state==VOICE_IDLE) {
+            voice_session_open(&s_session,now_ms());
+            voice_live_open_at(s_session.generation,wake_us);
+            (void)hisu_ui_post_status(HISU_UI_THINKING,"Đang kết nối...");
+            voice_live_ui_queued(s_session.generation);
+        }
+        xSemaphoreGive(s_lock);
+    }
+    voice_live_feedback(error!=NULL); return true;
+}
+
+bool hisu_voice_wake(void) { return wake_at(esp_timer_get_time()); }
+
+bool hisu_voice_boot(void)
+{
+    if (!s_lock || !atomic_load(&s_started)) return false;
+    if (hisu_music_cancel() || voice_live_story_active()) return hisu_voice_wake();
+    return hisu_voice_control(true);
+}
+
+static esp_err_t submit_text(const char *text, const voice_session_t *origin)
+{
+    if (!voice_console_valid(text)) return ESP_ERR_INVALID_ARG;
+    if (!s_lock || !atomic_load(&s_started) || atomic_load(&s_audio_fault)) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_lock,portMAX_DELAY);
+    if ((origin && (origin->generation!=s_session.generation || origin->session_id!=s_session.session_id)) ||
+        s_session.state!=VOICE_WAITING || !voice_live_text_ready() ||
+        !voice_session_capture(&s_session,now_ms())) {
+        xSemaphoreGive(s_lock); return ESP_ERR_INVALID_STATE;
+    }
+    s_session.state=VOICE_PROCESSING;
+    bool ok=voice_live_text(s_session.generation,text);
+    if (ok) {
+        s_reply[0]=0; snprintf(s_utterance,sizeof(s_utterance),"%s",text);
+        hisu_memory_recent(true,text);
+        (void)hisu_ui_post_status(HISU_UI_THINKING,"");
+    } else {
+        voice_session_close(&s_session); voice_live_close();
+        (void)hisu_ui_post_status(HISU_UI_ERROR,"Không gửi được tin nhắn, gọi Hi Su để thử lại");
+    }
+    xSemaphoreGive(s_lock);
+    if (ok) ESP_LOGI("HISU_INPUT","%s",text);
+    return ok ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t hisu_voice_submit_text(const char *text) { return submit_text(text,NULL); }
+
+static void console_mic(bool enabled)
+{
+    bool was_disabled=s_console_mic_until!=0;
+    s_console_mic_until=enabled ? 0 : now_ms()+VOICE_CONSOLE_MIC_LEASE_MS;
+    if (!enabled && !was_disabled) {
+        xSemaphoreTake(s_lock,portMAX_DELAY);
+        if ((s_session.state==VOICE_CAPTURING ||
+            (s_session.state==VOICE_WAITING && !voice_live_text_ready())) &&
+            voice_live_ready() && !voice_live_story_active()) {
+            voice_session_open(&s_session,now_ms());
+            if (!voice_live_cancel_mic(s_session.generation)) {
+                voice_session_close(&s_session); voice_live_close();
+                (void)hisu_ui_post_status(HISU_UI_ERROR,"Không hủy được lượt mic");
+            } else post_listening();
+            s_reply[0]=s_utterance[0]=0;
+        }
+        xSemaphoreGive(s_lock);
+    }
+    ESP_LOGI("HISU_MIC","%s",enabled ? "enabled" : "disabled");
+}
+
+static void console_poll(void)
+{
+    unsigned char bytes[64];
+    bool invalid=false, busy=false;
+    ssize_t count=read(STDIN_FILENO,bytes,sizeof(bytes));
+    for (ssize_t i=0;i<count;++i) {
+        if (!s_console.used && !s_console.discard && bytes[i]!='\r' && bytes[i]!='\n') {
+            xSemaphoreTake(s_lock,portMAX_DELAY); s_console_origin=s_session; xSemaphoreGive(s_lock);
+        }
+        int event=voice_console_feed(&s_console,bytes[i]);
+        if (event==VOICE_CONSOLE_CONTROL) {
+            if (!strcmp(s_console.line,"M0")) console_mic(false);
+            else if (!strcmp(s_console.line,"M1")) console_mic(true);
+            else ESP_LOGW("HISU_CONTROL","unsupported");
+        } else if (event==VOICE_CONSOLE_INVALID) invalid=true;
+        else if (event==VOICE_CONSOLE_LINE && submit_text(s_console.line,&s_console_origin)!=ESP_OK)
+            busy=true;
+    }
+    if (invalid) ESP_LOGW("HISU_CHAT","Bỏ dòng không hợp lệ hoặc dài quá 255 byte UTF-8");
+    if (busy) ESP_LOGW("HISU_CHAT","Chưa gửi: nhấn đúp BOOT và đợi Hi Su lắng nghe, rồi nhập lại");
+}
+
+static bool console_init(void)
+{
+#if CONFIG_ESP_CONSOLE_UART
+    int flags=fcntl(STDIN_FILENO,F_GETFL,0);
+    if (flags<0 || fcntl(STDIN_FILENO,F_SETFL,flags|O_NONBLOCK)!=0) return false;
+    /* The ROM FIFO alone cannot hold a pasted sentence while MultiNet runs.
+     * Two maximum-size lines fit in this RX ring; no TX ring or task. */
+    const uart_port_t uart=CONFIG_ESP_CONSOLE_UART_NUM;
+    if (!uart_is_driver_installed(uart) && uart_driver_install(uart,512,0,0,NULL,0)!=ESP_OK) return false;
+    uart_vfs_dev_use_driver(uart);
+    return true;
+#else
+    return false;
+#endif
 }
 static void microphone_task(void *arg)
 {
@@ -240,13 +380,20 @@ static void detection_task(void *arg)
     int16_t *capture = NULL;
     size_t captured = 0;
     size_t silence_samples = 0;
-    unsigned speech_frames = 0;
+    voice_gate_t gate = {0};
+    float capture_threshold = -32.0f;
     uint32_t capture_generation = 0;
     uint32_t seen_generation = 0;
     const size_t preroll_capacity = ASR_PREROLL_SAMPLES;
     int16_t *preroll = s_preroll;
     size_t preroll_count = 0;
     int previous_vad = -1;
+    bool previous_mic_muted=false;
+    voice_state_t reported_state=VOICE_IDLE;
+    bool reported=false;
+    bool console=console_init();
+    if (console) ESP_LOGI("HISU_CHAT","Nhấn đúp BOOT, đợi lắng nghe, nhập chữ UTF-8 rồi Enter");
+    else ESP_LOGW("HISU_CHAT","Không mở được đầu vào Monitor, mic vẫn hoạt động bình thường");
     for (;;) {
         afe_fetch_result_t *result = s_afe->fetch(s_afe_data);
         int64_t fetched_us = esp_timer_get_time();
@@ -282,22 +429,36 @@ static void detection_task(void *arg)
                      result->vad_state == VAD_SPEECH ? "speech" : "silence",
                      result->data_volume);
         }
+        if (console) console_poll();
+        if (s_console_mic_until && !voice_console_mic_muted(s_console_mic_until,now_ms())) console_mic(true);
         xSemaphoreTake(s_lock, portMAX_DELAY);
         if (voice_session_expire(&s_session, now_ms())) {
+            log_close("listen_timeout");
             voice_live_close();
             (void)hisu_ui_post_status(HISU_UI_IDLE, "");
         }
         voice_session_t snapshot = s_session;
         xSemaphoreGive(s_lock);
+        if (!reported || snapshot.state!=reported_state) {
+            static const char *const states[]={"idle","waiting","capturing","processing","speaking"};
+            ESP_LOGI("HISU_STATE","%s",states[snapshot.state]);
+            reported_state=snapshot.state; reported=true;
+        }
         if (seen_generation != snapshot.generation) {
             seen_generation = snapshot.generation;
             preroll_count = 0;
-            speech_frames = 0;
+            voice_gate_pause(&gate);
             s_multinet->clean(s_multinet_data);
         }
         if (capture && !voice_session_current(&snapshot, capture_generation)) {
             free(capture); capture = NULL;
         }
+        bool mic_muted=voice_console_mic_muted(s_console_mic_until,now_ms());
+        if (mic_muted!=previous_mic_muted) {
+            preroll_count=0; voice_gate_pause(&gate); s_multinet->clean(s_multinet_data);
+            previous_mic_muted=mic_muted;
+        }
+        if (mic_muted) { free(capture); capture=NULL; continue; }
         if (capture) {
             size_t frame = s_multinet->get_samp_chunksize(s_multinet_data);
             if (frame > ASR_MAX_SAMPLES - captured) frame = ASR_MAX_SAMPLES - captured;
@@ -308,7 +469,8 @@ static void detection_task(void *arg)
             }
             captured += frame;
             /* Keep a generous silence gap for pauses between Vietnamese syllables. */
-            if (result->vad_state == VAD_SPEECH) silence_samples = 0;
+            if (voice_gate_continue(result->vad_state == VAD_SPEECH,
+                                    result->data_volume, capture_threshold)) silence_samples = 0;
             else silence_samples += frame;
             if (captured >= ASR_MAX_SAMPLES ||
                 (captured >= ASR_MIN_SAMPLES &&
@@ -341,33 +503,8 @@ static void detection_task(void *arg)
             if (recognized && recognized->num > 0 &&
                 voice_wake_accept(recognized->command_id[0], recognized->prob[0])) {
                 int64_t wake_us=esp_timer_get_time();
-                bool wake_error=false;
                 ESP_LOGI(TAG, "Offline Hey Hisu detected (confidence %.2f)", recognized->prob[0]);
-                /* Wake cancels playback, then opens the usual voice session. */
-                (void)hisu_music_cancel();
-                hisu_network_status_t network;
-                hisu_network_get(&network);
-                if (hisu_voice_control(false)) {
-                    /* Interruption works even if connectivity was lost during the turn. */
-                } else if (!network.connected) {
-                    wake_error=true;
-                    (void)hisu_ui_post_status(HISU_UI_ERROR, "Cần Wi-Fi để nghe lệnh");
-                } else if (hisu_network_has_internet_warning(&network)) {
-                    wake_error=true;
-                    (void)hisu_ui_post_status(HISU_UI_ERROR, network.internet == HISU_INTERNET_CAPTIVE
-                        ? "Wi-Fi yêu cầu đăng nhập" : "Wi-Fi chưa có Internet");
-                } else if (!hisu_settings_has_gemini_key()) {
-                    wake_error=true;
-                    (void)hisu_ui_post_status(HISU_UI_ERROR, "Cần API key trong Setting");
-                } else {
-                    xSemaphoreTake(s_lock, portMAX_DELAY);
-                    voice_session_open(&s_session, now_ms());
-                    voice_live_open_at(s_session.generation,wake_us);
-                    (void)hisu_ui_post_status(HISU_UI_THINKING, "Đang kết nối...");
-                    voice_live_ui_queued(s_session.generation);
-                    xSemaphoreGive(s_lock);
-                }
-                voice_live_feedback(wake_error);
+                (void)wake_at(wake_us);
                 s_multinet->clean(s_multinet_data);
                 continue;
             }
@@ -382,9 +519,16 @@ static void detection_task(void *arg)
                          candidate->raw_string, candidate->prob[0]);
             s_multinet->clean(s_multinet_data);
         }
-        if (snapshot.state != VOICE_WAITING || now_ms() < snapshot.ready_ms || !voice_live_ready() || voice_live_feedback_busy()) continue;
-        voice_live_listening(snapshot.generation);
+        bool feedback_busy = voice_live_feedback_busy();
         size_t frame = s_afe->get_fetch_chunksize(s_afe_data);
+        if ((snapshot.state == VOICE_IDLE || snapshot.state == VOICE_WAITING) && !feedback_busy)
+            voice_gate_observe(&gate, result->vad_state == VAD_SPEECH, result->data_volume, frame);
+        if (snapshot.state != VOICE_WAITING || now_ms() < snapshot.ready_ms || !voice_live_ready() || feedback_busy) {
+            voice_gate_pause(&gate);
+            preroll_count = 0;
+            continue;
+        }
+        voice_live_listening(snapshot.generation);
         if (frame > preroll_capacity) frame = preroll_capacity;
         if (preroll_count + frame > preroll_capacity) {
             size_t discard = preroll_count + frame - preroll_capacity;
@@ -393,11 +537,10 @@ static void detection_task(void *arg)
         }
         memcpy(preroll + preroll_count, result->data, frame * sizeof(int16_t));
         preroll_count += frame;
-        if (result->vad_state == VAD_SPEECH && result->data_volume >= ASR_START_VOLUME_DBFS)
-            speech_frames += frame;
-        else speech_frames = 0;
-        if (speech_frames < ASR_START_SAMPLES) continue;
-        ESP_LOGI(TAG, "Capture start: sustained speech, volume %.1f dBFS", result->data_volume);
+        if (!voice_gate_start(&gate, result->vad_state == VAD_SPEECH, result->data_volume, frame)) continue;
+        capture_threshold = voice_gate_threshold(&gate);
+        ESP_LOGI(TAG, "Capture start: sustained speech, volume %.1f dBFS, gate %.1f noise %.1f dBFS",
+                 result->data_volume, capture_threshold, gate.noise_known ? gate.noise_dbfs : -90.0f);
         capture = heap_caps_malloc(preroll_capacity * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         xSemaphoreTake(s_lock, portMAX_DELAY);
         if (capture && s_session.generation == snapshot.generation && voice_session_capture(&s_session, now_ms())) {
@@ -407,7 +550,7 @@ static void detection_task(void *arg)
             captured = preroll_count;
             memcpy(capture, preroll, captured * sizeof(int16_t));
             silence_samples = 0;
-            speech_frames = 0;
+            voice_gate_pause(&gate);
             s_reply[0] = 0;
             s_utterance[0] = 0;
             (void)hisu_ui_post_status(HISU_UI_LISTENING, "Đang nghe...");
@@ -564,6 +707,7 @@ esp_err_t hisu_voice_start(void)
         goto failed_models;
     }
     /* Both workers wait until all resources and peer tasks exist. */
+    atomic_store(&s_started,true);
     xTaskNotifyGive(mic);
     xTaskNotifyGive(wake);
     return ESP_OK;

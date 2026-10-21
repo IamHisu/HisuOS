@@ -20,10 +20,14 @@ bool voice_live_feedback_busy(void);
 void voice_live_resume_music(uint32_t generation);
 void voice_live_close(void);
 bool voice_live_interrupt(uint32_t generation);
+bool voice_live_cancel_mic(uint32_t generation);
 bool voice_live_ready(void);
 bool voice_live_begin(uint32_t generation);
 bool voice_live_feed(uint32_t generation, const int16_t *pcm, size_t samples);
 bool voice_live_end(uint32_t generation);
+bool voice_live_text(uint32_t generation, const char *text);
+bool voice_live_text_ready(void);
+bool voice_live_story_active(void);
 /* NULL in ordinary conversation; otherwise an immutable target-language code. */
 const char *voice_live_interpreter_language(void);
 bool voice_live_uses_memory(void);

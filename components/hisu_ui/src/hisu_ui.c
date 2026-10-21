@@ -70,6 +70,12 @@ typedef struct {
 } status_event_t;
 static QueueHandle_t s_events;
 static hisu_ui_voice_control_fn s_voice_control;
+static bool (*s_voice_wake)(void), (*s_voice_boot)(void);
+
+void hisu_ui_set_voice_buttons(bool (*wake)(void), bool (*boot)(void))
+{
+    s_voice_wake=wake; s_voice_boot=boot;
+}
 
 void hisu_ui_set_voice_control(hisu_ui_voice_control_fn control)
 {
@@ -95,6 +101,12 @@ static lv_obj_t *s_music_view;
 static lv_timer_t *s_music_timer;
 static atomic_uint s_music_meter;
 static unsigned s_music_energy;
+static hisu_music_scene_t s_music_scene;
+/* Reused only by the UI task; dense particles must not grow its stack. */
+static hisu_music_frame_t *s_music_frame;
+static lv_obj_t *s_volume_overlay, *s_volume_slider, *s_volume_value;
+static int64_t s_volume_until_ms;
+static int s_volume_display=-1;
 static hisu_network_status_t s_network;
 static hisu_power_status_t s_power;
 static lv_obj_t *s_battery_body, *s_battery_bars[HISU_UI_BATTERY_BARS], *s_battery_tip, *s_battery_charge;
@@ -881,60 +893,70 @@ static void music_rect(lv_layer_t *layer, const lv_area_t *origin, int x, int y,
     lv_draw_rect(layer,&dsc,&area);
 }
 
+static void music_note(lv_layer_t *layer,const lv_area_t *origin,const hisu_music_note_t *note,
+    int spread,uint32_t color,unsigned opacity)
+{
+    int x=note->x,y=note->y,size=note->size;
+    music_rect(layer,origin,x-spread,y-spread,size+spread*2,size-2+spread*2,color,opacity,4+spread);
+    music_rect(layer,origin,x+size-1-spread,y-17-spread,2+spread*2,19+spread*2,color,opacity,spread);
+    if (note->kind==1) {
+        music_rect(layer,origin,x+11-spread,y-2-spread,size+spread*2,size-2+spread*2,color,opacity,4+spread);
+        music_rect(layer,origin,x+size+10-spread,y-19-spread,2+spread*2,19+spread*2,color,opacity,spread);
+        music_rect(layer,origin,x+size-spread,y-18-spread,11+spread*2,2+spread*2,color,opacity,spread);
+    } else if (!note->kind) {
+        music_rect(layer,origin,x+size-spread,y-17-spread,4+spread*2,2+spread*2,color,opacity,1+spread);
+        music_rect(layer,origin,x+size+3-spread,y-15-spread,2+spread*2,5+spread*2,color,opacity,1+spread);
+    }
+}
+
 static void draw_music(lv_event_t *event)
 {
+    if (!s_music_frame) return;
     lv_layer_t *layer=lv_event_get_layer(event);
     lv_area_t origin; lv_obj_get_coords(s_music_view,&origin);
-    hisu_music_frame_t frame; hisu_music_frame(tick_ms(),s_music_energy,&frame);
+    hisu_music_frame_t *frame=s_music_frame;
+    hisu_music_frame(tick_ms(),s_music_energy,&s_music_scene,frame);
     for (unsigned x=0;x<240;x+=12) {
         uint32_t color=hisu_music_color(x+6);
-        for (int half=0;half<2;++half) {
+        {
             lv_draw_rect_dsc_t dsc; lv_draw_rect_dsc_init(&dsc);
             dsc.bg_color=lv_color_hex(color); dsc.bg_opa=LV_OPA_COVER;
             dsc.bg_grad.dir=LV_GRAD_DIR_VER; dsc.bg_grad.stops_count=2;
             for (int j=0;j<2;++j) {
                 dsc.bg_grad.stops[j].color=lv_color_hex(color);
                 dsc.bg_grad.stops[j].frac=(uint8_t)(j*255);
-                dsc.bg_grad.stops[j].opa=(lv_opa_t)(j==half ? 0 : 44+frame.energy/2);
+                dsc.bg_grad.stops[j].opa=(lv_opa_t)(j ? 16+frame->energy/3 : 0);
             }
-            int y=half ? 86 : 0,h=half ? 78 : 86;
-            lv_area_t area={origin.x1+(int)x,origin.y1+y,origin.x1+(int)x+11,origin.y1+y+h-1};
+            int height=32+(int)frame->energy/4+frame->bars[x*HISU_MUSIC_BARS/240].height/2;
+            lv_area_t area={origin.x1+(int)x,origin.y1+HISU_MUSIC_BASELINE-height+1,origin.x1+(int)x+11,origin.y1+HISU_MUSIC_BASELINE};
             lv_draw_rect(layer,&dsc,&area);
         }
     }
-    music_rect(layer,&origin,0,82,240,9,0x83cfff,25+frame.energy/5,0);
-    music_rect(layer,&origin,0,86,240,1,0xeaffff,205,0);
     for (int i=0;i<HISU_MUSIC_BARS;++i) {
-        hisu_music_bar_t bar=frame.bars[i];
-        if (i%3==0 && bar.x>2 && bar.x<237)
-            music_rect(layer,&origin,bar.x-2,84-bar.height,5,bar.height*2+5,bar.color,70,2);
-        music_rect(layer,&origin,bar.x,86-bar.height,1,bar.height*2+1,0xffffff,235,0);
+        hisu_music_bar_t bar=frame->bars[i];
+        if (!bar.height) continue;
+        int top=HISU_MUSIC_BASELINE-bar.height+1;
+        music_rect(layer,&origin,bar.x-1,top-2,5,bar.height+2,bar.color,35+frame->energy/4,2);
+        music_rect(layer,&origin,bar.x,top,3,bar.height,bar.color,225,1);
+        music_rect(layer,&origin,bar.x,top,3,2,0xffffff,130,1);
     }
     for (int i=0;i<HISU_MUSIC_NOTES;++i) {
-        hisu_music_note_t note=frame.notes[i];
-        music_rect(layer,&origin,note.x-2,note.y-2,note.size+4,note.size+2,note.color,35+frame.energy/5,7);
-        music_rect(layer,&origin,note.x,note.y,note.size,note.size-2,0xffffff,240,4);
-        music_rect(layer,&origin,note.x+note.size-1,note.y-17,1,19,0xffffff,240,0);
-        if (note.kind==1) {
-            music_rect(layer,&origin,note.x+11,note.y-2,note.size,note.size-2,0xffffff,240,4);
-            music_rect(layer,&origin,note.x+note.size+10,note.y-19,1,19,0xffffff,240,0);
-            music_rect(layer,&origin,note.x+note.size,note.y-18,11,2,0xffffff,240,0);
-        } else if (!note.kind) {
-            music_rect(layer,&origin,note.x+note.size,note.y-17,4,2,0xffffff,240,1);
-            music_rect(layer,&origin,note.x+note.size+3,note.y-15,2,5,0xffffff,240,1);
-        }
+        hisu_music_note_t note=frame->notes[i];
+        if (!note.opacity) continue;
+        music_note(layer,&origin,&note,3,note.color,note.opacity/5);
+        music_note(layer,&origin,&note,1,note.color,note.opacity/2);
+        music_note(layer,&origin,&note,0,note.color,note.opacity);
     }
     lv_draw_line_dsc_t line; lv_draw_line_dsc_init(&line);
-    line.color=lv_color_hex(0xffffff); line.opa=245; line.width=2;
     line.round_start=line.round_end=1;
-    for (unsigned curve=0;curve<HISU_MUSIC_CLEF_CURVES;++curve) {
-        hisu_music_point_t previous=hisu_music_clef_point(curve,0,frame.clef_x,frame.clef_y,frame.clef_size);
-        for (unsigned step=1;step<=HISU_MUSIC_CLEF_STEPS;++step) {
-            hisu_music_point_t point=hisu_music_clef_point(curve,step,frame.clef_x,frame.clef_y,frame.clef_size);
-            line.p1=(lv_point_precise_t){origin.x1+previous.x,origin.y1+previous.y};
-            line.p2=(lv_point_precise_t){origin.x1+point.x,origin.y1+point.y};
-            lv_draw_line(layer,&line); previous=point;
-        }
+    for (unsigned i=0;i<frame->spark_count;++i) {
+        hisu_music_spark_t spark=frame->sparks[i];
+        line.color=lv_color_hex(spark.color);
+        line.p1=(lv_point_precise_t){origin.x1+spark.tail_x,origin.y1+spark.tail_y};
+        line.p2=(lv_point_precise_t){origin.x1+spark.x,origin.y1+spark.y};
+        line.width=4; line.opa=(lv_opa_t)(spark.opacity/3); lv_draw_line(layer,&line);
+        line.width=2; line.opa=(lv_opa_t)spark.opacity; lv_draw_line(layer,&line);
+        music_rect(layer,&origin,spark.x,spark.y,1,1,0xffffff,spark.opacity*3/4,0);
     }
 }
 
@@ -951,17 +973,23 @@ static void animate_music(lv_timer_t *timer)
 
 static void render_music(int state, const char *text)
 {
+    if (!s_music_frame)
+        s_music_frame=heap_caps_malloc(sizeof(*s_music_frame),MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint32_t now=tick_ms();
+    hisu_music_scene_init(&s_music_scene,hisu_music_hash(now^0x487375U),now);
     lv_obj_t *root=lv_screen_active();
     lv_obj_set_style_bg_color(root,lv_color_hex(0x000000),0);
     lv_obj_t *title=label(root,state==HISU_UI_MUSIC_LOADING ? "Đang tải nhạc" : "Đang phát",12,2,216,0xa1a9a5);
+    lv_obj_set_style_text_color(title,lv_color_hex(0xa1a9a5),0);
     lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
     s_music_view=lv_obj_create(root);
     lv_obj_remove_style_all(s_music_view);
     lv_obj_remove_flag(s_music_view,LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(s_music_view,0,22); lv_obj_set_size(s_music_view,240,164);
+    lv_obj_set_pos(s_music_view,0,HISU_MUSIC_VIEW_Y); lv_obj_set_size(s_music_view,240,HISU_MUSIC_VIEW_HEIGHT);
     lv_obj_add_event_cb(s_music_view,draw_music,LV_EVENT_DRAW_MAIN,NULL);
-    lv_obj_t *caption=label(root,text && text[0] ? text : "",10,188,220,0xeeeeee);
-    lv_obj_set_height(caption,46);
+    lv_obj_t *caption=label(root,text && text[0] ? text : "",10,22,220,0xeeeeee);
+    lv_obj_set_style_text_color(caption,lv_color_hex(0xeeeeee),0);
+    lv_obj_set_height(caption,44);
     lv_label_set_long_mode(caption,LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(caption,LV_TEXT_ALIGN_CENTER,0);
     s_music_energy=0;
@@ -1295,19 +1323,69 @@ static void dismiss_voice_error(void)
     if (s_model.page == UI_IDLE) render();
 }
 
+static bool audio_controls_visible(void)
+{
+    return s_model.page==UI_IDLE && (s_status.status==HISU_UI_LISTENING ||
+        s_status.status==HISU_UI_THINKING || s_status.status==HISU_UI_SPEAKING ||
+        s_status.status==HISU_UI_MUSIC || s_status.status==HISU_UI_MUSIC_LOADING);
+}
+
+static void update_volume_overlay(void)
+{
+    bool visible=audio_controls_visible() && !s_asleep && esp_timer_get_time()/1000<s_volume_until_ms;
+    if (!visible) {
+        if (s_volume_overlay) lv_obj_add_flag(s_volume_overlay,LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (!s_volume_overlay) {
+        s_volume_overlay=lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(s_volume_overlay);
+        lv_obj_remove_flag(s_volume_overlay,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_pos(s_volume_overlay,208,59); lv_obj_set_size(s_volume_overlay,30,128);
+        lv_obj_set_style_bg_color(s_volume_overlay,lv_color_hex(0x111719),0);
+        lv_obj_set_style_bg_opa(s_volume_overlay,220,0); lv_obj_set_style_radius(s_volume_overlay,8,0);
+        s_volume_slider=lv_slider_create(s_volume_overlay);
+        lv_slider_set_range(s_volume_slider,0,100);
+        lv_slider_set_orientation(s_volume_slider,LV_SLIDER_ORIENTATION_VERTICAL);
+        lv_obj_set_pos(s_volume_slider,11,16); lv_obj_set_size(s_volume_slider,8,82);
+        lv_obj_set_style_bg_color(s_volume_slider,lv_color_hex(0x354348),LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_volume_slider,lv_color_hex(0x5de3de),LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(s_volume_slider,lv_color_hex(0xeaffff),LV_PART_KNOB);
+        lv_obj_set_style_pad_all(s_volume_slider,2,LV_PART_KNOB);
+        lv_obj_remove_flag(s_volume_slider,LV_OBJ_FLAG_CLICKABLE);
+        s_volume_value=label(s_volume_overlay,"",0,105,30,0xeeeeee);
+        lv_obj_set_style_text_color(s_volume_value,lv_color_hex(0xeeeeee),0);
+        lv_obj_set_style_text_align(s_volume_value,LV_TEXT_ALIGN_CENTER,0);
+    }
+    lv_obj_remove_flag(s_volume_overlay,LV_OBJ_FLAG_HIDDEN);
+    int volume=hisu_settings_get(HISU_SETTING_VOLUME);
+    if (volume!=s_volume_display) {
+        s_volume_display=volume;
+        lv_slider_set_value(s_volume_slider,volume,LV_ANIM_OFF);
+        char value[4]; snprintf(value,sizeof(value),"%d",volume);
+        lv_label_set_text(s_volume_value,value);
+    }
+}
+
 static void handle_key(hisu_key_t key)
 {
     if (!key) return;
     s_activity_ms = esp_timer_get_time() / 1000;
-    if (s_asleep) { s_asleep = false; return; }
+    if (s_asleep) { s_asleep = false; if (key!=HISU_KEY_BOOT) return; }
+    if (audio_controls_visible() && (key==HISU_KEY_UP || key==HISU_KEY_DOWN ||
+        key==HISU_KEY_UP_HELD || key==HISU_KEY_DOWN_HELD)) {
+        (void)hisu_settings_adjust_volume(key==HISU_KEY_UP || key==HISU_KEY_UP_HELD ? 5 : -5);
+        s_volume_until_ms=s_activity_ms+1800;
+        update_volume_overlay(); return;
+    }
     if (s_model.page == UI_IDLE && s_status.status == HISU_UI_ERROR &&
         (key == HISU_KEY_BOOT || key == HISU_KEY_BACK)) {
         if (s_voice_control) (void)s_voice_control(true);
         dismiss_voice_error();
         return;
     }
-    if ((key == HISU_KEY_BOOT || key == HISU_KEY_BACK) && s_voice_control &&
-        s_voice_control(key == HISU_KEY_BACK)) return;
+    if (key == HISU_KEY_BOOT && s_voice_boot && s_voice_boot()) return;
+    if (key == HISU_KEY_BACK && s_voice_control && s_voice_control(true)) return;
     if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && key == HISU_KEY_FLASHLIGHT) {
         s_model.page = UI_FLASHLIGHT_PAGE;
         s_flashlight_enabled = true; s_flashlight_mode = 0;
@@ -1516,6 +1594,8 @@ static void ui_task(void *arg)
     int64_t s_last_service_refresh = 0;
     hisu_media_status_t initial_media; hisu_media_get(&initial_media);
     uint32_t seen_wallpaper_revision = initial_media.revision;
+    hisu_ui_boot_click_t boot_click={0};
+    bool audio_boot_latched=false;
     for (;;) {
         if (boot_splash) {
             /* Discard splash inputs rather than replaying them into the menu. */
@@ -1528,10 +1608,26 @@ static void ui_task(void *arg)
             s_activity_ms = esp_timer_get_time() / 1000;
             render();
         }
-        hisu_board_enable_volume_hold((s_model.page == UI_WIFI_PASSWORD || s_model.page == UI_CALENDAR_PAGE) && !s_asleep);
+        hisu_board_enable_volume_hold((s_model.page == UI_WIFI_PASSWORD || s_model.page == UI_CALENDAR_PAGE || audio_controls_visible()) && !s_asleep);
         hisu_board_enable_menu_close_hold(s_model.page == UI_MENU && !s_asleep);
         hisu_board_enable_idle_boot_hold(s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && !s_asleep);
-        handle_key(hisu_board_poll_key());
+        hisu_key_t key=hisu_board_poll_key();
+        int audio_boot=hisu_ui_audio_boot(&audio_boot_latched,hisu_board_boot_stable_pressed(),audio_controls_visible());
+        if (audio_boot==1) key=HISU_KEY_BOOT;
+        else if (audio_boot<0 && (key==HISU_KEY_BOOT || key==HISU_KEY_BACK)) key=HISU_KEY_NONE;
+        bool idle=s_model.page==UI_IDLE && s_status.status==HISU_UI_IDLE;
+        bool waking=s_asleep;
+        int click=hisu_ui_boot_click(&boot_click,key==HISU_KEY_BOOT,
+            hisu_board_boot_pressed(),idle && (key==HISU_KEY_NONE || key==HISU_KEY_BOOT),
+            waking,esp_timer_get_time()/1000);
+        if (idle && key==HISU_KEY_BOOT) {
+            s_asleep=false; s_activity_ms=esp_timer_get_time()/1000; key=HISU_KEY_NONE;
+        }
+        if (click==HISU_BOOT_CLICK_DOUBLE) {
+            if (s_voice_wake) (void)s_voice_wake();
+        } else if (click==HISU_BOOT_CLICK_SINGLE) key=HISU_KEY_BOOT;
+        handle_key(key);
+        update_volume_overlay();
         status_event_t event;
         bool changed = false;
         // Bound draining so a fast producer cannot starve input/rendering.

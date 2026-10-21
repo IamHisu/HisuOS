@@ -13,7 +13,7 @@ $out = Join-Path $root 'build\alert-tests'
 $stubs = Join-Path $out 'stubs'
 foreach ($dir in @('','freertos','mbedtls')) { New-Item -ItemType Directory -Force -Path (Join-Path $stubs $dir) | Out-Null }
 foreach ($header in @('esp_err.h','esp_partition.h','esp_heap_caps.h','esp_http_client.h','esp_crt_bundle.h',
-    'esp_log.h','esp_timer.h','strings.h','mbedtls/base64.h','freertos/FreeRTOS.h','freertos/semphr.h','freertos/task.h')) {
+    'esp_log.h','esp_timer.h','strings.h','mbedtls/base64.h','freertos/FreeRTOS.h','freertos/semphr.h','freertos/task.h','freertos/idf_additions.h')) {
     Set-Content -LiteralPath (Join-Path $stubs $header) -Value '#include "alert_mock.h"' -Encoding ascii
 }
 & $compiler.FullName /nologo /c /std:c11 /MT /utf-8 /GS- /W3 /wd4101 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_alert\include" "/I$root\components\hisu_memory\include" "/I$root\components\hisu_power\include" "/I$root\components\hisu_network\include" "/I$root\components\hisu_settings\include" "/I$root\managed_components\espressif__cjson\cJSON" "/Fo$out\" (Join-Path $root 'tests\test_alert.c') (Join-Path $root 'components\hisu_alert\src\hisu_alert_model.c') (Join-Path $root 'managed_components\espressif__cjson\cJSON\cJSON.c')
@@ -30,10 +30,10 @@ $summaryExe = Join-Path $out 'memory-summary-test.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Memory summary HTTP linking failed.' }
 & $summaryExe
 if ($LASTEXITCODE -ne 0) { throw 'Memory summary HTTP tests failed.' }
-& $compiler.FullName /nologo /c /std:c11 /MT /utf-8 /GS- /W3 /wd4101 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_memory\include" "/I$root\components\hisu_power\include" "/I$root\components\hisu_network\include" "/I$root\components\hisu_settings\include" "/I$root\managed_components\espressif__cjson\cJSON" "/Fo$out\" (Join-Path $root 'tests\test_lookup.c')
+& $compiler.FullName /nologo /c /std:c11 /MT /utf-8 /GS- /W3 /wd4101 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_memory\include" "/I$root\components\hisu_power\include" "/I$root\components\hisu_network\include" "/I$root\components\hisu_settings\include" "/I$root\managed_components\espressif__cjson\cJSON" "/I$root\components\hisu_voice\third_party\yxml" "/Fo$out\" (Join-Path $root 'tests\test_lookup.c') (Join-Path $root 'components\hisu_voice\third_party\yxml\yxml.c')
 if ($LASTEXITCODE -ne 0) { throw 'Lookup HTTP compilation failed.' }
 $lookupExe = Join-Path $out 'lookup-test.exe'
-& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$lookupExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_lookup.obj') (Join-Path $out 'cJSON.obj')
+& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$lookupExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_lookup.obj') (Join-Path $out 'yxml.obj') (Join-Path $out 'cJSON.obj')
 if ($LASTEXITCODE -ne 0) { throw 'Lookup HTTP linking failed.' }
 & $lookupExe
 if ($LASTEXITCODE -ne 0) { throw 'Lookup HTTP tests failed.' }

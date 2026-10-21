@@ -35,6 +35,7 @@ void hisu_app_start(void)
         if (service_err != ESP_OK) ESP_LOGE("APP", "Media startup: %s", esp_err_to_name(service_err));
     }
     hisu_ui_set_voice_control(hisu_voice_control);
+    hisu_ui_set_voice_buttons(hisu_voice_wake,hisu_voice_boot);
     if (err == ESP_OK) err = hisu_ui_start();
     if (err == ESP_OK) {
         esp_err_t voice_err = hisu_voice_start();

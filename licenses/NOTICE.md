@@ -1,5 +1,10 @@
 # Third-Party Notices
 
+RSS parsing uses unmodified yxml by Yoran Heling (2013-2014), MIT.
+Source: https://dev.yorhel.nl/yxml ; getdnsapi mirror commit
+`57497cdcacb6e5538e6bf6dad0b274896d9b3962`. Files and full license are in
+`components/hisu_voice/third_party/yxml/`. No LVGL XML UI subsystem is enabled.
+
 Experimental Zing MP3 playback uses `espressif/esp_audio_codec` 2.6.2, provided by
 Espressif Systems under the Espressif Modified MIT License. The complete license
 is in `Espressif-Audio-Codec-LICENSE.txt`; upstream component:

@@ -24,6 +24,8 @@ bool lookup_query_parse(const cJSON *args,lookup_query_t *q) {
         *id=field(args,"location_id"),*type=field(args,"gold_type");
     if (!cJSON_IsObject(args) || !text(topic,7)) return false;
     q->weather=!strcmp(topic->valuestring,"weather");
+    q->news=!strcmp(topic->valuestring,"news");
+    if (q->news) return cJSON_GetArraySize(args)==1;
     if (!q->weather && strcmp(topic->valuestring,"gold")) return false;
     const cJSON *item;
     cJSON_ArrayForEach(item,args) {

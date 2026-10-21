@@ -86,10 +86,14 @@ static esp_err_t i2s_del_channel(i2s_chan_handle_t channel) { ++mock_i2s_deleted
 static unsigned mock_i2s_write_timeout;
 static bool mock_i2s_short_write;
 static size_t mock_i2s_written_bytes;
+static void (*mock_i2s_write_hook)(void);
+static int16_t mock_i2s_first_sample;
 static esp_err_t i2s_channel_write(i2s_chan_handle_t channel, const void *data, size_t bytes, size_t *written, unsigned timeout) {
     mock_i2s_write_timeout = timeout;
     *written = mock_i2s_short_write ? bytes / 2 : bytes;
     mock_i2s_written_bytes+=*written;
+    if (bytes>=2) mock_i2s_first_sample=((const int16_t *)data)[0];
+    if (mock_i2s_write_hook) { void (*hook)(void)=mock_i2s_write_hook; mock_i2s_write_hook=NULL; hook(); }
     return ESP_OK;
 }
 typedef void *esp_websocket_client_handle_t;

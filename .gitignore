@@ -1,5 +1,6 @@
 # Local editor configuration
-/.vscode/
+/.vscode/*
+!/.vscode/tasks.json
 /.clangd
 
 # ESP-IDF generated files
@@ -11,6 +12,7 @@
 
 # Local tools, caches and credentials
 /.cache/
+/.private/
 /.venv/
 /venv/
 node_modules/

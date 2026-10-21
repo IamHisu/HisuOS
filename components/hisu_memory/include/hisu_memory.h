@@ -6,7 +6,13 @@
 #define HISU_MEMORY_ERR_FULL ((esp_err_t)0x7a01)
 
 esp_err_t hisu_memory_init(void);
+/* Explicit local provisioning. Atomic RAM merge, monotonic version; caller flushes when idle. */
+esp_err_t hisu_memory_seed_once(const char *json);
 esp_err_t hisu_memory_remember(const char *fact, uint32_t replace_id, uint32_t *id);
+#define HISU_MEMORY_MERGE_MAX 3
+/* Caller supplies a lossless merge and the revision from a full list_memory read. */
+esp_err_t hisu_memory_merge(const char *fact, const uint32_t *sources,
+                          unsigned count, uint32_t expected_revision, uint32_t *id);
 /* Only at capacity; compare the selected old fact before atomic replacement.
  * The new fact receives a fresh id, so stale tools cannot delete it by old id. */
 esp_err_t hisu_memory_evict_and_remember(const char *fact, uint32_t evict_id,

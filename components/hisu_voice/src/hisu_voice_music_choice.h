@@ -23,8 +23,8 @@ static inline bool music_choice_phrase(const char *transcript,const char *identi
     char input[160],name[160];
     if (!music_choice_normalize(transcript,input,sizeof(input)) ||
         !music_choice_normalize(identifier,name,sizeof(name))) return false;
-    static const char *const prefixes[]={"","chọn ","chon ","mình chọn ","minh chon ","mở ","mo ","phát ","phat ","cho mình nghe ","cho minh nghe "};
-    static const char *const suffixes[]={""," đi"," di"," nha"," nhé"," nhe"," giúp mình"," giup minh"};
+    static const char *const prefixes[]={"","bài ","bai ","chọn ","chon ","mình chọn ","minh chon ","mở ","mo ","phát ","phat ","cho mình nghe ","cho minh nghe "};
+    static const char *const suffixes[]={""," đi"," di"," nha"," nhé"," nhe"," giúp mình"," giup minh"," đi bạn"," di ban"," nha bạn"," nha ban"," dùm mình"," dum minh"};
     for (unsigned p=0;p<sizeof(prefixes)/sizeof(*prefixes);++p) {
         size_t prefix=strlen(prefixes[p]),length=strlen(name);
         if (strncmp(input,prefixes[p],prefix) || strncmp(input+prefix,name,length)) continue;

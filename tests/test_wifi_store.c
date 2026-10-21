@@ -11,6 +11,12 @@ static esp_err_t read_during_failed_commit(void)
     assert(mock_semaphore_takes == takes);
     return ESP_ERR_INVALID_STATE;
 }
+static esp_err_t volume_during_commit(void)
+{
+    assert(hisu_settings_adjust_volume(5)>=0);
+    return ESP_OK;
+}
+static esp_err_t volume_commit_fails(void) { return ESP_ERR_INVALID_STATE; }
 
 int main(void)
 {
@@ -24,6 +30,26 @@ int main(void)
     mock_during_commit = NULL;
     assert(hisu_settings_set(HISU_SETTING_VOLUME, 60) == ESP_OK);
     assert(hisu_settings_get(HISU_SETTING_VOLUME) == 60);
+    unsigned volume_writes=mock_volume_writes;
+    assert(hisu_settings_adjust_volume(-100)==0);
+    assert(hisu_settings_adjust_volume(-5)==0);
+    assert(hisu_settings_adjust_volume(5)==5 && s_volume_dirty);
+    assert(mock_volume_writes==volume_writes); /* Key repeat never writes flash. */
+    assert(hisu_settings_flush_volume()==ESP_OK && mock_volume_saved==5 && !s_volume_dirty);
+    assert(hisu_settings_adjust_volume(5)==10);
+    mock_during_commit=volume_commit_fails;
+    assert(hisu_settings_flush_volume()!=ESP_OK && s_volume_dirty && hisu_settings_get(HISU_SETTING_VOLUME)==10);
+    mock_during_commit=volume_during_commit;
+    assert(hisu_settings_flush_volume()==ESP_OK && s_volume_dirty && hisu_settings_get(HISU_SETTING_VOLUME)==15);
+    mock_during_commit=NULL;
+    assert(hisu_settings_flush_volume()==ESP_OK && !s_volume_dirty && mock_volume_saved==15);
+    mock_during_commit=volume_during_commit;
+    assert(hisu_settings_set(HISU_SETTING_VOLUME,30)==ESP_OK && hisu_settings_get(HISU_SETTING_VOLUME)==20 && s_volume_dirty);
+    mock_during_commit=NULL;
+    assert(hisu_settings_flush_volume()==ESP_OK && mock_volume_saved==20 && !s_volume_dirty);
+    assert(hisu_settings_adjust_volume(100)==100 && hisu_settings_adjust_volume(5)==100);
+    assert(hisu_settings_adjust_volume(101)==-1);
+    assert(hisu_settings_flush_volume()==ESP_OK);
     mock_wallpaper_default=1; /* Old selection must not hide uploaded media after an upgrade. */
     s_lock=NULL;
     assert(hisu_settings_init()==ESP_OK);

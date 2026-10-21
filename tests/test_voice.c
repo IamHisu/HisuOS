@@ -1,8 +1,11 @@
 #include "hisu_voice_session.h"
 #include "hisu_voice_wake.h"
+#include "hisu_voice_gate.h"
+#include "hisu_voice_text.h"
 #include "hisu_voice_sse.h"
 #include "hisu_voice_protocol.h"
 #include "hisu_voice_live_turn.h"
+#include "hisu_voice_console.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,9 +28,121 @@ static bool reject_event(const char *data, size_t length, void *context)
     return false;
 }
 
+static void gate_tests(void)
+{
+    voice_gate_t gate = {0};
+    assert(voice_gate_threshold(&gate) == -32.0f);
+    /* Continuous speech/noise on return from playback cannot open a turn. */
+    for (unsigned i = 0; i < 100; ++i)
+        assert(!voice_gate_start(&gate, true, -20.0f, 512));
+    for (unsigned i = 0; i < 8; ++i) {
+        voice_gate_observe(&gate, false, -50.0f, 512);
+        assert(!voice_gate_start(&gate, false, -50.0f, 512));
+    }
+    assert(gate.armed && voice_gate_threshold(&gate) == -32.0f);
+    /* Weak VAD chatter and isolated 256 ms bursts never start capture. */
+    for (unsigned i = 0; i < 100; ++i)
+        assert(!voice_gate_start(&gate, true, -35.0f, 512));
+    for (unsigned repeat = 0; repeat < 5; ++repeat) {
+        for (unsigned i = 0; i < 8; ++i)
+            assert(!voice_gate_start(&gate, true, -25.0f, 512));
+        assert(!voice_gate_start(&gate, false, -50.0f, 512));
+    }
+    for (unsigned i = 0; i < 9; ++i)
+        assert(!voice_gate_start(&gate, true, -25.0f, 512));
+    assert(voice_gate_start(&gate, true, -25.0f, 512));
+    assert(voice_gate_continue(true, -38.0f, -32.0f));
+    assert(!voice_gate_continue(true, -43.0f, -32.0f));
+    assert(!voice_gate_continue(false, -20.0f, -32.0f));
+    float noise = gate.noise_dbfs;
+    voice_gate_observe(&gate, true, -20.0f, 16000);
+    assert(gate.noise_dbfs == noise);
+    voice_gate_pause(&gate);
+    assert(!gate.armed && !gate.speech_samples && gate.noise_dbfs == noise);
+    /* A noisy room raises the start threshold, but only to the bounded cap. */
+    for (unsigned i = 0; i < 20; ++i)
+        voice_gate_observe(&gate, false, -36.0f, 16000);
+    assert(voice_gate_threshold(&gate) > -25.0f);
+    for (unsigned i = 0; i < 8; ++i)
+        assert(!voice_gate_start(&gate, false, -36.0f, 512));
+    for (unsigned i = 0; i < 100; ++i)
+        assert(!voice_gate_start(&gate, true, -30.0f, 512));
+    for (unsigned i = 0; i < 9; ++i)
+        assert(!voice_gate_start(&gate, true, -20.0f, 512));
+    assert(voice_gate_start(&gate, true, -20.0f, 512));
+    voice_gate_observe(&gate, false, -10.0f, 160000);
+    assert(voice_gate_threshold(&gate) == -24.0f);
+    noise = gate.noise_dbfs;
+    voice_gate_observe(&gate, false, 1.0f, 512);
+    assert(gate.noise_dbfs == noise);
+    /* Detector chunk size does not change the required speech duration. */
+    voice_gate_pause(&gate);
+    for (unsigned i = 0; i < 25; ++i)
+        assert(!voice_gate_start(&gate, false, -50.0f, 160));
+    for (unsigned i = 0; i < 31; ++i)
+        assert(!voice_gate_start(&gate, true, -20.0f, 160));
+    assert(voice_gate_start(&gate, true, -20.0f, 160));
+}
+
 int main(void)
 {
+    const char *wire_text="<no speech>Rồi{pause}, rõ ràng.<NO SPEECH>";
+    for (size_t split=0; split<=strlen(wire_text); ++split) {
+        voice_text_filter_t filter={0}; char first[128], second[128], source[128];
+        memcpy(source,wire_text,split); source[split]=0;
+        assert(voice_text_filter(&filter,source,first,sizeof(first)));
+        assert(voice_text_filter(&filter,wire_text+split,second,sizeof(second)));
+        memcpy(first+strlen(first),second,strlen(second)+1);
+        assert(!strcmp(first,"Rồi, rõ ràng.") && !filter.used);
+    }
+    voice_text_filter_t text_filter={0}; char filtered[128], assembled[128]="";
+    for (const char *p=wire_text; *p; ++p) {
+        char byte[2]={*p,0};
+        assert(voice_text_filter(&text_filter,byte,filtered,sizeof(filtered)));
+        memcpy(assembled+strlen(assembled),filtered,strlen(filtered)+1);
+    }
+    assert(!strcmp(assembled,"Rồi, rõ ràng.") && !text_filter.used);
+    assert(voice_text_filter(&text_filter,"<no signal> {x} 1 < 2",filtered,sizeof(filtered)));
+    assert(!strcmp(filtered,"<no signal> {x} 1 < 2"));
+    assert(!voice_text_filter(&text_filter,"<no speech>",filtered,1) && !text_filter.used);
+    gate_tests();
+    voice_console_t console={0};
+    const char *console_line="Mở bài \"Sóng Gió\"";
+    for (size_t i=0;console_line[i];++i) assert(voice_console_feed(&console,(unsigned char)console_line[i])==VOICE_CONSOLE_NONE);
+    assert(voice_console_feed(&console,'\r')==VOICE_CONSOLE_LINE && !strcmp(console.line,console_line));
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_NONE);
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_NONE);
+    assert(voice_console_valid("Rồi, rõ ràng"));
+    assert(!voice_console_valid("\xc0\xaf") && !voice_console_valid("\xed\xa0\x80"));
+    assert(!voice_console_valid("\xf4\x90\x80\x80") && !voice_console_valid("\xe1\x80"));
+    assert(!voice_console_valid("a\nb") && !voice_console_valid(""));
+    for (unsigned i=0;i<255;++i) (void)voice_console_feed(&console,'a');
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_LINE && strlen(console.line)==255);
+    for (unsigned i=0;i<256;++i) (void)voice_console_feed(&console,'b');
+    (void)voice_console_feed(&console,127);
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_INVALID);
+    (void)voice_console_feed(&console,0xe1); (void)voice_console_feed(&console,0xbb); (void)voice_console_feed(&console,0x9f);
+    (void)voice_console_feed(&console,127); (void)voice_console_feed(&console,'x');
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_LINE && !strcmp(console.line,"x"));
+    (void)voice_console_feed(&console,27); (void)voice_console_feed(&console,'x');
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_INVALID);
+    /* Desktop reconnect discards a stale partial line, never submits it. */
+    (void)voice_console_feed(&console,'x');
+    assert(voice_console_feed(&console,0x15)==VOICE_CONSOLE_NONE);
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_INVALID);
+    (void)voice_console_feed(&console,'y');
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_LINE && !strcmp(console.line,"y"));
     assert(!voice_wake_accept(1, 0.16f));
+    for (const char *p="\x1e" "M0"; *p; ++p) (void)voice_console_feed(&console,(unsigned char)*p);
+    assert(voice_console_feed(&console,'\r')==VOICE_CONSOLE_CONTROL && !strcmp(console.line,"M0"));
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_NONE);
+    for (const char *p="M0"; *p; ++p) (void)voice_console_feed(&console,(unsigned char)*p);
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_LINE); /* Ordinary text stays text. */
+    for (const char *p="stale\x1e" "M1"; *p; ++p) (void)voice_console_feed(&console,(unsigned char)*p);
+    assert(voice_console_feed(&console,'\n')==VOICE_CONSOLE_INVALID);
+    assert(!voice_console_valid("\x1e" "M0"));
+    assert(voice_console_mic_muted(6000,1000) && voice_console_mic_muted(6000,5999));
+    assert(!voice_console_mic_muted(6000,6000) && !voice_console_mic_muted(0,1000));
     assert(!voice_wake_accept(1, 0.1999f));
     assert(voice_wake_accept(1, 0.20f));
     assert(voice_wake_accept(1, 0.29f));

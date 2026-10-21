@@ -18,6 +18,9 @@ typedef enum {
 esp_err_t hisu_settings_init(void);
 int hisu_settings_get(hisu_setting_t key);
 esp_err_t hisu_settings_set(hisu_setting_t key, int value);
+/* Immediate RAM-only button adjustment; idle audio worker persists the final value. */
+int hisu_settings_adjust_volume(int delta);
+esp_err_t hisu_settings_flush_volume(void);
 /* API key remains in NVS and is never returned by the setup web API. */
 esp_err_t hisu_settings_get_asr_key(char out[128]);
 esp_err_t hisu_settings_set_asr_key(const char *key);

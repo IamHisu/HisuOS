@@ -16,6 +16,8 @@ static int s_values[] = {75, 55, 1, 0, 0, 1, 420};
 static portMUX_TYPE s_values_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
+static bool s_volume_dirty;
+static uint32_t s_volume_revision;
 
 esp_err_t hisu_settings_init(void)
 {
@@ -61,14 +63,55 @@ esp_err_t hisu_settings_set(hisu_setting_t key, int value)
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     esp_err_t err = ESP_OK;
-    if (value != s_values[key]) {
+    portENTER_CRITICAL(&s_values_mux);
+    bool changed=value!=s_values[key] || (key==HISU_SETTING_VOLUME && s_volume_dirty);
+    uint32_t revision=s_volume_revision;
+    portEXIT_CRITICAL(&s_values_mux);
+    if (changed) {
         err = nvs_set_i32(s_nvs, s_keys[key], value);
         if (err == ESP_OK) err = nvs_commit(s_nvs);
         if (err == ESP_OK) {
             portENTER_CRITICAL(&s_values_mux);
-            s_values[key] = value;
+            if (key!=HISU_SETTING_VOLUME || revision==s_volume_revision) {
+                s_values[key] = value;
+                if (key==HISU_SETTING_VOLUME) { s_volume_dirty=false; ++s_volume_revision; }
+            }
             portEXIT_CRITICAL(&s_values_mux);
         }
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+int hisu_settings_adjust_volume(int delta)
+{
+    if (!s_lock || delta < -100 || delta > 100) return -1;
+    portENTER_CRITICAL(&s_values_mux);
+    int value=s_values[HISU_SETTING_VOLUME]+delta;
+    if (value<0) value=0;
+    if (value>100) value=100;
+    if (value!=s_values[HISU_SETTING_VOLUME]) {
+        s_values[HISU_SETTING_VOLUME]=value;
+        s_volume_dirty=true; ++s_volume_revision;
+    }
+    portEXIT_CRITICAL(&s_values_mux);
+    return value;
+}
+
+esp_err_t hisu_settings_flush_volume(void)
+{
+    if (!s_lock || xSemaphoreTake(s_lock,0)!=pdTRUE) return ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&s_values_mux);
+    bool dirty=s_volume_dirty;
+    int value=s_values[HISU_SETTING_VOLUME]; uint32_t revision=s_volume_revision;
+    portEXIT_CRITICAL(&s_values_mux);
+    esp_err_t err=ESP_OK;
+    if (dirty) {
+        err=nvs_set_i32(s_nvs,s_keys[HISU_SETTING_VOLUME],value);
+        if (err==ESP_OK) err=nvs_commit(s_nvs);
+        portENTER_CRITICAL(&s_values_mux);
+        if (err==ESP_OK && revision==s_volume_revision) s_volume_dirty=false;
+        portEXIT_CRITICAL(&s_values_mux);
     }
     xSemaphoreGive(s_lock);
     return err;

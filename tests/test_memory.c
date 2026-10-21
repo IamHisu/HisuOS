@@ -15,6 +15,66 @@ static void reset(void)
     memset(mock_flash, 0xff, sizeof(mock_flash));
     reboot();
 }
+static void merge_tests(void)
+{
+    uint32_t ids[3],id;
+    for (unsigned n=2;n<=3;++n) {
+        reset();
+        assert(hisu_memory_remember("Alias A",0,&ids[0])==ESP_OK);
+        assert(hisu_memory_remember("Alias B",0,&ids[1])==ESP_OK);
+        assert(hisu_memory_remember("Preference",0,&ids[2])==ESP_OK);
+        uint32_t sources[3]={ids[0],ids[1],ids[2]};
+        unsigned writes=mock_flash_operations;
+        uint32_t revision=s_revision;
+        assert(hisu_memory_merge("Combined",sources,1,revision,&id)==ESP_ERR_INVALID_ARG);
+        assert(hisu_memory_merge("Combined",sources,4,revision,&id)==ESP_ERR_INVALID_ARG);
+        assert(hisu_memory_merge("Combined",sources,n,revision,NULL)==ESP_ERR_INVALID_ARG);
+        sources[1]=ids[0]; assert(hisu_memory_merge("Combined",sources,n,revision,&id)==ESP_ERR_INVALID_ARG);
+        sources[1]=ids[1];
+        assert(hisu_memory_merge("Combined",sources,n,revision+1,&id)==ESP_ERR_INVALID_STATE);
+        sources[1]=999;
+        assert(hisu_memory_merge("Combined",sources,n,revision,&id)==ESP_ERR_NOT_FOUND);
+        sources[1]=ids[1];
+        assert(s_revision==revision && s_data->count==3);
+        assert(hisu_memory_set_enabled(false)==ESP_OK);
+        assert(hisu_memory_merge("Combined",sources,n,s_revision,&id)==ESP_ERR_INVALID_STATE);
+        assert(hisu_memory_set_enabled(true)==ESP_OK);
+        assert(hisu_memory_merge("Combined",sources,n,revision,&id)==ESP_ERR_INVALID_STATE);
+        uint32_t read_revision=s_revision;
+        char *snapshot=hisu_memory_json(); cJSON *listed=cJSON_Parse(snapshot);
+        assert(listed && cJSON_GetObjectItem(listed,"revision")->valuedouble==read_revision);
+        cJSON_Delete(listed); free(snapshot);
+        assert(hisu_memory_remember("Alias A updated",ids[0],&id)==ESP_OK);
+        assert(hisu_memory_merge("Combined",sources,n,read_revision,&id)==ESP_ERR_INVALID_STATE);
+        assert(!strcmp(s_data->facts[0].text,"Alias A updated"));
+        assert(hisu_memory_merge("Combined",sources,n,s_revision,&id)==ESP_OK);
+        assert(s_data->count==4-n && id>ids[2] && mock_flash_operations==writes);
+        assert(hisu_memory_forget(ids[0])==ESP_ERR_NOT_FOUND && hisu_memory_forget(ids[1])==ESP_ERR_NOT_FOUND);
+        assert(hisu_memory_flush()==ESP_OK); reboot();
+        assert(s_data->count==4-n && !strcmp(s_data->facts[s_data->count-1].text,"Combined"));
+    }
+    for (int cut=0;cut<4;++cut) {
+        reset();
+        for (unsigned i=0;i<HISU_MEMORY_COUNT;++i) {
+            char fact[32]; snprintf(fact,sizeof(fact),"Fact %u",i);
+            assert(hisu_memory_remember(fact,0,&id)==ESP_OK);
+        }
+        assert(hisu_memory_flush()==ESP_OK);
+        uint32_t sources[2]={s_data->facts[0].id,s_data->facts[1].id};
+        assert(hisu_memory_merge("Fact 2",sources,2,s_revision,&id)==ESP_ERR_INVALID_ARG);
+        assert(s_data->count==24);
+        assert(hisu_memory_merge("Combined 0 and 1",sources,2,s_revision,&id)==ESP_OK && s_data->count==23);
+        mock_flash_budget=cut; assert(hisu_memory_flush()!=ESP_OK); reboot();
+        assert(s_data->count==24 || s_data->count==23);
+        if (s_data->count==24) assert(!strcmp(s_data->facts[0].text,"Fact 0") && !strcmp(s_data->facts[1].text,"Fact 1"));
+        else {
+            assert(!strcmp(s_data->facts[0].text,"Fact 2") && !strcmp(s_data->facts[22].text,"Combined 0 and 1"));
+            assert(hisu_memory_remember("New fact",0,&id)==ESP_OK && s_data->count==24);
+        }
+    }
+    reset();
+}
+
 static bool flash_contains(const char *text)
 {
     for (size_t i = HISU_MEMORY_OFFSET; i + strlen(text) <= sizeof(mock_flash); ++i)
@@ -78,6 +138,92 @@ static void summary_tests(void)
     assert(hisu_memory_remember("Concurrent update",1,&id)==ESP_OK && !hisu_memory_summary_current(ticket));
     reset();
 }
+static void seed_tests(void)
+{
+    const char *seed="{\"version\":1,\"facts\":[\"Owner profile\",\"Birth date: 01/01/2000\",\"Robot partner: robot Friend\"]}";
+    reset(); uint32_t existing;
+    assert(hisu_memory_remember("Existing preference",0,&existing)==ESP_OK);
+    unsigned writes=mock_flash_operations;
+    assert(hisu_memory_seed_once(seed)==ESP_OK && s_data->count==4 && s_seed_version==1);
+    assert(s_data->facts[0].id==existing && !strcmp(s_data->facts[0].text,"Existing preference"));
+    assert(mock_flash_operations==writes); /* Provisioning only stages RAM. */
+    uint32_t revision=s_revision, removed=s_data->facts[2].id;
+    assert(hisu_memory_seed_once(seed)==ESP_OK && s_revision==revision && s_data->count==4);
+    assert(hisu_memory_flush()==ESP_OK); reboot();
+    assert(s_seed_version==1 && s_data->count==4);
+    assert(hisu_memory_forget(removed)==ESP_OK && hisu_memory_flush()==ESP_OK); reboot();
+    assert(hisu_memory_seed_once(seed)==ESP_OK && s_data->count==3 && !hisu_memory_pending());
+    assert(hisu_memory_clear()==ESP_OK && hisu_memory_flush()==ESP_OK); reboot();
+    assert(hisu_memory_seed_once(seed)==ESP_OK && !s_data->count); /* Clear survives reseeding/reboot. */
+    const char *newer="{\"version\":2,\"facts\":[\"New explicit profile revision\"]}";
+    assert(hisu_memory_seed_once(newer)==ESP_OK && s_data->count==1);
+    assert(hisu_memory_seed_once(seed)==ESP_OK && s_data->count==1); /* Never apply an older revision. */
+    assert(hisu_memory_flush()==ESP_OK); reboot(); assert(s_seed_version==2);
+    for (int budget=0;budget<=3;++budget) {
+        reset(); assert(hisu_memory_remember("Existing preference",0,&existing)==ESP_OK);
+        assert(hisu_memory_flush()==ESP_OK && hisu_memory_seed_once(seed)==ESP_OK);
+        mock_flash_budget=budget; assert(hisu_memory_flush()!=ESP_OK); reboot();
+        assert(s_seed_version==(budget<3 ? 0U : 1U));
+        assert(s_data->count==(budget<3 ? 1U : 4U));
+        assert(hisu_memory_seed_once(seed)==ESP_OK && hisu_memory_flush()==ESP_OK); reboot();
+        assert(s_seed_version==1 && s_data->count==4);
+    }
+    reset();
+    for (unsigned i=0;i<HISU_MEMORY_COUNT-1;++i) {
+        char fact[32]; snprintf(fact,sizeof(fact),"Existing %u",i);
+        assert(hisu_memory_remember(fact,0,&existing)==ESP_OK);
+    }
+    assert(hisu_memory_flush()==ESP_OK); revision=s_revision;
+    assert(hisu_memory_seed_once(seed)==HISU_MEMORY_ERR_FULL);
+    assert(s_data->count==HISU_MEMORY_COUNT-1 && !s_seed_version && s_revision==revision && !hisu_memory_pending());
+    reset(); assert(hisu_memory_set_enabled(false)==ESP_OK);
+    assert(hisu_memory_seed_once(seed)==ESP_ERR_INVALID_STATE && !s_seed_version && !s_data->count);
+    reset();
+    const char *invalid[]={"{}","{\"version\":0,\"facts\":[\"Valid\"]}",
+        "{\"version\":1.5,\"facts\":[\"Valid\"]}","{\"version\":1,\"facts\":[]}",
+        "{\"version\":1,\"facts\":[\"Valid\",\"bad\\nline\"]}",
+        "{\"version\":1,\"facts\":[\"Valid\"],\"extra\":true}",
+        "{\"version\":1,\"facts\":[\"bad\\u0000hidden\"]}"};
+    for (unsigned i=0;i<sizeof(invalid)/sizeof(invalid[0]);++i) {
+        assert(hisu_memory_seed_once(invalid[i])==ESP_ERR_INVALID_ARG);
+        assert(!s_data->count && !s_seed_version);
+    }
+    mock_alloc_budget=0;
+    assert(hisu_memory_seed_once(seed)==ESP_ERR_NO_MEM && !s_data->count && !s_seed_version);
+    mock_alloc_budget=-1;
+    assert(hisu_memory_seed_once("{\"version\":1,\"facts\":[\"Repeated\",\"Repeated\"]}")==ESP_OK && s_data->count==1);
+    reset();
+}
+static void personal_fact_tests(void)
+{
+    reset();
+    uint32_t name,alias,relationship,id;
+    assert(hisu_memory_remember("Tên người dùng là Hiếu",0,&name)==ESP_OK);
+    assert(hisu_memory_remember("Biệt danh của người dùng là Tí",0,&alias)==ESP_OK);
+    assert(hisu_memory_remember("Người yêu của người dùng là Thùy Lê",0,&relationship)==ESP_OK);
+    uint32_t ticket=summary_ticket("Giờ gọi mình là Su nha");
+    char proposal[768];
+    snprintf(proposal,sizeof(proposal),"{\"facts\":[{\"fact\":\"Biệt danh của người dùng là Su\","
+        "\"evidence\":\"Giờ gọi mình là Su nha\",\"replace_id\":%u,"
+        "\"expected_fact\":\"Biệt danh của người dùng là Tí\"}]}",(unsigned)alias);
+    unsigned stored=0;
+    assert(hisu_memory_summary_apply(ticket,proposal,&stored)==ESP_OK && stored==1 && s_data->count==3);
+    assert(s_data->facts[0].id==name && !strcmp(s_data->facts[0].text,"Tên người dùng là Hiếu"));
+    assert(s_data->facts[1].id==alias && !strcmp(s_data->facts[1].text,"Biệt danh của người dùng là Su"));
+    ticket=summary_ticket("Thùy Lê là người yêu của mình");
+    assert(hisu_memory_remember("Thùy Lê là người yêu cũ của người dùng",relationship,&id)==ESP_OK && id==relationship);
+    assert(!hisu_memory_summary_current(ticket)); /* An older summary cannot restore the old relationship. */
+    assert(hisu_memory_flush()==ESP_OK); reboot();
+    assert(s_data->count==3 && s_data->facts[2].id==relationship);
+    assert(!strcmp(s_data->facts[2].text,"Thùy Lê là người yêu cũ của người dùng"));
+    char *context=hisu_memory_context();
+    assert(context && strstr(context,"Hiếu") && strstr(context,"Thùy Lê") && strstr(context,"người yêu cũ"));
+    free(context);
+    assert(hisu_memory_set_enabled(false)==ESP_OK);
+    assert(hisu_memory_remember("Biệt danh của người dùng là Mít",alias,&id)==ESP_ERR_INVALID_STATE);
+    assert(!strcmp(s_data->facts[1].text,"Biệt danh của người dùng là Su"));
+    reset();
+}
 int main(void)
 {
     assert(!hisu_memory_pending());
@@ -94,7 +240,7 @@ int main(void)
     memset(limit, 'a', sizeof(limit)); limit[256] = 0;
     assert(hisu_memory_fact_valid(limit)); limit[256] = 'a'; limit[257] = 0;
     assert(!hisu_memory_fact_valid(limit));
-    summary_tests(); reset();
+    summary_tests(); personal_fact_tests(); seed_tests(); reset();
     uint32_t id, same;
     unsigned writes = mock_flash_operations;
     assert(hisu_memory_remember("Likes quiet music", 0, &id) == ESP_OK && id == 1);
@@ -211,6 +357,7 @@ int main(void)
         assert(!strcmp(s_data->facts[cut < 3 ? 0 : 23].text,cut < 3 ? "Old 0" : "Replacement"));
     }
     reset();
+    merge_tests();
     assert(hisu_memory_remember("CRC fallback old", 0, &id) == ESP_OK && hisu_memory_flush() == ESP_OK);
     assert(hisu_memory_remember("CRC fallback new", id, &same) == ESP_OK);
     mock_flash_budget = 3;

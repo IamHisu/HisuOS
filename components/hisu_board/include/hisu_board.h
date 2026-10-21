@@ -33,5 +33,8 @@ hisu_key_t hisu_board_poll_key(void);
 void hisu_board_enable_volume_hold(bool enabled);
 void hisu_board_enable_menu_close_hold(bool enabled);
 void hisu_board_enable_idle_boot_hold(bool enabled);
+bool hisu_board_boot_pressed(void);
+/* Debounced state for press-triggered media controls; UI owner only. */
+bool hisu_board_boot_stable_pressed(void);
 esp_err_t hisu_board_power_init(void);
 esp_err_t hisu_board_power_read(int *raw_adc, bool *external_power);

@@ -4,6 +4,31 @@
 
 int main(void)
 {
+    bool latched=false;
+    assert(hisu_ui_audio_boot(&latched,false,true)==0);
+    assert(hisu_ui_audio_boot(&latched,true,true)==1 && latched);
+    assert(hisu_ui_audio_boot(&latched,true,true)==-1);
+    assert(hisu_ui_audio_boot(&latched,true,false)==-1); /* View changed before release. */
+    assert(hisu_ui_audio_boot(&latched,false,false)==-1 && !latched);
+    assert(hisu_ui_audio_boot(&latched,true,false)==0); /* Idle double-click unchanged. */
+    hisu_ui_boot_click_t click={0};
+    assert(hisu_ui_boot_click(&click,true,false,true,false,1000)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,false,false,true,false,1350)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,true,false,true,false,1350)==HISU_BOOT_CLICK_DOUBLE);
+    assert(hisu_ui_boot_click(&click,false,false,true,false,1800)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,true,false,true,false,2000)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,false,false,true,false,2351)==HISU_BOOT_CLICK_SINGLE);
+    (void)hisu_ui_boot_click(&click,true,false,true,true,3000);
+    assert(hisu_ui_boot_click(&click,false,false,true,false,3400)==HISU_BOOT_CLICK_NONE);
+    (void)hisu_ui_boot_click(&click,true,false,true,true,4000);
+    assert(hisu_ui_boot_click(&click,true,false,true,false,4200)==HISU_BOOT_CLICK_DOUBLE);
+    (void)hisu_ui_boot_click(&click,true,false,true,false,5000);
+    assert(hisu_ui_boot_click(&click,false,true,true,false,5400)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,false,false,false,false,5500)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,false,false,true,false,5800)==HISU_BOOT_CLICK_NONE);
+    (void)hisu_ui_boot_click(&click,true,false,true,false,6000);
+    assert(hisu_ui_boot_click(&click,false,false,false,false,6200)==HISU_BOOT_CLICK_NONE);
+    assert(!click.pending); /* New voice state/menu/key cancels delayed menu entry. */
     for (int brightness = 0; brightness <= 100; ++brightness) {
         assert(hisu_ui_power_brightness(false, brightness) == brightness);
         assert(hisu_ui_power_brightness(true, brightness) == (brightness > 10 ? 10 : brightness));

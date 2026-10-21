@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 typedef struct {
-    bool weather;
+    bool weather, news;
     char place[97], type[17];
     int day;
     int64_t location_id;

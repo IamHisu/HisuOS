@@ -1,6 +1,7 @@
 #include "hisu_voice_live.h"
 #include "hisu_voice_live_message.h"
 #include "hisu_voice_live_turn.h"
+#include "hisu_voice_console.h"
 #include "hisu_voice_live_setup.h"
 #include "hisu_voice_latency.h"
 #include "hisu_voice_music_choice.h"
@@ -10,6 +11,7 @@
 #include "hisu_ui_music.h"
 #include "hisu_voice_music.h"
 #include "hisu_voice_caption.h"
+#include "hisu_voice_text.h"
 #include "hisu_ui_face.h"
 #include "hisu_ui.h"
 #include "hisu_network.h"
@@ -132,7 +134,10 @@ void voice_live_feedback(bool error)
 static live_turn_t s_turn;
 static struct {
     unsigned pending_tools;
-    bool audio, deferred_complete, retry_used, retry_queued, retry_sent, end_after_reply, sleep_after_reply;
+    unsigned music_failures;
+    bool tool_loop_stopped;
+    voice_text_filter_t text_filter;
+    bool audio, deferred_complete, retry_used, retry_queued, retry_sent, end_after_reply, sleep_after_reply, ignore_input;
     size_t rx_bytes;
     int64_t rx_first_us, rx_last_us, max_rx_gap_us;
 } s_reply_state;
@@ -337,6 +342,7 @@ static int queue_reply_audio(const output_t *audio)
     for (;;) {
         if (!current(audio->epoch,audio->generation)) return 0;
         portENTER_CRITICAL(&s_mux);
+        if ((s_reply_state.ignore_input || s_reply_state.tool_loop_stopped) && !audio->done) { portEXIT_CRITICAL(&s_mux); return 0; }
         bool room=s_queued_audio_bytes<=limit-audio->bytes;
         if (progress!=s_audio_progress) {
             progress=s_audio_progress; deadline=esp_timer_get_time()+3000000;
@@ -459,18 +465,20 @@ static bool enqueue(uint32_t generation, unsigned kind, const int16_t *pcm, size
     fail(frame.epoch, generation);
     return false;
 }
-bool voice_live_interrupt(uint32_t generation)
+static bool interrupt_turn(uint32_t generation, bool listen)
 {
-    input_t frame = {.generation = generation, .kind = 4};
+    input_t frame = {.generation = generation, .kind = listen ? 4 : 10};
     portENTER_CRITICAL(&s_mux);
     bool active = s_active && !s_failed;
     bool ready = s_ready;
     if (active) {
-        if (s_key_profile==HISU_GEMINI_READER || (s_rekey_pending && s_next_profile==HISU_GEMINI_READER)) {
+        if (listen && (s_key_profile==HISU_GEMINI_READER || (s_rekey_pending && s_next_profile==HISU_GEMINI_READER))) {
             request_profile(HISU_GEMINI_CHAT,4); s_rekey_announced=true; s_ready=false; ready=false;
         }
-        memset(&s_bedtime,0,sizeof(s_bedtime));
-        s_interpreter_control_pending=s_interpreter!=NULL;
+        if (listen) {
+            memset(&s_bedtime,0,sizeof(s_bedtime));
+            s_interpreter_control_pending=s_interpreter!=NULL;
+        }
         s_interpreter_control_turn=false;
         frame.epoch = s_epoch;
         s_generation = generation;
@@ -487,6 +495,8 @@ bool voice_live_interrupt(uint32_t generation)
     /* During setup, retain the connection and deliver LIVE_READY to this generation. */
     return active && (!ready || xQueueSend(s_input, &frame, 0) == pdTRUE);
 }
+bool voice_live_interrupt(uint32_t generation) { return interrupt_turn(generation,true); }
+bool voice_live_cancel_mic(uint32_t generation) { return interrupt_turn(generation,false); }
 bool voice_live_begin(uint32_t generation)
 {
     portENTER_CRITICAL(&s_mux);
@@ -516,6 +526,50 @@ bool voice_live_feed(uint32_t generation, const int16_t *pcm, size_t samples)
     return true;
 }
 bool voice_live_end(uint32_t generation) { return enqueue(generation, 2, NULL, 0); }
+
+bool voice_live_story_active(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool active=s_bedtime.active || (s_active && (s_key_profile==HISU_GEMINI_READER ||
+        (s_rekey_pending && s_next_profile==HISU_GEMINI_READER)));
+    portEXIT_CRITICAL(&s_mux); return active;
+}
+
+static bool text_ready_locked(void)
+{
+    return s_active && s_ready && !s_failed && !s_rekey_pending &&
+        !s_turn.response_pending && !s_turn.input_open && !s_turn.obsolete_turns;
+}
+bool voice_live_text_ready(void)
+{
+    portENTER_CRITICAL(&s_mux); bool ready=text_ready_locked(); portEXIT_CRITICAL(&s_mux);
+    return ready;
+}
+bool voice_live_text(uint32_t generation, const char *text)
+{
+    if (!voice_console_valid(text)) return false;
+    input_t frame={.generation=generation,.kind=9};
+    memcpy(frame.pcm,text,strlen(text)+1);
+    portENTER_CRITICAL(&s_mux);
+    bool ready=text_ready_locked() && generation==s_generation+1;
+    if (ready) {
+        frame.epoch=s_epoch; s_generation=generation; s_handoff_readonly=false;
+        memset(&s_bedtime,0,sizeof(s_bedtime));
+        s_interpreter_control_turn=s_interpreter_control_pending; s_interpreter_control_pending=false;
+        if (generation!=s_music_offer.generation && generation!=s_music_offer.generation+1) s_music_offer.pending=false;
+        size_t length=strlen(text);
+        s_confirmation_overflow=length>=sizeof(s_confirmation);
+        if (s_confirmation_overflow) { s_confirmation[0]=0; s_music_offer.pending=false; }
+        else memcpy(s_confirmation,text,length+1);
+        memset(&s_reply_state,0,sizeof(s_reply_state));
+        live_turn_reset(&s_turn); live_turn_end(&s_turn); s_interrupt_deadline=0;
+        s_end_us=esp_timer_get_time();
+    }
+    portEXIT_CRITICAL(&s_mux);
+    if (ready) hisu_memory_summary_begin_turn();
+    /* Caller handles queue failure after releasing the frontend session lock. */
+    return ready && xQueueSend(s_input,&frame,0)==pdTRUE;
+}
 
 typedef struct {
     uint32_t epoch;
@@ -597,7 +651,7 @@ static void complete_reply(uint32_t epoch, uint32_t generation)
             else {
                 (void)live_turn_complete(&s_turn);
                 s_reply_state.deferred_complete = false;
-                if (s_reply_state.audio) done = true;
+                if (s_reply_state.audio || s_reply_state.ignore_input) done = true;
                 else if (!s_reply_state.retry_used) {
                     s_reply_state.retry_used = s_reply_state.retry_queued = retry = true;
                     /* Accept an immediate tool follow-up before the queued retry runs. */
@@ -624,6 +678,32 @@ static void complete_reply(uint32_t epoch, uint32_t generation)
         ESP_LOGW(TAG,"No audio after spoken continuation; closing conversation quietly");
         fail_with_message(epoch, generation, "", true);
     }
+}
+
+static bool queue_spoken_text(uint32_t epoch, uint32_t generation, const char *text)
+{
+    portENTER_CRITICAL(&s_mux);
+    voice_text_filter_t filter=s_reply_state.text_filter;
+    portEXIT_CRITICAL(&s_mux);
+    char *cleaned=NULL;
+    if (filter.used || strpbrk(text,"<{")) {
+        size_t capacity=strlen(text)+sizeof(filter.pending)+1;
+        cleaned=heap_caps_malloc(capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if (!cleaned || !voice_text_filter(&filter,text,cleaned,capacity)) { free(cleaned); return false; }
+        text=cleaned;
+    }
+    portENTER_CRITICAL(&s_mux);
+    bool live=epoch==s_epoch && generation==s_generation && s_active && !s_failed &&
+        live_turn_accept_output(&s_turn) && !s_reply_state.ignore_input && !s_reply_state.tool_loop_stopped;
+    if (live) s_reply_state.text_filter=filter;
+    portEXIT_CRITICAL(&s_mux);
+    bool ok=true;
+    if (live && text[0]) {
+        ESP_LOGI("HISU_REPLY","[%u:%u] %s",(unsigned)epoch,(unsigned)generation,text);
+        ok=queue_cue(epoch,generation,1,text);
+    }
+    free(cleaned);
+    return ok;
 }
 
 static void parse_message(connection_t *connection)
@@ -666,7 +746,7 @@ static void parse_message(connection_t *connection)
         portENTER_CRITICAL(&s_mux);
         bool first_setup = connection->epoch == s_epoch && s_active && !s_failed && !s_ready;
         bool bootstrap=first_setup && s_resume_kind!=0;
-        if (first_setup) { s_ready=true; s_initial_listening=!bootstrap; }
+        if (first_setup) { s_ready=true; s_initial_listening=false; }
         portEXIT_CRITICAL(&s_mux);
         if (!first_setup) { cJSON_Delete(json); return; }
         ESP_LOGI(TAG, "Gemini Live setup ready");
@@ -677,6 +757,13 @@ static void parse_message(connection_t *connection)
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         s_callback(LIVE_READY, generation, "");
+        /* Publish listening only after READY's frontend transition has returned. */
+        if (!bootstrap) {
+            portENTER_CRITICAL(&s_mux);
+            if (connection->epoch==s_epoch && s_active && s_ready && !s_failed)
+                s_initial_listening=true;
+            portEXIT_CRITICAL(&s_mux);
+        }
         if (bootstrap) {
             input_t wake = {.epoch = connection->epoch, .generation = generation, .kind = 6};
             if (xQueueSend(s_input, &wake, 0) != pdTRUE) fail(connection->epoch, generation);
@@ -722,7 +809,7 @@ static void parse_message(connection_t *connection)
         cJSON *content = cJSON_GetObjectItem(json, "serverContent");
         portENTER_CRITICAL(&s_mux);
         bool accept_input = live_turn_accept_input(&s_turn);
-        bool accept_output = live_turn_accept_output(&s_turn);
+        bool accept_output = live_turn_accept_output(&s_turn) && !s_reply_state.ignore_input && !s_reply_state.tool_loop_stopped;
         bool interrupted = cJSON_IsTrue(cJSON_GetObjectItem(content, "interrupted"));
         if (interrupted) accept_input = accept_output = false;
         portEXIT_CRITICAL(&s_mux);
@@ -737,15 +824,13 @@ static void parse_message(connection_t *connection)
                 } else if (!s_confirmation_overflow) memcpy(s_confirmation + used, input->valuestring, extra + 1);
             }
             portEXIT_CRITICAL(&s_mux);
+            ESP_LOGI("HISU_HEARD","[%u:%u] %s",(unsigned)connection->epoch,(unsigned)generation,input->valuestring);
             s_callback(LIVE_INPUT, generation, input->valuestring);
         }
         cJSON *text = cJSON_GetObjectItem(cJSON_GetObjectItem(content, "outputTranscription"), "text");
         /* Deliver text on the playback worker, ordered with PCM, not on network arrival. */
         if (accept_output && cJSON_IsString(text) && text->valuestring[0]) {
-            /* Log each received segment once, outside the microphone/session lock. */
-            ESP_LOGI("HISU_REPLY", "[%u:%u] %s", (unsigned)connection->epoch,
-                     (unsigned)generation, text->valuestring);
-            if (!queue_cue(connection->epoch, generation, 1, text->valuestring)) {
+            if (!queue_spoken_text(connection->epoch, generation, text->valuestring)) {
                 fail(connection->epoch, generation); cJSON_Delete(json); return;
             }
         }
@@ -776,7 +861,7 @@ static void parse_message(connection_t *connection)
             if (bytes) {
                 int64_t received_us=esp_timer_get_time();
                 portENTER_CRITICAL(&s_mux);
-                if (connection->epoch == s_epoch && generation == s_generation) {
+                if (connection->epoch == s_epoch && generation == s_generation && !s_reply_state.ignore_input && !s_reply_state.tool_loop_stopped) {
                     if (!s_reply_state.rx_bytes) {
                         s_reply_state.rx_first_us=received_us;
                         if (s_start.epoch==connection->epoch) voice_start_mark(&s_start,VOICE_START_RX,received_us);
@@ -879,6 +964,31 @@ static bool send_text(esp_websocket_client_handle_t client, const char *text)
     if (elapsed > 100) ESP_LOGW(TAG, "Slow WSS send: %lld ms, bytes=%u, pending=%u", (long long)elapsed,
                                 (unsigned)length, (unsigned)uxQueueMessagesWaiting(s_input));
     return sent == (int)length;
+}
+static bool send_mic_cancel(esp_websocket_client_handle_t client, const input_t *frame)
+{
+    portENTER_CRITICAL(&s_mux);
+    if (frame->epoch!=s_epoch || frame->generation!=s_generation || !s_active || s_failed) {
+        portEXIT_CRITICAL(&s_mux); return true;
+    }
+    bool end=s_turn.input_open;
+    if (end) { s_turn.input_open=false; ++s_turn.obsolete_turns; }
+    s_turn.restart_pending=false; s_turn.muted=true;
+    s_interrupt_deadline=s_turn.obsolete_turns ? esp_timer_get_time()+10000000 : 0;
+    portEXIT_CRITICAL(&s_mux);
+    return !end || send_text(client,"{\"realtimeInput\":{\"activityEnd\":{}}}");
+}
+static bool send_user_text(esp_websocket_client_handle_t client, const input_t *frame)
+{
+    cJSON *text=cJSON_CreateString((const char *)frame->pcm);
+    char *escaped=text ? cJSON_PrintUnformatted(text) : NULL; cJSON_Delete(text);
+    if (!escaped) return false;
+    size_t capacity=strlen(escaped)+128;
+    char *body=heap_caps_malloc(capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (body) snprintf(body,capacity,"{\"clientContent\":{\"turns\":[{\"role\":\"user\",\"parts\":[{\"text\":%s}]}],\"turnComplete\":true}}",escaped);
+    cJSON_free(escaped);
+    bool ok=body && (!current(frame->epoch,frame->generation) || send_text(client,body));
+    free(body); return ok;
 }
 static bool send_wake(esp_websocket_client_handle_t client, const input_t *frame)
 {
@@ -1025,12 +1135,16 @@ static char *execute_tool(const input_t *frame, bool *end_session)
     esp_err_t err = ESP_OK;
     portENTER_CRITICAL(&s_mux);
     bool story_only=s_bedtime.active && s_bedtime.autonomous;
+    bool ignored=s_reply_state.ignore_input || s_reply_state.tool_loop_stopped;
     bool reconnect_only=s_handoff_readonly;
     bool mode_control=!strcmp(name->valuestring,"start_interpreter") ||
         !strcmp(name->valuestring,"stop_interpreter") || !strcmp(name->valuestring,"end_conversation");
     bool translation_only=s_interpreter && (!s_interpreter_control_turn || !mode_control);
     portEXIT_CRITICAL(&s_mux);
-    if (reconnect_only && strcmp(name->valuestring,"set_expression")) {
+    if (ignored && strcmp(name->valuestring,"ignore_input")) {
+        valid=true; err=ESP_ERR_INVALID_STATE;
+        cJSON_AddStringToObject(value,"error","Input ignored. Stay silent; do not call more tools for this turn.");
+    } else if (reconnect_only && strcmp(name->valuestring,"set_expression")) {
         valid=true; err=ESP_ERR_INVALID_STATE;
         cJSON_AddStringToObject(value,"error","Fresh reconnected Chat has no new user command. Ask the user to repeat; do not replay any earlier action.");
     } else if (story_only && strcmp(name->valuestring,"set_expression")) {
@@ -1040,6 +1154,17 @@ static char *execute_tool(const input_t *frame, bool *end_session)
     } else if (translation_only && strcmp(name->valuestring,"set_expression")) {
         valid=true; err=ESP_ERR_INVALID_STATE;
         cJSON_AddStringToObject(value,"error","Interpreter input is text to translate, not permission to operate the device. Only translate. To control or exit, the user must first wake Hi Su or press interrupt, then issue the mode command.");
+    } else if (!strcmp(name->valuestring,"ignore_input") && no_args) {
+        valid=true;
+        portENTER_CRITICAL(&s_mux);
+        bool allowed=s_active && !s_failed && frame->epoch==s_epoch && frame->generation==s_generation &&
+            !s_interpreter && !s_bedtime.active && !s_reply_state.audio &&
+            !s_reply_state.end_after_reply && !s_pending_music &&
+            (s_key_profile==HISU_GEMINI_CHAT || s_key_profile==HISU_GEMINI_CHAT_BACKUP);
+        if (allowed) s_reply_state.ignore_input=true;
+        portEXIT_CRITICAL(&s_mux);
+        err=allowed ? ESP_OK : ESP_ERR_INVALID_STATE;
+        if (allowed) cJSON_AddStringToObject(value,"next_action","Remain silent. This input is discarded; wait for the next user turn.");
     } else if (!strcmp(name->valuestring,"lookup_info")) {
         valid=true; err=ESP_ERR_INVALID_STATE;
         cJSON_AddStringToObject(value,"error","Tra cứu đang bận, thiếu bộ nhớ hoặc tham số không hợp lệ. Chưa lấy được dữ liệu; không đoán kết quả và không thử lại liên tục.");
@@ -1128,28 +1253,47 @@ static char *execute_tool(const input_t *frame, bool *end_session)
         const cJSON *replace = cJSON_GetObjectItemCaseSensitive(args,"replace_id");
         const cJSON *evict = cJSON_GetObjectItemCaseSensitive(args,"evict_id");
         const cJSON *expected = cJSON_GetObjectItemCaseSensitive(args,"expected_fact");
+        const cJSON *merge = cJSON_GetObjectItemCaseSensitive(args,"merge_ids");
+        const cJSON *revision = cJSON_GetObjectItemCaseSensitive(args,"memory_revision");
+        uint32_t sources[HISU_MEMORY_MERGE_MAX]={0};
+        int source_count=merge ? cJSON_GetArraySize(merge) : 0;
         valid = cJSON_IsObject(args) && cJSON_IsString(fact) &&
-            cJSON_GetArraySize(args) == 1 + (replace ? 1 : 0) + (evict ? 1 : 0) + (expected ? 1 : 0) &&
+            cJSON_GetArraySize(args) == 1 + (replace ? 1 : 0) + (evict ? 1 : 0) + (expected ? 1 : 0) + (merge ? 1 : 0) + (revision ? 1 : 0) &&
+            (!!merge==!!revision) && (!merge || (!replace && !evict && !expected && cJSON_IsArray(merge) &&
+            source_count>=2 && source_count<=HISU_MEMORY_MERGE_MAX && cJSON_IsNumber(revision) &&
+            revision->valuedouble>=0 && revision->valuedouble<=UINT32_MAX &&
+            revision->valuedouble==(uint32_t)revision->valuedouble)) &&
             !(replace && evict) && (!!evict == !!expected) && (!evict ||
             (cJSON_IsString(expected) && cJSON_IsNumber(evict) && evict->valuedouble >= 1 &&
              evict->valuedouble <= INT32_MAX && evict->valuedouble == evict->valueint)) && (!replace ||
             (cJSON_IsNumber(replace) && replace->valuedouble >= 1 && replace->valuedouble <= INT32_MAX &&
              replace->valuedouble == replace->valueint));
+        for (int i=0;valid && i<source_count;++i) {
+            const cJSON *key=cJSON_GetArrayItem(merge,i);
+            valid=cJSON_IsNumber(key) && key->valuedouble>=1 && key->valuedouble<=INT32_MAX && key->valuedouble==key->valueint;
+            if (valid) sources[i]=(uint32_t)key->valueint;
+        }
         if (valid) {
             uint32_t memory_id = 0;
-            err = evict ? hisu_memory_evict_and_remember(fact->valuestring, (uint32_t)evict->valueint,
+            err = merge ? hisu_memory_merge(fact->valuestring,sources,(unsigned)source_count,(uint32_t)revision->valuedouble,&memory_id) :
+                evict ? hisu_memory_evict_and_remember(fact->valuestring, (uint32_t)evict->valueint,
                                                         expected->valuestring, &memory_id) :
                 hisu_memory_remember(fact->valuestring, replace ? (uint32_t)replace->valueint : 0, &memory_id);
             if (err == ESP_OK) {
                 cJSON_AddNumberToObject(value,"id", memory_id);
                 if (evict) cJSON_AddNumberToObject(value,"evicted_id",evict->valueint);
+                if (merge) cJSON_AddNumberToObject(value,"freed_slots",source_count-1);
                 cJSON_AddStringToObject(value,"status","pending_idle_flash_save");
             } else if (err == HISU_MEMORY_ERR_FULL) {
                 cJSON_AddStringToObject(value,"code","memory_full");
                 cJSON_AddStringToObject(value,"next_action",
-                    "Call list_memory, merge the same topic with replace_id or select a lower-value fact. "
-                    "Retry remember with evict_id and its exact expected_fact. Never forget first. "
+                    "FIRST call list_memory and inspect ALL facts. Add to the same fact with replace_id, preserving old details, "
+                    "or losslessly combine 2-3 related facts using merge_ids and memory_revision from list_memory, then save the new fact. "
+                    "ONLY if no lossless merge fits 256 UTF-8 bytes, use evict_id and exact expected_fact for a lower-value fact. Never forget first. "
                     "If the new fact is less useful than existing facts, skip saving it.");
+            } else if (merge) {
+                cJSON_AddStringToObject(value,"code","merge_rejected");
+                cJSON_AddStringToObject(value,"next_action","No facts were changed. Refresh list_memory; use distinct existing ids and its revision as memory_revision. Do not delete sources or blindly retry.");
             } else if (evict) {
                 cJSON_AddStringToObject(value,"code","eviction_rejected");
                 cJSON_AddStringToObject(value,"next_action",
@@ -1202,6 +1346,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
                     portENTER_CRITICAL(&s_mux);
                     if (frame->epoch==s_epoch && frame->generation==s_generation && s_active && !s_failed) s_music_choices_epoch=frame->epoch;
                     portEXIT_CRITICAL(&s_mux);
+                    cJSON_AddStringToObject(value,"next_action","Search results are NOT an offer. Before reading choices, call offer_music with id or ids from these results. Then read its returned titles/artists and WAIT for the next user turn. Never claim playback before play_music succeeds.");
                 }
             }
         }
@@ -1298,7 +1443,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
             err=ESP_ERR_INVALID_STATE;
             cJSON_AddStringToObject(value,"code",next ? "music_next_unavailable" : "music_confirmation_required");
             cJSON_AddStringToObject(value,"error",next ? "Next music needs resumed music context, new actual user input and a DIFFERENT known id." : "A new user confirmation of the proposed track is required before playback.");
-            cJSON_AddStringToObject(value,"next_action",next ? "Search for a different song if no different choice is available. Never replay the last id or invent input." : "For multiple offered songs, supply matching position and selection_text copied verbatim from the FULL current input transcript. It must explicitly select a numbered song or an unambiguous full title/artist. Vague assent, negation or complex phrasing needs re-offering and clarification. Never invent or trim evidence. For one specific song, offer it and wait for confirmation.");
+            cJSON_AddStringToObject(value,"next_action",next ? "Search for a different song if no different choice is available. Never replay the last id or invent input." : "Do NOT retry play_music or claim playback this turn. If the offer is missing, expired or no longer the immediately previous turn, call offer_music with this id, read its title/artist and WAIT for one new confirmation. For a current multi-song offer use matching position and selection_text copied verbatim from the FULL input; a clear choice needs no second confirmation. Never invent or trim evidence.");
         }
         if (valid && confirmed) {
             free(s_pending_music); s_pending_music = NULL;
@@ -1466,7 +1611,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
     if (!valid) cJSON_AddStringToObject(value,"error","Unsupported function or invalid arguments");
     else if (err != ESP_OK && !cJSON_GetObjectItemCaseSensitive(value,"error")) cJSON_AddStringToObject(value,"error",
         !strcmp(name->valuestring,"search_music") || !strcmp(name->valuestring,"play_music") ?
-        "Zing MP3 unavailable, track restricted, or request cancelled. Do not substitute another song." :
+        "Không lấy được bài hát, bài bị hạn chế hoặc yêu cầu đã hủy. Không đọc tên nguồn, không tự phát bài khác." :
         "Device could not apply the request");
     char *body = cJSON_PrintUnformatted(response);
     if (changed) s_callback(LIVE_DEVICE,frame->generation,"");
@@ -1485,9 +1630,11 @@ static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
     cJSON *lookup_call=cJSON_Parse((const char *)frame->pcm);
     const cJSON *lookup_name=cJSON_GetObjectItemCaseSensitive(lookup_call,"name");
     const cJSON *lookup_id=cJSON_GetObjectItemCaseSensitive(lookup_call,"id");
+    bool play_request=cJSON_IsString(lookup_name) &&
+        (!strcmp(lookup_name->valuestring,"play_music") || !strcmp(lookup_name->valuestring,"play_next_music"));
     portENTER_CRITICAL(&s_mux);
-    bool lookup_allowed=!s_handoff_readonly && !s_interpreter && !s_bedtime.active &&
-        s_key_profile==HISU_GEMINI_CHAT;
+    bool lookup_allowed=!s_handoff_readonly && !s_interpreter && !s_bedtime.active && !s_reply_state.ignore_input && !s_reply_state.tool_loop_stopped &&
+        (s_key_profile==HISU_GEMINI_CHAT || s_key_profile==HISU_GEMINI_CHAT_BACKUP);
     portEXIT_CRITICAL(&s_mux);
     bool queued=lookup_allowed && current(frame->epoch,frame->generation) && cJSON_IsString(lookup_name) &&
         !strcmp(lookup_name->valuestring,"lookup_info") && cJSON_IsString(lookup_id) &&
@@ -1500,6 +1647,23 @@ static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
     char *response = execute_tool(frame,&end_session);
     log_transport_stack("Device tool finished");
     if (!response && !current(frame->epoch,frame->generation)) return true;
+    /* Bound model retries, including different call ids for the same failed play.
+     * Keep the WSS session, but fence this response before it can loop again. */
+    cJSON *checked=play_request && response ? cJSON_Parse(response) : NULL;
+    const cJSON *result=cJSON_GetArrayItem(cJSON_GetObjectItem(
+        cJSON_GetObjectItem(checked,"toolResponse"),"functionResponses"),0);
+    const cJSON *result_name=cJSON_GetObjectItemCaseSensitive(result,"name");
+    const cJSON *result_value=cJSON_GetObjectItemCaseSensitive(result,"response");
+    bool play_failed=cJSON_IsString(result_name) &&
+        (!strcmp(result_name->valuestring,"play_music") || !strcmp(result_name->valuestring,"play_next_music")) &&
+        cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(result_value,"ok"));
+    bool stop_loop=false;
+    portENTER_CRITICAL(&s_mux);
+    if (play_failed && !s_reply_state.tool_loop_stopped && frame->epoch==s_epoch && frame->generation==s_generation)
+        stop_loop=++s_reply_state.music_failures>=3;
+    if (stop_loop) s_reply_state.tool_loop_stopped=true;
+    portEXIT_CRITICAL(&s_mux);
+    cJSON_Delete(checked);
     if (response) {
         portENTER_CRITICAL(&s_mux);
         if (frame->epoch == s_epoch && frame->generation == s_generation) {
@@ -1507,11 +1671,19 @@ static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
             /* A boundary received before this result cannot finish its continuation.
              * Retire before sending: follow-up can arrive while send_text returns. */
             s_reply_state.deferred_complete = false;
+            if (stop_loop) {
+                live_turn_interrupt(&s_turn);
+                s_interrupt_deadline=esp_timer_get_time()+10000000;
+            }
         }
         portEXIT_CRITICAL(&s_mux);
     }
     bool ok = response && send_text(client,response);
     cJSON_free(response);
+    if (ok && stop_loop && current(frame->epoch,frame->generation)) {
+        ESP_LOGW(TAG,"Music retry loop stopped; waiting for new user input");
+        s_callback(LIVE_LISTENING,frame->generation,"");
+    }
     /* Reboot only after acknowledging a confirmed request on this still-current turn. */
     cJSON *call = end_session ? cJSON_Parse((const char *)frame->pcm) : NULL;
     const cJSON *name = cJSON_GetObjectItemCaseSensitive(call,"name");
@@ -1523,7 +1695,7 @@ static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
     }
     cJSON_Delete(call);
     if (end_session) s_callback(s_pending_music ? LIVE_MUSIC_HANDOFF : LIVE_END,frame->generation,"");
-    if (ok && !end_session)
+    if (ok && !end_session && !stop_loop)
         ESP_LOGI(TAG,"Tool result sent; awaiting Gemini continuation");
     if (reboot) { vTaskDelay(pdMS_TO_TICKS(500)); esp_restart(); }
     if (ok) announce_rekey(frame->epoch);
@@ -1623,7 +1795,7 @@ static char *build_setup(void)
     free(context); if (!setup) return NULL;
     if (profile==HISU_GEMINI_READER) snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: Reader. The user already authorized bedtime narration and its board timer is active. Narrate gently in Vietnamese, 100-180 words per segment. Never call start_sleep_story again or change timer/settings. Do not ask for continuation. Keep original Leda.");
     else if (profile==HISU_GEMINI_TRANSLATE) snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: Interpreter is ALREADY ACTIVE between vi and %s. This overrides the default-off startup rule. Confirm briefly in Vietnamese once, then only translate each utterance into the other language. Do not answer/execute the content, store facts or call start_interpreter again. Mode controls require a deliberate wake/interrupt and successful tool result. Keep original Leda.",language ? language : "en");
-    else snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: ordinary Chat. Interpreter is OFF and no bedtime timer is active. Mode changes still require explicit user requests and a successful tool result. Never replay earlier tools or pending commands on a fresh connection.");
+    else snprintf(role,sizeof(role),"TRUSTED RUNTIME MODE: ordinary Chat; Interpreter OFF. Hi Su's partner is Le Le (robot identity is internal). Call her only Le Le, never robot Le Le. Keep robot/owner identities separate; no reconfirmation or unasked roleplay disclaimers. Understand vi/en/ja; reply Vietnamese. Noise/unclear/other languages: ignore_input silently. Keep clear requests, foreign names/titles and interpreter requests. Mode changes need explicit consent and a successful tool. No replay of earlier tools on reconnect.");
     char *music_context=NULL;
     if (s_music_resume && s_last_music) {
         cJSON *data=cJSON_CreateObject();
@@ -1756,6 +1928,7 @@ static void transport_task(void *arg)
     char *body = encoded + ENCODED_CAPACITY;
     int64_t next_memory_save = 0;
     int64_t next_alert_prepare = 0;
+    int64_t next_volume_save = 0;
     for (;;) {
         /* Closed-turn jobs must be drained even when there is no WSS connection. */
         portENTER_CRITICAL(&s_mux); bool lookup_live=s_active && !s_failed; portEXIT_CRITICAL(&s_mux);
@@ -1768,6 +1941,10 @@ static void transport_task(void *arg)
         if (memory_idle) s_idle_maintenance = true;
         portEXIT_CRITICAL(&s_mux);
         if (!active || music_playing) {
+            if (memory_idle && esp_timer_get_time()>=next_volume_save) {
+                (void)hisu_settings_flush_volume();
+                next_volume_save=esp_timer_get_time()+5000000;
+            }
             if (memory_idle && !voice_lookup_busy()) prepare_reminder();
             if (memory_idle && esp_timer_get_time() >= next_memory_save && hisu_memory_pending()) {
                 int64_t save_started=esp_timer_get_time();
@@ -1901,6 +2078,12 @@ static void transport_task(void *arg)
             } else if (frame->kind == 8) {
                 response_deadline = esp_timer_get_time() + 60000000;
                 ok = send_story_continuation(client,frame);
+            } else if (frame->kind == 10) {
+                response_deadline=0;
+                ok=send_mic_cancel(client,frame);
+            } else if (frame->kind == 9) {
+                response_deadline = esp_timer_get_time() + 60000000;
+                ok = send_user_text(client,frame);
             } else if (frame->kind == 3) {
                 ok = send_text(client, (char *)frame->pcm);
             } else {
@@ -2071,6 +2254,8 @@ static void announce_initial_listening(void)
 
 static bool music_write(const int16_t *pcm, size_t samples, int rate, int channels)
 {
+    uint32_t ticket=s_music_output ? s_music_output->ticket : 0;
+    if (!hisu_music_current(ticket)) return false;
     if (speaker_open_rate(rate) != ESP_OK) return false;
     if (!s_music_started && s_music_output) {
         char title[256]; snprintf(title,sizeof(title),"%s\n%s",s_music_output->title,s_music_output->artist);
@@ -2079,6 +2264,7 @@ static bool music_write(const int16_t *pcm, size_t samples, int rate, int channe
     int16_t *stereo=s_speaker_mix;
     size_t frames=samples/(size_t)channels;
     for (size_t offset=0;offset<frames;) {
+        if (!hisu_music_current(ticket)) return false;
         size_t n=frames-offset; if (n>256) n=256;
         int volume=hisu_settings_get(HISU_SETTING_SPEAKER) == 1 ? hisu_settings_get(HISU_SETTING_VOLUME) : 0;
         for (size_t i=0;i<n;++i) {
@@ -2318,6 +2504,13 @@ static void finish_spoken_reply(uint32_t epoch, uint32_t generation)
     if (poll_bedtime()) return;
     portENTER_CRITICAL(&s_mux);
     bool live=s_active && !s_failed && epoch==s_epoch && generation==s_generation;
+    if (live && s_reply_state.tool_loop_stopped) { portEXIT_CRITICAL(&s_mux); return; }
+    if (live && s_reply_state.ignore_input) {
+        portEXIT_CRITICAL(&s_mux);
+        ESP_LOGI(TAG,"Ignored input; listening without spoken reply");
+        s_callback(LIVE_LISTENING,generation,"");
+        return;
+    }
     bool ending=live && s_reply_state.end_after_reply;
     bool sleeping=ending && s_reply_state.sleep_after_reply;
     bool story=live && !ending && s_bedtime.active && !s_bedtime.next_queued;
@@ -2355,6 +2548,9 @@ static void playback_task(void *arg)
     int16_t *stereo=s_speaker_mix;
     for (;;) {
         (void)poll_bedtime();
+        if (s_music_output && !hisu_music_current(s_music_output->ticket)) {
+            speaker_close(); hisu_ui_music_level(0);
+        }
         if (play_feedback()) continue;
         announce_initial_listening();
         observe_battery_policy();
@@ -2401,13 +2597,15 @@ static void playback_task(void *arg)
         }
         if (audio.bytes) { portENTER_CRITICAL(&s_mux); s_queued_audio_bytes -= audio.bytes; portEXIT_CRITICAL(&s_mux); }
         if (!current(audio.epoch, audio.generation)) { free(audio.pcm); speaker_close(); first = true; continue; }
+        portENTER_CRITICAL(&s_mux); bool ignored=s_reply_state.ignore_input || s_reply_state.tool_loop_stopped; portEXIT_CRITICAL(&s_mux);
+        if (ignored && !audio.done) { free(audio.pcm); continue; }
         if (audio.cue) {
             if (audio.cue == 1) hold_caption(&caption, &audio);
             else play_cue(&audio);
             free(audio.pcm); continue;
         }
         if (audio.done) {
-            if (!first) flush_caption(&caption, audio.epoch, audio.generation);
+            if (!first && !ignored) flush_caption(&caption, audio.epoch, audio.generation);
             else caption.text[0] = 0;
             if (s_speaker_enabled) vTaskDelay(pdMS_TO_TICKS(100));
             speaker_close(); first = needs_buffer = true;

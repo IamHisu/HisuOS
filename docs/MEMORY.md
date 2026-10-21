@@ -10,7 +10,8 @@ agent loop or additional background task is added.
 - Long-term: at most 24 user facts, each at most 256 UTF-8 bytes. Automatic fact
   selection is initially enabled, as requested, and can be disabled in web
   Setting > Device. The model is instructed to select stable stated preferences,
-  names, habits and projects, not every question or inferred personal details.
+  names, nicknames, basic relationships, habits and projects, not every question
+  or inferred personal details.
 - Recent conversation: a rolling 2048-byte text excerpt in PSRAM, retained across
   voice sessions while powered. Input transcription and delivered subtitle
   segments feed it. It is incomplete, can include an interrupted response, is
@@ -26,6 +27,21 @@ mistakes or prompt injection.
 
 ## Tools and Management
 
+Automatic memory is standing permission, not a requirement to say "remember"
+or confirm each fact. Live may save at most three clear, stable user-stated facts
+per turn. Both Live and post-session extraction include names, nicknames, basic
+relationships to the user and preferences. Third-party scope is names/nicknames
+and the stated relationship only, not contact details or other private data.
+Ambiguous spelling, identity, relationship or whether an old fact is being replaced
+must be clarified in Live before writing; background extraction skips ambiguity.
+A nickname is separate from a real name. Clear changes to the same person and
+attribute/relationship update its existing id; unchanged facts do not need a write.
+New people/additional preferences do not imply discarding older ones. Old summaries
+are fenced against concurrent corrections. These are semantic model instructions,
+not a local keyword parser or a guarantee every fact will be extracted correctly.
+The existing automatic-memory-off switch is still respected; no user data is
+prepopulated by the firmware or its example tests.
+
 `remember(fact, replace_id?)` creates a fact or replaces the same fact by its
 existing id. Exact duplicates are deduplicated. Invalid UTF-8, controls, oversized
 facts and writes while automatic memory is disabled are rejected. At capacity,
@@ -34,6 +50,22 @@ generic allocation failure. Gemini uses `list_memory()` to inspect all 24 facts,
 prefers merging/correcting the same topic, and can automatically replace a less
 useful or obsolete fact by calling `remember(fact, evict_id, expected_fact)`.
 `replace_id` and `evict_id` are mutually exclusive.
+
+Merge-first policy: before evicting at capacity, Live must inspect ALL facts via
+`list_memory`, enrich an existing same-person/topic fact with `replace_id`, or
+use `remember(fact, merge_ids, memory_revision)` to combine 2-3 related slots
+losslessly. Use the exact `revision` from the full `list_memory` result; any
+intervening memory change rejects the merge. Compact ids/revision keep long,
+escaped source facts from overflowing the existing tool input slot. Merge mode
+is exclusive with replace/evict fields; firmware rejects duplicates/missing ids
+and stale revisions, then compacts the cache atomically under its mutex.
+The merged fact has a fresh id, freeing 1-2 slots without a delete-then-add gap.
+It stays within 256 UTF-8 bytes and is persisted by the existing idle A/B flush.
+Only when no lossless merge fits may the model select a lower-value eviction;
+less useful additions can be skipped instead. Semantic relevance and preservation
+of useful details are model responsibilities, not provable by firmware string checks.
+Additional nicknames preserve the person's existing names. Background extraction
+can enrich the same fact, but still cannot delete other slots or evict at capacity.
 
 Eviction is accepted only at full capacity, with automatic writes enabled, a
 valid new fact, an existing target id and an exact match of its old text. A
@@ -100,7 +132,8 @@ key do not rotate credentials or consume an API attempt. A reboot clears pending
 data and these in-RAM counters; this is not a persistent daily quota limiter.
 
 The model proposes at most three stable facts, prioritizing user corrections,
-preferred address, preferences, habits and projects. Known facts and user text are
+names, nicknames, basic relationships, preferred address, preferences, habits and
+projects. Known facts and user text are
 explicitly untrusted data. Each proposal needs a verbatim 8-256-byte evidence span
 from user text, valid fact UTF-8 <=256 bytes, and only the supported fields. Existing
 facts can be corrected only with the same id and exact expected old text. Validation
@@ -123,6 +156,36 @@ Sources: [Google model documentation](https://ai.google.dev/gemini-api/docs/mode
 [structured JSON output](https://ai.google.dev/gemini-api/docs/generate-content/structured-output).
 
 ## Storage and Flash Ownership
+
+### Optional Private Provisioning
+
+If `.private/hisu_private_memory.json` exists at CMake configure time, it is
+embedded as a local provisioning package. `.private/` is excluded from Git;
+the built firmware, ELF and generated assembly STILL contain its plaintext data.
+Do not distribute those artifacts. Removing the JSON requires reconfigure and
+rebuild to remove it from future firmware. Deleting a fact cannot erase data
+embedded in an already-flashed application; use a new build without the package
+when that is required. Flash encryption is not enabled by this feature.
+
+The JSON has only `version` (positive monotonic integer) and `facts` (1-24 valid
+strings of at most 256 UTF-8 bytes). On startup, before voice/UI tasks begin,
+an atomic RAM merge preserves existing facts, deduplicates exact matches and
+refuses insufficient capacity without evicting anything or partially importing.
+Automatic-memory-off is respected; failures log an error code, never fact text.
+The normal A/B flush commits the complete merged data and its provisioning
+version together. Interrupted saves recover either the prior record or the full
+new record, never a committed marker for an incomplete import.
+
+Header `reserved[0]` now holds the last provisioned version, protected by the
+existing header CRC. Record/payload sizes, offsets and version 1 remain unchanged;
+old records use zero. A seed of the same or older version is never reapplied,
+including after forget/clear and reboot. Later explicit provisioning requires a
+higher version. It adds exact nonduplicates only, not semantic replacements;
+normal AI tools manage corrections. Removing the file does not delete saved facts.
+Older firmware can read the records but does not preserve this marker when it
+writes; remove private provisioning before a downgrade/upgrade cycle to prevent
+unintended reprovisioning. Erasing the whole storage partition also removes the
+marker. Keep private records out of logs, screenshots and shared binaries.
 
 The existing `storage` partition is unchanged. Shared layout constants reserve
 the two existing wallpaper slots first (2 x 0x101000 bytes), then two 8192-byte

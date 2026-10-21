@@ -1,5 +1,8 @@
 # HisuOS
 
+Chat chữ qua USB có cửa sổ riêng: chạy `./tools/chat.ps1` hoặc VS Code task
+**HisuOS: Chat Hi Su**. Đóng Monitor trước khi kết nối COM. Xem [Chat USB](docs/USB_CHAT.md).
+
 Setting → Thiết bị có bốn key Gemini riêng: Chat chính, một Chat dự phòng,
 Reader và Translate. Chat chỉ tự chuyển dự phòng khi có lỗi xác thực hoặc hết
 hạn mức được nhận diện, không mượn key Reader/Translate. Key Chat đã lưu vẫn
@@ -20,7 +23,7 @@ Màn hình chờ chỉ dùng ảnh/GIF tải lên từ Setting, không nhúng h�
 Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên editor. BOOT lưu vào NVS; giữ BOOT hủy. Mặc định là Tối. Theme áp dụng cho menu, phụ đề và nền trống khi không có ảnh hợp lệ; không đổi màu ảnh đã tải lên.
 
 - Độ sáng: PWM thật, preview khi chỉnh, lưu NVS khi xác nhận.
-- Hội thoại: gọi “Hi Su” mở Gemini Live qua WSS; mic gửi PCM 16kHz trong lúc thu, loa phát PCM 24kHz từng phần. Chỉ cần Gemini API key. Board lọc mở lượt bằng VAD + năng lượng, kết thúc sau 700ms im lặng; nghe tiếp tối đa 60 giây sau loa. BOOT/ngắt bằng câu gọi dừng audio cũ và nghe lại trong cùng phiên, giữ ngữ cảnh; giữ BOOT hoặc nói tạm biệt đóng phiên. Chưa có chống vọng/ngắt lời tự do như điện thoại; cần kiểm chứng API/độ trễ/tiếng nền trên board. Xem [Hội thoại](docs/VOICE_CONVERSATION.md).
+- Hội thoại: gọi “Hi Su” hoặc nhấn đúp BOOT ở màn hình chờ để mở Gemini Live qua WSS; mic gửi PCM 16kHz trong lúc thu, loa phát PCM 24kHz từng phần. Chỉ cần Gemini API key. Board lọc mở lượt bằng VAD + năng lượng, kết thúc sau 700ms im lặng; nghe tiếp tối đa 60 giây sau loa. Câu gọi trong phiên ngắt audio cũ và nghe lại, giữ ngữ cảnh; BOOT ngắn trong chat hoặc nói tạm biệt đóng phiên. BOOT ngắn khi nhạc/kể chuyện đưa về chat. Nhập chữ qua `idf.py monitor` khi đang lắng nghe. Chưa có chống vọng/ngắt lời tự do như điện thoại; cần kiểm chứng API/độ trễ/tiếng nền trên board. Xem [Hội thoại](docs/VOICE_CONVERSATION.md).
 - Timeout: tắt backlight khi idle, không deep sleep.
 - Wi-Fi: quét/chọn mạng, nhập mật khẩu bằng ba nút, RSSI/IP, bật/tắt radio; lưu mạng kết nối thành công vào NVS và tự quét lại khi mất kết nối.
 - Pin: phần trăm ước tính từ ADC GPIO8 theo profile Muse ZHENGCHEN; hiển thị raw ADC và tín hiệu nguồn ngoài GPIO9. Cần kiểm chứng calibration/polarity trên board thật.
@@ -90,7 +93,7 @@ Web Setting → Thiết bị → Trí nhớ cho xem/xóa từng mục, xóa toà
 - Khi hiển thị phụ đề thật: up/down cuộn nội dung dài theo chiều dọc.
 - Khi backlight đã tắt: nút đầu tiên chỉ đánh thức, không kích hoạt hành động.
 
-Trong phiên hội thoại, nhấn BOOT ngắt lượt hiện tại và chuyển sang nghe; giữ BOOT 800ms đóng phiên. Ngoài phiên, BOOT giữ hành vi menu/đèn pin hiện tại. Đây chưa phải push-to-talk.
+Ở màn hình chờ, nhấn đúp BOOT trong 350ms để gọi Hi Su như wake word; nhấn đơn vẫn mở menu sau khoảng chờ phân biệt nhấn đúp. Trong chat, nhấn BOOT một lần đóng phiên. Đang kể chuyện hoặc phát nhạc, nhấn BOOT một lần dừng và về chat. Giữ BOOT vẫn dùng cho quay lại/đèn pin như trước. Có thể nhập chữ UTF-8 rồi Enter trong `idf.py monitor` khi Hi Su đang lắng nghe; mic và loa vẫn theo cài đặt hiện tại, không tự tắt tiếng.
 
 MultiNet cần flash cả partition table và model bằng `idf.py -p COM6 flash` (không dùng `app-flash`). Model tại `0xD00000`. Setting → Thiết bị lưu Gemini API key để dùng Live; Groq key cũ không dùng trong hội thoại này. Model `gemini-3.8-live` cần quyền/quota phù hợp. Đây là nhận câu gọi bằng MultiNet, chưa có WakeNet riêng hoặc AEC.
 

@@ -19,7 +19,9 @@ The source is unofficial and availability is not guaranteed.
   this stage use the dismissible music-error screen.
 - Voice teardown posts music-loading directly, never the wallpaper in between.
   The screen shows loading, then playing with the title and artist.
-- Say Hi Su to cancel music and open voice chat, or press BOOT/Back to stop.
+- Say Hi Su or press BOOT to cancel music and open voice chat. During audio,
+  BOOT acts on its debounced press (30 ms), not release/hold; its subsequent
+  release/hold is consumed so it cannot immediately close the new chat.
 - Natural end of track drains PCM and the I2S ring, closes the speaker, releases
   music/network ownership, then opens Chat. Hi Su briefly announces that the song
   ended and asks whether to play another song or chat, then returns to listening.
@@ -40,14 +42,55 @@ The source is unofficial and availability is not guaranteed.
 ## Music Display
 
 The 240x240 screen uses a black background, softly fading rainbow light,
-96 thin white mirrored waveform strokes, a curved treble clef, six floating
-single/beamed notes and a separate title/artist band. The existing UI task
-updates it at 20 FPS; there is no image decoder, new framebuffer, task or FFT.
+48 colored upward bars anchored to physical row 239 and three to five active
+note/firework lifecycles, without a treble clef. A soft rainbow wash sits behind
+the bars and fades upward; its height follows nearby bar height and PCM energy.
+Notes rise from
+pseudo-random lower positions to independently selected heights; the flight,
+color, size and note glow are time-driven, not amplitude bobbing. Once at target
+height they wait for an audio onset. At most four notes burst together into thirty-two
+colored streaks each, with independent initial velocities, downward gravity
+and a 750 ms fade. Wider dispersion, 100 ms tails, a colored core and white
+spark tips make the burst visible at 240x240. The cap is 128 streaks, stored in
+compact 16-byte records. The frame stays below 3 KiB and is allocated once in
+PSRAM, reused only by the UI task rather than placed on its stack. Allocation
+failure skips the visualization without interrupting audio; a later music view
+can retry allocation. These are falling
+fireworks, not a stationary flower/ring.
+An energy-attack heuristic (minimum level, rise above the previous level and
+smoothed floor, 240 ms refractory period) triggers bursts; this is not BPM or
+frequency analysis. After 1.2 seconds without a qualifying onset, an eligible
+note fades and respawns instead of fabricating a beat. The first three slots
+respawn immediately; two extra slots have randomized rest periods. All slots,
+particles and scene state are bounded; no task or per-frame heap is added.
+Title/artist occupy rows 22-65, above the visualization at rows 72-239. There
+is no fixed middle line or mirrored waveform. The existing UI task
+requests updates every 50 ms; actual rendering speed needs board verification
+at the higher particle count. There is no image decoder, new framebuffer, task or FFT.
 A lock-free meter samples the actual volume-scaled playback PCM after successful
 speaker writes. Height and glow react to the amplitude envelope with a short
 decay; stale/muted/starved audio decays to the quiet baseline. Note positions
-continue floating over time. This is audio-reactive decoration, not an estimated
+change position with time, while burst timing reacts to energy attacks. This is audio-reactive decoration, not an estimated
 BPM or a measured frequency spectrum. Timers are deleted whenever the view exits.
+
+Vol+/Vol- adjust by five points during music, Chat, and stories; held keys
+repeat using the existing board repeat policy. A vertical right-side slider
+and numeric level appear for 1.8 seconds. The top-layer overlay survives
+subtitle redraws, hides on exit, and reuses its objects. Speaker-disable remains
+independent: changing volume does not silently override it.
+
+Button changes only update the cached RAM volume. The existing transport's
+idle-maintenance path persists the final value, at most once per five seconds;
+it never commits each press during playback. Resetting before an idle save can
+lose the last adjustment. Revision checks preserve a newer button change if
+an NVS commit is in progress. Host tests cover clamping, deferred writes,
+failed commits and concurrent updates.
+
+Music checks cancellation between every 256 output frames and closes I2S on
+the playback worker as soon as it observes the canceled ticket, even if HTTP
+cleanup is still pending. No UI task calls I2S or waits for network teardown.
+Real stop latency still includes button polling, an in-flight I2S write/DMA
+and LCD scheduling; host tests do not measure physical latency.
 
 `node tests/test_music_visual.mjs` renders the native geometry to Canvas and
 checks silence/loudness/motion screenshots. It mirrors LVGL primitives and does
@@ -172,3 +215,25 @@ without printing the signed stream URL. Host tests cover expansion, its memory
 failure, invalid growth requests, unsupported format, guarded redirects and
 no-PCM EOF. A successful streaming API response alone does not prove CDN download
 or MP3 playback has started on hardware.
+
+## Missing Offers And Repeated Playback Calls
+
+Search results do not authorize playback. Both the search result and setup
+explicitly require `offer_music` before reading a numbered list or asking for
+confirmation. If the model skips this registration, playback stays rejected;
+the result directs it to offer the exact id and wait for one new confirmation,
+not retry playback or claim it is playing. A registered list accepts a clear
+selection as confirmation without another yes/no question. The conservative
+selection evidence grammar also accepts polite endings such as `đi bạn` and
+`nha bạn`, but still rejects negation, questions and compound alternatives.
+
+After three failed play calls in one real user turn, the transport suppresses
+remaining audio/captions and fences that server response using the existing
+obsolete-turn mechanism. It returns the frontend to listening, drops further
+tool calls from the canceled response, and keeps WSS unless the normal cancel
+timeout expires. New input resets the retry budget. This bounds a model loop;
+it does not fabricate consent or filter repeated text by substring.
+
+Host tests reproduce missing-offer recovery, a clear list selection, repeated
+failed plays with distinct call ids, and a completion racing the final tool
+result. They verify suppressed late output and a working next text turn.

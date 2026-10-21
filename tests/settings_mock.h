@@ -18,12 +18,16 @@ static esp_err_t nvs_open(const char *name, int mode, nvs_handle_t *handle) { *h
 static void nvs_close(nvs_handle_t handle) {}
 static int32_t mock_wallpaper_default = -1;
 static unsigned mock_legacy_wallpaper_reads;
+static int32_t mock_volume_saved=-1;
+static unsigned mock_volume_writes;
 static esp_err_t nvs_get_i32(nvs_handle_t handle, const char *key, int32_t *value) {
+    if (!strcmp(key,"volume") && mock_volume_saved>=0) { *value=mock_volume_saved; return ESP_OK; }
     if (!strcmp(key,"wall_default")) ++mock_legacy_wallpaper_reads;
     if (strcmp(key,"wall_default") || mock_wallpaper_default < 0) return ESP_ERR_NVS_NOT_FOUND;
     *value=mock_wallpaper_default; return ESP_OK;
 }
 static esp_err_t nvs_set_i32(nvs_handle_t handle, const char *key, int32_t value) {
+    if (!strcmp(key,"volume")) { mock_volume_saved=value; ++mock_volume_writes; }
     if (!strcmp(key,"wall_default")) mock_wallpaper_default=value;
     return ESP_OK;
 }

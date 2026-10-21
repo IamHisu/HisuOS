@@ -20,6 +20,14 @@ static esp_err_t summary_http_body(esp_http_client_handle_t http,const char *bod
     assert(!strcmp(cJSON_GetObjectItem(config,"responseMimeType")->valuestring,"application/json"));
     assert(cJSON_GetObjectItem(config,"responseJsonSchema") && cJSON_GetObjectItem(config,"maxOutputTokens")->valueint==1024);
     assert(!cJSON_GetObjectItem(root,"tools"));
+    cJSON *instructions=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(
+        cJSON_GetObjectItem(root,"systemInstruction"),"parts"),0),"text");
+    assert(cJSON_IsString(instructions));
+    assert(strstr(instructions->valuestring,"preserving all useful old details") &&
+           strstr(instructions->valuestring,"skip additions rather than delete"));
+    assert(strstr(instructions->valuestring,"names, nicknames") && strstr(instructions->valuestring,"basic relationships"));
+    assert(strstr(instructions->valuestring,"Skip ambiguous") && strstr(instructions->valuestring,"exact replace_id and expected_fact"));
+    assert(strstr(instructions->valuestring,"contact details") && strstr(instructions->valuestring,"never infer identities"));
     cJSON_Delete(root); return ESP_OK;
 }
 static const char *summary_wire="{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"{\\\"facts\\\":[]}\"}]}}]}";

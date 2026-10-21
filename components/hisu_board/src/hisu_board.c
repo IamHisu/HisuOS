@@ -201,6 +201,8 @@ esp_err_t hisu_board_set_brightness(int percent)
 void hisu_board_enable_volume_hold(bool enabled) { s_volume_hold = enabled; }
 void hisu_board_enable_menu_close_hold(bool enabled) { s_menu_close_hold = enabled; }
 void hisu_board_enable_idle_boot_hold(bool enabled) { s_idle_boot_hold = enabled; }
+bool hisu_board_boot_pressed(void) { return s_buttons[0].pressed || s_buttons[0].raw; }
+bool hisu_board_boot_stable_pressed(void) { return s_buttons[0].pressed; }
 
 hisu_key_t hisu_board_poll_key(void)
 {

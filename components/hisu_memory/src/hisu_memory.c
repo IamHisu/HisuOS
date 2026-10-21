@@ -9,6 +9,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef HISU_MEMORY_PRIVATE_SEED
+#include "esp_log.h"
+extern const uint8_t private_memory_start[] asm("_binary_hisu_private_memory_json_start");
+#endif
 
 static SemaphoreHandle_t s_lock;
 static const esp_partition_t *s_partition;
@@ -20,6 +24,7 @@ static bool s_summary_requested;
 static bool s_summary_blocked,s_summary_new_turn;
 static bool s_recent_user, s_dirty, s_flushing, s_purge;
 static uint32_t s_revision, s_sequence;
+static uint32_t s_seed_version;
 static int s_slot = -1;
 static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
@@ -39,6 +44,7 @@ esp_err_t hisu_memory_init(void)
 {
     if (s_lock) return ESP_ERR_INVALID_STATE;
     s_slot = -1; s_sequence = s_revision = 0;
+    s_seed_version=0;
     s_dirty = s_flushing = s_purge = false;
     s_summary_ticket=1; s_summary_requested=false;
     s_summary_blocked=false; s_summary_new_turn=true;
@@ -66,17 +72,61 @@ esp_err_t hisu_memory_init(void)
         if (!hisu_memory_record_valid(&header, s_snapshot)) continue;
         if (!found || (int32_t)(header.sequence - s_sequence) > 0) {
             *s_data = *s_snapshot; s_sequence = header.sequence; s_slot = slot;
+            s_seed_version=header.reserved[0];
         }
         found = true;
     }
     memset(s_snapshot, 0, sizeof(*s_snapshot));
     s_purge = found && occupied[1 - s_slot];
     s_lock = xSemaphoreCreateMutex();
-    if (s_lock) return ESP_OK;
+    if (s_lock) {
+#ifdef HISU_MEMORY_PRIVATE_SEED
+        esp_err_t seeded=hisu_memory_seed_once((const char *)private_memory_start);
+        if (seeded==ESP_OK && s_dirty) seeded=hisu_memory_flush();
+        if (seeded!=ESP_OK) ESP_LOGW("MEMORY","Private profile not fully saved: %s",esp_err_to_name(seeded));
+#endif
+        return ESP_OK;
+    }
 no_memory:
     free(s_data); free(s_snapshot); free(s_recent); free(s_summary_source);
     s_data = s_snapshot = NULL; s_recent = s_summary_source = NULL;
     return ESP_ERR_NO_MEM;
+}
+
+esp_err_t hisu_memory_seed_once(const char *json)
+{
+    if (!s_lock) return ESP_ERR_INVALID_STATE;
+    if (!json || strlen(json)>16384 || strstr(json,"\\u0000") || !hisu_memory_json_shallow(json,4))
+        return ESP_ERR_INVALID_ARG;
+    cJSON *root=cJSON_ParseWithOpts(json,NULL,true);
+    const cJSON *version=cJSON_GetObjectItemCaseSensitive(root,"version");
+    const cJSON *facts=cJSON_GetObjectItemCaseSensitive(root,"facts");
+    bool valid=cJSON_IsObject(root) && cJSON_GetArraySize(root)==2 && cJSON_IsNumber(version) &&
+        version->valuedouble==version->valueint && version->valueint>0 &&
+        cJSON_IsArray(facts) && cJSON_GetArraySize(facts)>0 && cJSON_GetArraySize(facts)<=HISU_MEMORY_COUNT;
+    const cJSON *fact;
+    cJSON_ArrayForEach(fact,facts) if (!cJSON_IsString(fact) || !hisu_memory_fact_valid(fact->valuestring)) valid=false;
+    if (!valid) { cJSON_Delete(root); return ESP_ERR_INVALID_ARG; }
+    hisu_memory_data_t *stage=heap_caps_calloc(1,sizeof(*stage),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!stage) { cJSON_Delete(root); return ESP_ERR_NO_MEM; }
+    esp_err_t err=ESP_OK;
+    lock();
+    if ((uint32_t)version->valueint<=s_seed_version) goto done;
+    if (!s_data->enabled) { err=ESP_ERR_INVALID_STATE; goto done; }
+    *stage=*s_data;
+    cJSON_ArrayForEach(fact,facts) {
+        bool duplicate=false;
+        for (uint32_t i=0;i<stage->count;++i) if (!strcmp(stage->facts[i].text,fact->valuestring)) duplicate=true;
+        if (duplicate) continue;
+        if (stage->count==HISU_MEMORY_COUNT) { err=HISU_MEMORY_ERR_FULL; goto done; }
+        if (stage->next_id>=INT32_MAX) { err=ESP_ERR_NO_MEM; goto done; }
+        hisu_memory_fact_t *entry=&stage->facts[stage->count++];
+        entry->id=stage->next_id++; strcpy(entry->text,fact->valuestring);
+    }
+    *s_data=*stage; s_seed_version=(uint32_t)version->valueint;
+    s_dirty=true; ++s_revision; summary_clear_locked();
+done:
+    unlock(); free(stage); cJSON_Delete(root); return err;
 }
 
 esp_err_t hisu_memory_remember(const char *fact, uint32_t replace_id, uint32_t *id)
@@ -107,6 +157,44 @@ esp_err_t hisu_memory_remember(const char *fact, uint32_t replace_id, uint32_t *
     strcpy(entry->text, fact); *id = entry->id;
     s_dirty = true; ++s_revision; ++s_summary_ticket;
     unlock(); return ESP_OK;
+}
+
+esp_err_t hisu_memory_merge(const char *fact, const uint32_t *sources,
+                          unsigned count, uint32_t expected_revision, uint32_t *id)
+{
+    if (!s_lock) return ESP_ERR_INVALID_STATE;
+    if (!id || !sources || count<2 || count>HISU_MEMORY_MERGE_MAX || !hisu_memory_fact_valid(fact))
+        return ESP_ERR_INVALID_ARG;
+    for (unsigned j=0;j<count;++j) {
+        if (!sources[j]) return ESP_ERR_INVALID_ARG;
+        for (unsigned k=0;k<j;++k) if (sources[k]==sources[j]) return ESP_ERR_INVALID_ARG;
+    }
+    lock();
+    esp_err_t err=ESP_OK;
+    if (!s_data->enabled || expected_revision!=s_revision) { err=ESP_ERR_INVALID_STATE; goto done; }
+    if (s_data->next_id>=INT32_MAX) { err=ESP_ERR_NO_MEM; goto done; }
+    unsigned found=0;
+    for (uint32_t i=0;i<s_data->count;++i) {
+        bool selected=false;
+        for (unsigned j=0;j<count;++j) if (s_data->facts[i].id==sources[j]) {
+            selected=true; ++found;
+        }
+        if (!selected && !strcmp(s_data->facts[i].text,fact)) { err=ESP_ERR_INVALID_ARG; goto done; }
+    }
+    if (found!=count) { err=ESP_ERR_NOT_FOUND; goto done; }
+    /* Validate every source first; commit the compacted cache in one critical transaction. */
+    uint32_t kept=0,old_count=s_data->count;
+    for (uint32_t i=0;i<old_count;++i) {
+        bool selected=false;
+        for (unsigned j=0;j<count;++j) if (s_data->facts[i].id==sources[j]) selected=true;
+        if (!selected) { if (kept!=i) s_data->facts[kept]=s_data->facts[i]; ++kept; }
+    }
+    memset(&s_data->facts[kept],0,(old_count-kept)*sizeof(s_data->facts[0]));
+    hisu_memory_fact_t *entry=&s_data->facts[kept];
+    entry->id=s_data->next_id++; strcpy(entry->text,fact); *id=entry->id;
+    s_data->count=kept+1; s_dirty=true; ++s_revision; summary_clear_locked();
+done:
+    unlock(); return err;
 }
 
 esp_err_t hisu_memory_evict_and_remember(const char *fact, uint32_t evict_id,
@@ -205,8 +293,8 @@ char *hisu_memory_json(void)
     char *json = heap_caps_calloc(1, capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!json) return NULL;
     lock();
-    size_t used = (size_t)snprintf(json, capacity, "{\"enabled\":%s,\"pending\":%s,\"capacity\":%u,\"facts\":",
-        s_data->enabled ? "true" : "false", s_dirty || s_purge || s_flushing ? "true" : "false", HISU_MEMORY_COUNT);
+    size_t used = (size_t)snprintf(json, capacity, "{\"enabled\":%s,\"pending\":%s,\"capacity\":%u,\"revision\":%u,\"facts\":",
+        s_data->enabled ? "true" : "false", s_dirty || s_purge || s_flushing ? "true" : "false", HISU_MEMORY_COUNT,(unsigned)s_revision);
     bool ok = used < capacity && write_facts(json, capacity, &used, false) && used + 2 < capacity;
     if (ok) { json[used++] = '}'; json[used] = 0; }
     unlock();
@@ -380,7 +468,7 @@ esp_err_t hisu_memory_flush(void)
     bool dirty = s_dirty;
     if (!dirty && !s_purge) { unlock(); return ESP_OK; }
     s_flushing = true;
-    uint32_t revision = s_revision, sequence = s_sequence + 1;
+    uint32_t revision = s_revision, sequence = s_sequence + 1, seed_version=s_seed_version;
     int old = s_slot, target = old == 0 ? 1 : 0;
     if (dirty) *s_snapshot = *s_data;
     unlock();
@@ -388,6 +476,9 @@ esp_err_t hisu_memory_flush(void)
     if (dirty) {
         hisu_memory_record_t header;
         hisu_memory_record_make(&header, sequence, s_snapshot);
+        /* Reserved header metadata shares the same atomic A/B commit and CRC. */
+        header.reserved[0]=seed_version; header.header_crc=0;
+        header.header_crc=hisu_memory_crc(&header,sizeof(header));
         size_t offset = HISU_MEMORY_OFFSET + target * HISU_MEMORY_SLOT_BYTES;
         err = esp_partition_erase_range(s_partition, offset, HISU_MEMORY_SLOT_BYTES);
         if (err == ESP_OK) err = esp_partition_write(s_partition, offset + sizeof(header), s_snapshot, sizeof(*s_snapshot));
