@@ -30,7 +30,7 @@ extern const uint8_t media_gif_js_end[] asm("_binary_gif_resize_js_end");
 extern const uint8_t media_css_start[] asm("_binary_style_css_start");
 extern const uint8_t media_css_end[] asm("_binary_style_css_end");
 
-enum {CMD_OPEN = 1, CMD_DEFAULT};
+enum {CMD_OPEN = 1};
 typedef struct { unsigned value; uint32_t generation; } media_command_t;
 static SemaphoreHandle_t s_lock;
 static QueueHandle_t s_commands;
@@ -106,7 +106,6 @@ static esp_err_t command(unsigned value)
     return ESP_ERR_TIMEOUT;
 }
 esp_err_t hisu_media_open(void) { return command(CMD_OPEN); }
-esp_err_t hisu_media_restore_default(void) { return command(CMD_DEFAULT); }
 void hisu_media_close(void)
 {
     if (!s_lock) return;
@@ -359,18 +358,20 @@ static esp_err_t server_start(void)
 /* Write payload first and CRC-checked header last in the inactive slot. */
 static esp_err_t persist(uint8_t *pixels, size_t length, bool gif)
 {
+    if (!pixels || !length || length > HISU_MEDIA_BUFFER_BYTES ||
+        (!gif && length != HISU_MEDIA_BYTES)) return ESP_ERR_INVALID_ARG;
     if (s_sequence == UINT32_MAX) return ESP_ERR_INVALID_STATE;
     int slot = s_slot == 0 ? 1 : 0;
     size_t offset = slot * HISU_MEDIA_SLOT_BYTES;
     hisu_media_record_t record = {
         .magic = HISU_MEDIA_MAGIC, .version = 1, .sequence = s_sequence + 1,
-        .width = 240, .height = 240, .length = pixels ? length : 0,
-        .crc = pixels ? hisu_media_crc(pixels, length) : 0, .flags = pixels ? (gif ? 2 : 1) : 0,
+        .width = 240, .height = 240, .length = length,
+        .crc = hisu_media_crc(pixels, length), .flags = gif ? 2 : 1,
     };
     record.header_crc = hisu_media_crc(&record, offsetof(hisu_media_record_t, header_crc));
     esp_err_t err = esp_partition_erase_range(s_partition, offset, HISU_MEDIA_SLOT_BYTES);
-    if (err == ESP_OK && pixels) err = esp_partition_write(s_partition, offset + HISU_MEDIA_DATA_OFFSET, pixels, length);
-    if (err == ESP_OK && pixels) {
+    if (err == ESP_OK) err = esp_partition_write(s_partition, offset + HISU_MEDIA_DATA_OFFSET, pixels, length);
+    if (err == ESP_OK) {
         uint8_t chunk[1024];
         uint32_t crc = 0;
         for (size_t pos = 0; pos < length && err == ESP_OK; pos += sizeof(chunk)) {
@@ -405,6 +406,7 @@ static esp_err_t load_image(void)
         if (err != ESP_OK) return err;
         if (!hisu_media_record_header_valid(&record) || record.sequence <= s_sequence) continue;
         uint8_t *pixels = NULL;
+        /* Honor legacy empty records so an older cleared image cannot reappear. */
         if (record.flags) {
             pixels = heap_caps_malloc(HISU_MEDIA_BUFFER_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (!pixels) return ESP_ERR_NO_MEM;
@@ -428,7 +430,6 @@ static void media_task(void *arg)
         media_command_t request = {0};
         xQueueReceive(s_commands, &request, pdMS_TO_TICKS(200));
         unsigned cmd = request.value;
-        bool save_default = false;
         if (cmd == CMD_OPEN) {
             lock(); bool current = request.generation == s_generation; unlock();
             if (!current) continue;
@@ -472,21 +473,12 @@ static void media_task(void *arg)
                 }
                 unlock();
             } else { lock(); s_status.opening = false; s_status.error = ESP_ERR_INVALID_STATE; unlock(); }
-        } else if (cmd == CMD_DEFAULT) {
-            lock();
-            bool valid = request.generation == s_generation && !s_status.receiving && !s_status.saving;
-            if (valid) {
-                free(s_pending); s_pending = NULL;
-                s_status.pending = false; s_status.saving = true;
-                save_default = true;
-            }
-            unlock();
         }
         /* Take ownership under the lock; closing a window cannot free this buffer. */
         lock();
         uint8_t *pixels = NULL;
         size_t image_bytes = 0; bool gif = false;
-        bool save = save_default;
+        bool save = false;
         if (window_valid() && s_pending && !s_status.saving && !s_status.receiving) {
             pixels = s_pending; s_pending = NULL;
             image_bytes = s_pending_size; gif = s_pending_gif;

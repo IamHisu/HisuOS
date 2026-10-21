@@ -1,8 +1,0 @@
-menu "HisuOS UI"
-    config HISU_BLE_COMPANION_URL
-        string "HTTPS URL of the BLE companion page"
-        default "https://iamhisu.github.io/HisuOS/ble/"
-        help
-            Publish the companion website before using the QR code.
-            Publish main /docs with GitHub Pages to serve docs/ble at /ble/.
-endmenu

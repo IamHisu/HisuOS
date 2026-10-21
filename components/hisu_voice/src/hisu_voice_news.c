@@ -1,4 +1,5 @@
 #include "hisu_voice_news.h"
+#include "hisu_voice_lookup_json.h"
 #include "hisu_voice_lookup_data.h"
 #include "esp_heap_caps.h"
 #include "yxml.h"

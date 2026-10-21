@@ -69,14 +69,14 @@ Gia chi de tham khao, khong phai tu van dau tu hay bao gia giao dich.
 
 ## Tai Nguyen Va Loi
 
-- Mot job toi da, khong tao task thuong truc: `info_lookup` 6144 byte stack
+- Mot job toi da, khong tao task thuong truc: `info_lookup` 8192 byte stack
   trong PSRAM qua `xTaskCreateWithCaps`, uu tien 3. Worker khong ghi WebSocket.
   Worker cong bo ket qua roi suspend; consumer doi suspended va xoa bang
   `vTaskDeleteWithCaps` truoc khi tra ket qua. Hai consumer (Live/nhac) duoc
   serialize de khong xoa hai lan. Khong self-delete tao task don dep tam.
 - Guard khoi tao giu toi thieu 10 KiB RAM noi bo, block lon nhat 2 KiB;
   HTTP van kiem tra toi thieu 6 KiB/block 2 KiB truoc moi request. Khong chi
-  ha guard cho stack 6 KiB noi bo. Log `LOOKUP: Rejected` ghi ly do va heap
+  ha guard de ep tac vu chay. Log `LOOKUP: Rejected` ghi ly do va heap
   de phan biet sai tham so, thieu RAM va loi tao worker.
 - Deadline 12 giay cho vang/thoi tiet (tin tuc 24 giay), HTTP timeout 1 giay, polling async.
   DNS/TLS cua SDK van co the giu CPU lau hon mot vong poll; khong cam ket
@@ -89,6 +89,15 @@ Gia chi de tham khao, khong phai tu van dau tu hay bao gia giao dich.
   Tin tuc 15 phut (partial 2 phut).
   Thay tham so thi tra lai. Gioi han yeu cau moi cach nhau 2 giay; cache
   khong bi chan boi gioi han nay. Khong luu vi tri/ket qua vao flash.
+  Chuoi cache va ket qua worker duoc serialize thang vao PSRAM bang
+  `cJSON_PrintPreallocated`, buffer tang 1/2/4/8/16/32 KiB, khong qua 32 KiB.
+  Loi cap phat cache moi giu nguyen cache cu va TTL cu, khong gia han du lieu cu.
+  Cay parse/ket qua va cache-hit dung ban cJSON rieng prefix `hisu_lookup_`,
+  malloc/realloc co dinh PSRAM. Dung lai source managed cJSON 1.7.19, khong sua
+  upstream hay doi hook toan cuc. Live chi muon args de doc; cay rieng khong
+  di qua module khac. Envelope ket qua cung tao trong lookup/PSRAM, nhung raw
+  JSON da serialize an toan thay vi parse lai toan bo du bao trong live_send.
+  Call ID van escape bang JSON; khong nhung truc tiep body cua provider.
 - Epoch/generation loai ket qua cu khi ngat loi, dong phien, doi key/mode.
   `pending_tools` giu luot mo cho den khi gui ket qua; `turnComplete` den
   som khong ket thuc luot. Bao pin/TTS/summary cho lookup don dep xong
@@ -116,6 +125,18 @@ Gia chi de tham khao, khong phai tu van dau tu hay bao gia giao dich.
 du bao 24 gio, dia diem mo ho, timeout, redirect, body khong hop le, huy,
 task/malloc loi. `tools/test-voice.ps1` kiem tra ket qua async, turn boundary,
 ket qua cu khong tru pending cua luot moi, va chan Reader/Interpreter.
+Test lookup con kiem tra capability PSRAM cua chuoi, buffer tang/toi da/OOM,
+giu cache cu khi thay the that bai, stack 8 KiB va log canh bao duoi 1536 byte.
+Parser rieng va parser thuong cung duoc link/test, khong doi allocator cua nhau;
+640 muc OOM parse va OOM envelope phai don sach allocation. Envelope kiem tra
+ID co quote/backslash/control, JSON loi bo nho, gioi han va response da serialize.
 Build kiem tra frame <= 2048 byte. Chua do high-water mark cua TLS/stack,
 RAM va do muot tren board khi WSS + HTTPS cung chay. Log `LOOKUP` ghi HTTP,
 do dai va stack con lai, khong log khoa hay dia diem rieng tu.
+`RAM phase=before_json_parse/after_json_parse` giup quan sat cay JSON;
+`worker_cleaned` do sau khi xoa cay va body. `Complete` ghi `stack_free`
+high-water trong ca TLS/parse/serialize/log, `stack_bytes=8192`, `stack_low=1`
+khi duoi 1536 byte. `Cache stored`/`Cache hit` khong ghi noi dung du lieu.
+`Envelope ready` ghi RAM noi va stack live_send sau khi boc ket qua, khong log
+dia diem/noi dung. Test lai tren board de xac nhan khong con sat day SRAM;
+host test khong chung minh duoc audio muot hay free SRAM thuc te.

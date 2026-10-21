@@ -1403,10 +1403,11 @@ static char *execute_tool(const input_t *frame, bool *end_session)
                 cJSON_AddStringToObject(item,"artist",choices[i]->artist);
             }
             if (err!=ESP_OK) { portENTER_CRITICAL(&s_mux); s_music_offer.pending=false; portEXIT_CRITICAL(&s_mux); }
-            cJSON_AddBoolToObject(value,"confirmation_required",true);
+            cJSON_AddBoolToObject(value,"confirmation_required",count==1);
+            cJSON_AddBoolToObject(value,"selection_required",count>1);
             cJSON_AddStringToObject(value,"next_action",count==1 ?
                 "Say the exact title and artist, ask if this is the right track, then WAIT for the user's next answer. Do not play yet." :
-                "Read all numbered titles and artists in this exact order, ask the user to choose, then WAIT. On their NEXT turn map an unambiguous number/title/artist to its id and play_music. Vague agreement is not a choice: ask which song. If the NEXT user explicitly asks you to choose any song, pick one from this list and call play_music with its id. Firmware checks the actual received user selection. Do not play yet.");
+                "Read numbered titles/artists, then WAIT for a choice. On the NEXT clear number/title/artist choice, call play_music with ONLY its id immediately. The choice itself authorizes playback: NEVER ask if it is correct, re-offer that selected song or request yes/no afterward. Vague agreement needs a song choice. Explicit delegation lets you pick one offered id on that next turn. Firmware checks actual input; do not copy it into tool arguments. Do not play in this offer turn.");
         }
     } else if (!strcmp(name->valuestring,"play_music") || !strcmp(name->valuestring,"play_next_music")) {
         bool next=!strcmp(name->valuestring,"play_next_music");
@@ -1466,7 +1467,7 @@ static char *execute_tool(const input_t *frame, bool *end_session)
             err=ESP_ERR_INVALID_STATE;
             cJSON_AddStringToObject(value,"code",next ? "music_next_unavailable" : "music_confirmation_required");
             cJSON_AddStringToObject(value,"error",next ? "Next music needs resumed music context, new actual user input and a DIFFERENT known id." : "A new user confirmation of the proposed track is required before playback.");
-            cJSON_AddStringToObject(value,"next_action",next ? "Search for a different song if no different choice is available. Never replay the last id or invent input." : "Do NOT retry play_music or claim playback this turn. If the offer is missing, expired or no longer the immediately previous turn, call offer_music with this id, read its title/artist and WAIT for one new confirmation. For a current multi-song offer use matching position and selection_text copied verbatim from the FULL input; a clear choice needs no second confirmation. Never invent or trim evidence.");
+            cJSON_AddStringToObject(value,"next_action",next ? "Search for a different song if no different choice is available. Never replay the last id or invent input." : "Do NOT retry play_music or claim playback this turn. If the offer is missing, expired or no longer the immediately previous turn, call offer_music with this id, read its title/artist and WAIT for one new answer. For a current list map an unambiguous actual choice to its id and use ONLY id; no copied transcript or extra confirmation is needed. If the input is ambiguous or negated, ask which song instead of repeating a yes/no confirmation. Never invent evidence.");
         }
         if (valid && confirmed) {
             free(s_pending_music); s_pending_music = NULL;
@@ -1730,19 +1731,7 @@ static bool send_lookup_result(esp_websocket_client_handle_t client)
     voice_lookup_result_t *job=voice_lookup_take();
     if (!job) return true;
     if (!current(job->epoch,job->generation)) { voice_lookup_free(job); return true; }
-    cJSON *root=cJSON_CreateObject(),*tool=cJSON_AddObjectToObject(root,"toolResponse");
-    cJSON *list=cJSON_AddArrayToObject(tool,"functionResponses"),*row=cJSON_CreateObject();
-    cJSON *data=job->response ? cJSON_Parse(job->response) : NULL;
-    if (!data) { data=cJSON_CreateObject(); cJSON_AddBoolToObject(data,"ok",false);
-        cJSON_AddStringToObject(data,"error","Không đủ bộ nhớ để tra cứu."); }
-    bool built=root && tool && list && row && data && cJSON_AddItemToArray(list,row);
-    if (built) {
-        built=cJSON_AddStringToObject(row,"id",job->id) && cJSON_AddStringToObject(row,"name","lookup_info") &&
-            cJSON_AddItemToObject(row,"response",data);
-        if (built) data=NULL;
-    } else cJSON_Delete(row);
-    cJSON_Delete(data);
-    char *body=built ? cJSON_PrintUnformatted(root) : NULL; cJSON_Delete(root);
+    char *body=voice_lookup_encode_result(job);
     bool ok=true;
     if (current(job->epoch,job->generation)) {
         portENTER_CRITICAL(&s_mux);
@@ -1753,7 +1742,7 @@ static bool send_lookup_result(esp_websocket_client_handle_t client)
         portEXIT_CRITICAL(&s_mux);
         ok=body && send_text(client,body);
     }
-    cJSON_free(body); voice_lookup_free(job); return ok;
+    free(body); voice_lookup_free(job); return ok;
 }
 
 static char *setup_substitute(const char *source, const char *marker, const char *value)

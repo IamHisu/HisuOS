@@ -1,6 +1,7 @@
 #include "hisu_voice_lookup.h"
 #include "hisu_voice_lookup_data.h"
 #include "hisu_voice_news.h"
+#include "hisu_voice_lookup_json.h"
 #include "hisu_memory_json_guard.h"
 #include "hisu_network.h"
 #include "esp_http_client.h"
@@ -17,6 +18,9 @@
 #include <time.h>
 
 #define LOOKUP_BODY_LIMIT 16384U
+#define LOOKUP_JSON_LIMIT 32768U
+#define LOOKUP_STACK_BYTES 8192U
+#define LOOKUP_STACK_LOW_BYTES 1536U
 typedef struct {
     voice_lookup_result_t result;
     lookup_query_t query;
@@ -35,6 +39,55 @@ static bool lookup_reaping;
 /* Worker-only RAM cache. Never persist locations or provider payloads. */
 static struct { lookup_query_t query; char *json; int64_t expires,local_day; } lookup_cache[3];
 static int64_t lookup_next_request;
+
+/* Keep long-lived strings external without changing cJSON's global allocator. */
+static char *lookup_print(const cJSON *data) {
+    if (!data) return NULL;
+    for (unsigned capacity=1024;capacity<=LOOKUP_JSON_LIMIT;capacity*=2) {
+        char *json=heap_caps_malloc(capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if (!json) return NULL;
+        if (cJSON_PrintPreallocated((cJSON *)data,json,(int)capacity,false)) return json;
+        free(json);
+    }
+    return NULL;
+}
+char *voice_lookup_encode_result(const voice_lookup_result_t *job) {
+    if (!job || !memchr(job->id,0,sizeof(job->id))) return NULL;
+    /* Only worker-serialized JSON crosses this boundary, not provider bodies. */
+    const char *response=job->response ? job->response : "{\"ok\":false,\"error\":\"insufficient_memory\"}";
+    size_t length=strnlen(response,LOOKUP_JSON_LIMIT);
+    if (length==LOOKUP_JSON_LIMIT) return NULL;
+    cJSON *root=cJSON_CreateObject(),*tool=root ? cJSON_AddObjectToObject(root,"toolResponse") : NULL;
+    cJSON *list=tool ? cJSON_AddArrayToObject(tool,"functionResponses") : NULL;
+    cJSON *row=list ? cJSON_CreateObject() : NULL;
+    cJSON *data=row ? cJSON_CreateRaw(response) : NULL;
+    bool built=row && data && cJSON_AddItemToArray(list,row);
+    if (!built) cJSON_Delete(row);
+    else {
+        built=cJSON_AddStringToObject(row,"id",job->id) &&
+            cJSON_AddStringToObject(row,"name","lookup_info") && cJSON_AddItemToObject(row,"response",data);
+        if (built) data=NULL;
+    }
+    cJSON_Delete(data);
+    size_t capacity=length+6*strlen(job->id)+192;
+    char *json=built ? heap_caps_malloc(capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT) : NULL;
+    if (json && !cJSON_PrintPreallocated(root,json,(int)capacity,false)) { free(json); json=NULL; }
+    cJSON_Delete(root);
+    ESP_LOGI("LOOKUP","Envelope ready: json_bytes=%u memory=PSRAM internal_free=%u internal_largest=%u stack_free=%u",
+        json ? (unsigned)strlen(json) : 0,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    return json;
+}
+static void lookup_log_memory(const lookup_job_t *j,const char *phase) {
+    ESP_LOGI("LOOKUP","RAM phase=%s topic=%s body_bytes=%u internal_free=%u internal_largest=%u PSRAM_free=%u stack_free=%u",
+        phase,j->query.news ? "news" : j->query.weather ? "weather" : "gold",(unsigned)j->used,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT),
+        (unsigned)uxTaskGetStackHighWaterMark(NULL));
+}
 
 bool voice_lookup_busy(void) {
     portENTER_CRITICAL(&lookup_mux); bool busy=lookup_job!=NULL; portEXIT_CRITICAL(&lookup_mux); return busy;
@@ -81,7 +134,10 @@ static bool lookup_download(lookup_job_t *j,bool rss) {
 }
 static cJSON *lookup_fetch(lookup_job_t *j) {
     if (!lookup_download(j,false) || strstr(j->body,"\\u0000") || !hisu_memory_json_shallow(j->body,10)) return NULL;
-    return cJSON_ParseWithOpts(j->body,NULL,true);
+    lookup_log_memory(j,"before_json_parse");
+    cJSON *data=cJSON_ParseWithOpts(j->body,NULL,true);
+    lookup_log_memory(j,"after_json_parse");
+    return data;
 }
 static void lookup_encode(char *out,const char *in) {
     static const char hex[]="0123456789ABCDEF";
@@ -153,7 +209,10 @@ static cJSON *lookup_run(lookup_job_t *j) {
         (!slot || lookup_cache[slot].local_day==((int64_t)time(NULL)+25200)/86400) &&
         !memcmp(&lookup_cache[slot].query,&j->query,sizeof(j->query))) {
         cJSON *cached=cJSON_Parse(lookup_cache[slot].json);
-        if (cached) { cJSON_AddBoolToObject(cached,"cached",true); return cached; }
+        if (cached) {
+            ESP_LOGI("LOOKUP","Cache hit: slot=%u json_bytes=%u",slot,(unsigned)strlen(lookup_cache[slot].json));
+            cJSON_AddBoolToObject(cached,"cached",true); return cached;
+        }
     }
     if (esp_timer_get_time()<lookup_next_request) return lookup_error("rate_limited");
     lookup_next_request=esp_timer_get_time()+2000000;
@@ -181,20 +240,30 @@ static cJSON *lookup_run(lookup_job_t *j) {
         if (!result) result=lookup_error("source_unavailable");
     }
     if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"ok")) && lookup_current(j)) {
-        char *json=cJSON_PrintUnformatted(result);
-        free(lookup_cache[slot].json); lookup_cache[slot].json=json;
-        lookup_cache[slot].query=j->query;
-        int64_t ttl=j->query.news ? (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"partial")) ? 120000000 : 900000000) : slot ? 600000000 : 300000000;
-        lookup_cache[slot].expires=esp_timer_get_time()+ttl;
-        lookup_cache[slot].local_day=((int64_t)time(NULL)+25200)/86400;
+        char *json=lookup_print(result);
+        if (json) {
+            free(lookup_cache[slot].json); lookup_cache[slot].json=json;
+            lookup_cache[slot].query=j->query;
+            int64_t ttl=j->query.news ? (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"partial")) ? 120000000 : 900000000) : slot ? 600000000 : 300000000;
+            lookup_cache[slot].expires=esp_timer_get_time()+ttl;
+            lookup_cache[slot].local_day=((int64_t)time(NULL)+25200)/86400;
+            ESP_LOGI("LOOKUP","Cache stored: slot=%u json_bytes=%u memory=PSRAM",slot,(unsigned)strlen(json));
+        }
     }
     return result;
 }
 static void lookup_worker(void *arg) {
     lookup_job_t *j=arg;
+    lookup_log_memory(j,"worker_start");
     cJSON *data=lookup_run(j);
-    j->result.response=cJSON_PrintUnformatted(data); cJSON_Delete(data);
+    j->result.response=lookup_print(data); cJSON_Delete(data);
     free(j->body); j->body=NULL;
+    lookup_log_memory(j,"worker_cleaned");
+    unsigned stack_free=(unsigned)uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI("LOOKUP","Complete: topic=%s response_bytes=%u stack_free=%u stack_bytes=%u stack_low=%d",
+        j->query.news ? "news" : j->query.weather ? "weather" : "gold",
+        j->result.response ? (unsigned)strlen(j->result.response) : 0,stack_free,
+        LOOKUP_STACK_BYTES,stack_free<LOOKUP_STACK_LOW_BYTES);
     portENTER_CRITICAL(&lookup_mux); lookup_done=true; portEXIT_CRITICAL(&lookup_mux);
     /* A consumer reaps this suspended task, avoiding a temporary cleanup task. */
     vTaskSuspend(NULL);
@@ -222,7 +291,7 @@ bool voice_lookup_submit(uint32_t epoch,uint32_t generation,const char *id,const
     j->current=current; j->deadline=esp_timer_get_time()+(j->query.news ? 24000000 : 12000000);
     portENTER_CRITICAL(&lookup_mux); lookup_job=j; lookup_done=false; portEXIT_CRITICAL(&lookup_mux);
     TaskHandle_t task=NULL;
-    if (xTaskCreateWithCaps(lookup_worker,"info_lookup",6144,j,3,&task,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS) {
+    if (xTaskCreateWithCaps(lookup_worker,"info_lookup",LOOKUP_STACK_BYTES,j,3,&task,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS) {
         portENTER_CRITICAL(&lookup_mux); lookup_job=NULL; portEXIT_CRITICAL(&lookup_mux);
         free(j); return lookup_reject("worker_allocation");
     }
@@ -247,5 +316,5 @@ voice_lookup_result_t *voice_lookup_take(void) {
     portEXIT_CRITICAL(&lookup_mux); return &j->result;
 }
 void voice_lookup_free(voice_lookup_result_t *result) {
-    if (result) { cJSON_free(result->response); free(result); }
+    if (result) { free(result->response); free(result); }
 }

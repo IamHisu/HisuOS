@@ -134,7 +134,7 @@ Không flash trong build helper. Flash cần được thực hiện riêng sau k
 
 ## Kiểm Thử Trên Board
 
-- Khi chưa có ảnh custom, boot hiển thị GIF mèo 240×240, lặp đủ tám frame; vùng trong suốt theo nền trắng/đen của theme đã lưu. Khi có ảnh custom, kiểm tra boot dùng ảnh đã lưu và khôi phục nền mặc định.
+- Chưa có ảnh hoặc ảnh lỗi thì màn hình chờ dùng nền đen/trắng theo theme; không nhúng GIF mèo hay hình nền mặc định. Khi có ảnh/GIF tải lên, reboot vẫn dùng ảnh đã lưu. Setting chỉ có QR và thông tin, không còn mục khôi phục nền.
 - BOOT mở Hisu, up/down chạy đủ 13 mục và wrap đúng.
 - Trong menu chính, giữ Vol+ khoảng 1,5 giây để về màn hình chờ; nhả nút không di chuyển thêm. Nhấn nhanh vẫn di chuyển một mục; mở lại menu giữ vị trí. Kiểm tra thao tác giữ nút ở lịch và bàn phím Wi-Fi không thay đổi.
 - Theme: up/down chuyển Sáng/Tối, chữ và nền đổi ngay; giữ BOOT hủy, BOOT lưu. Reboot kiểm tra theme và nền GIF giữ đúng; mở/đóng menu nhiều lần không có bóng frame cũ.
@@ -148,7 +148,7 @@ Không flash trong build helper. Flash cần được thực hiện riêng sau k
 - Nút đầu tiên khi backlight tắt chỉ wake, nút tiếp theo mới thao tác.
 - Preview phụ đề có đủ dấu tiếng Việt, text dài đọc được, thoát về menu.
 - Phụ đề từ API wrap theo chiều rộng, up/down cuộn dọc nếu dài; không chạy chữ ngang.
-- Bluetooth dùng service GATT riêng với mã ghép nối 6 số; kiểm tra theo docs/BLE_SETUP.md. Wi-Fi/pin có snapshot thật; lỗi khởi tạo phải hiển thị không khả dụng thay vì số đo giả.
+- Lịch sử: Bluetooth từng dùng GATT/passkey, nay code và companion đã gỡ; dùng [Setting hotspot](WALLPAPER_SETUP.md). Wi-Fi/pin có snapshot thật; lỗi khởi tạo phải hiển thị không khả dụng thay vì số đo giả.
 - Giữ BOOT không phát thêm click khi nhả; debounce không nhảy hai mục.
 - Theo dõi LCD transfer errors, heap, stack và watchdog qua nhiều vòng điều hướng.
 
@@ -178,6 +178,6 @@ Session cancellation và chống stale events thuộc conversation controller t�
 
 ## Cập nhật điều khiển Setting và đèn pin
 
-- BOOT ở QR/thông tin bật/tắt hotspot; Vol− đổi trang, Vol+ hoặc giữ BOOT về menu. BOOT ở xác nhận khôi phục vẫn khôi phục nền.
+- BOOT ở QR/thông tin bật/tắt hotspot; Vol− chuyển qua lại hai trang này, Vol+ hoặc giữ BOOT về menu. Không có trang xác nhận khôi phục nền.
 - Đèn pin bỏ khỏi menu; giữ BOOT 1,5 giây ở màn chờ để mở, Vol+ trở về màn chờ.
 - Bootloader kéo GPIO20 xuống thấp, chờ 20 ms cho đèn nền xả rồi mới giữ LCD reset ở GPIO45; trạng thái được áp lại sau khởi tạo bootloader. App chỉ nhả reset khi driver LCD sẵn sàng và chỉ bật đèn sau frame đầu. GPIO20 dùng chung USB D+, nên ROM có thể tạo một chớp rất ngắn trước khi bootloader chạy; loại bỏ hoàn toàn nhịp này cần pull-down phần cứng hoặc tắt USB bằng eFuse (không thực hiện vì eFuse không đảo ngược). PWM không nối lại ở mỗi lần chỉnh sáng.

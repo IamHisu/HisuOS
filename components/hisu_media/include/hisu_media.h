@@ -21,7 +21,6 @@ typedef struct {
 esp_err_t hisu_media_start(void);
 esp_err_t hisu_media_open(void);
 void hisu_media_close(void);
-esp_err_t hisu_media_restore_default(void);
 void hisu_media_get(hisu_media_status_t *out);
 /* Copy into caller-owned storage: no LVGL objects or shared pixel pointers. */
 bool hisu_media_copy_image(void *pixels, size_t size, hisu_media_status_t *status);

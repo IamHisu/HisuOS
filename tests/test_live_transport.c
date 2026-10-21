@@ -19,6 +19,14 @@ bool voice_lookup_submit(uint32_t epoch,uint32_t generation,const char *id,const
 voice_lookup_result_t *voice_lookup_take(void) { voice_lookup_result_t *r=mock_lookup_result; mock_lookup_result=NULL; return r; }
 bool voice_lookup_busy(void) { return mock_lookup_queued; }
 void voice_lookup_free(voice_lookup_result_t *r) { if (r) { cJSON_free(r->response); free(r); } }
+char *voice_lookup_encode_result(const voice_lookup_result_t *job) {
+    cJSON *root=cJSON_CreateObject(),*tool=cJSON_AddObjectToObject(root,"toolResponse");
+    cJSON *list=cJSON_AddArrayToObject(tool,"functionResponses"),*row=cJSON_CreateObject();
+    cJSON_AddItemToArray(list,row);
+    cJSON_AddStringToObject(row,"id",job->id); cJSON_AddStringToObject(row,"name","lookup_info");
+    cJSON_AddItemToObject(row,"response",cJSON_CreateRaw(job->response ? job->response : "{\"ok\":false}"));
+    char *text=cJSON_PrintUnformatted(root); cJSON_Delete(root); return text;
+}
 static hisu_power_status_t mock_alert_power;
 static int mock_alert_index = -1;
 static unsigned mock_alert_played, mock_alert_reads;
@@ -357,8 +365,13 @@ static void device_tool_tests(void) {
         !strcmp(cJSON_GetArrayItem(modalities,0)->valuestring,"AUDIO"));
     cJSON *declarations=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"tools"),0),"functionDeclarations");
     assert(cJSON_GetArraySize(declarations)==31);
-    const cJSON *declaration; bool offer_schema=false;
+    const cJSON *declaration; bool offer_schema=false,play_schema=false;
     cJSON_ArrayForEach(declaration,declarations) {
+        if (!strcmp(cJSON_GetObjectItem(declaration,"name")->valuestring,"play_music")) {
+            cJSON *properties=cJSON_GetObjectItem(cJSON_GetObjectItem(declaration,"parameters"),"properties");
+            assert(cJSON_GetArraySize(properties)==1 && cJSON_GetObjectItem(properties,"id"));
+            play_schema=true;
+        }
         if (strcmp(cJSON_GetObjectItem(declaration,"name")->valuestring,"offer_music")) continue;
         cJSON *properties=cJSON_GetObjectItem(cJSON_GetObjectItem(declaration,"parameters"),"properties");
         assert(cJSON_GetObjectItem(properties,"id"));
@@ -367,7 +380,7 @@ static void device_tool_tests(void) {
         assert(!strcmp(cJSON_GetObjectItem(cJSON_GetObjectItem(ids,"items"),"type")->valuestring,"STRING"));
         offer_schema=true;
     }
-    assert(offer_schema); cJSON_Delete(setup);
+    assert(offer_schema && play_schema); cJSON_Delete(setup);
     check_tool("set_expression","{\"expression\":\"happy\"}",true);
     assert(output_count == 1 && output[0].cue == 2 && events[LIVE_EXPRESSION] == 0);
     play_cue(&output[0]);
@@ -904,6 +917,8 @@ static void offer_test_list(void)
     assert(!ended && cJSON_IsTrue(cJSON_GetObjectItem(result,"ok")));
     cJSON *songs=cJSON_GetObjectItem(result,"songs");
     assert(cJSON_GetArraySize(songs)==3 && s_music_offer.count==3);
+    assert(cJSON_IsFalse(cJSON_GetObjectItem(result,"confirmation_required")) &&
+        cJSON_IsTrue(cJSON_GetObjectItem(result,"selection_required")));
     static const char *const ids[]={"song2","qYD31k5TVTCQ","song1"};
     for (unsigned i=0;i<3;++i) {
         cJSON *item=cJSON_GetArrayItem(songs,(int)i);
@@ -922,6 +937,12 @@ static void music_list_offer_tests(void)
     assert(music_choice_ordinal("Mở bài số ba đi.")==3);
     assert(music_choice_ordinal("bài hai")==2);
     assert(music_choice_ordinal("3")==3);
+    assert(music_choice_ordinal("bài số 1 á bạn")==1);
+    assert(music_choice_ordinal("bài 2 đó bạn")==2);
+    assert(music_choice_ordinal("chọn bài 3 nha bạn ơi")==3);
+    assert(!music_choice_ordinal("không chọn bài số 1 á bạn"));
+    assert(!music_choice_ordinal("bài số 1 á bạn hay bài số 2"));
+    assert(!music_choice_ordinal("bài số 1 á bạn?"));
     assert(!music_choice_ordinal("không chọn bài số 3"));
     assert(!music_choice_ordinal("bài số 3 hoặc bài số 2"));
     assert(!music_choice_ordinal("không chọn bài thứ hai"));
@@ -957,7 +978,7 @@ static void music_list_offer_tests(void)
     for (unsigned i=0;i<sizeof(invalid)/sizeof(*invalid);++i) {
         check_tool("offer_music",invalid[i],false); assert(!s_pending_music && !s_music_offer.pending);
     }
-    for (unsigned scenario=0;scenario<12;++scenario) {
+    for (unsigned scenario=0;scenario<15;++scenario) {
         unsigned selected=scenario%3;
         reset(); offer_test_list();
         check_tool("play_music","{\"id\":\"song2\"}",false);
@@ -966,6 +987,10 @@ static void music_list_offer_tests(void)
         char wire[150]; snprintf(wire,sizeof(wire),"{\"serverContent\":{\"inputTranscription\":{\"text\":\"Bài thứ %u\"}}}",selected+1);
         if (scenario>=3) strcpy(wire,"{\"serverContent\":{\"inputTranscription\":{\"text\":\"Chọn đại 1 bài trong 3 bài đó đi\"}}}");
         if (scenario>=9) snprintf(wire,sizeof(wire),"{\"serverContent\":{\"inputTranscription\":{\"text\":\"Bài số %u\"}}}",selected+1);
+        if (scenario>=12) {
+            static const char *const natural[]={"bài số 1 á bạn","bài 2 đó bạn","chọn bài 3 nha bạn ơi"};
+            snprintf(wire,sizeof(wire),"{\"serverContent\":{\"inputTranscription\":{\"text\":\"%s\"}}}",natural[selected]);
+        }
         receive(wire);
         static const char *const ids[]={"song2","qYD31k5TVTCQ","song1"};
         char args[180]; snprintf(args,sizeof(args),"{\"id\":\"%s\",\"position\":%u,\"selection_text\":\"Bài thứ %u\"}",ids[selected],selected+1,selected+1);

@@ -2,7 +2,7 @@
 
 **Phiên bản tài liệu:** 0.6
 
-**Cập nhật:** 2026-10-06; Setting QR hotspot + captive portal, tự lấy token và tự lưu ảnh; tạm ngưng Bluetooth, giữ roadmap AI/voice
+**Cập nhật BLE:** 2026-10-21; đã gỡ Bluetooth, NimBLE và trang ghép nối; setup dùng QR hotspot/captive portal. Giữ roadmap AI/voice.
 
 **Trạng thái:** Thiết kế cho bản xây dựng lại; chưa phải mô tả firmware đã triển khai  
 **Hardware đầu tiên:** ZHENGCHEN 1.54 TFT WiFi — ESP32-S3 N16R8  
@@ -18,7 +18,7 @@ HisuOS là firmware trợ lý AI có thể mở rộng, với nền tảng thi�
 Ưu tiên bản đầu:
 
 - Board hoạt động ổn định: màn hình, nút, microphone, speaker, pin và Wi-Fi.
-- Setup trên thiết bị và qua hotspot HTTP: Wi-Fi, âm lượng, bật/tắt loa, độ sáng và thời gian tắt màn hình. BLE tạm ngưng trong firmware hiện tại.
+- Setup trên thiết bị và qua hotspot HTTP: Wi-Fi, âm lượng, bật/tắt loa, độ sáng và thời gian tắt màn hình. Không có BLE trong firmware hiện tại.
 - Màn hình chờ đen, không có avatar hoặc animation tích hợp sẵn.
 - Hội thoại có phụ đề tiếng Việt, sau đó bổ sung voice.
 - Code chia theo ownership, không trộn nhiều project thành một firmware.
@@ -32,7 +32,7 @@ Không giả định có màn hình cảm ứng. Điều khiển dựa trên cá
 ### 2.1 MVP
 
 - Hardware bring-up và kiểm tra từng peripheral.
-- Setup Wi-Fi/BLE, lưu cấu hình, reconnect và phục hồi khi mất mạng.
+- Setup Wi-Fi/hotspot, lưu cấu hình, reconnect và phục hồi khi mất mạng.
 - Menu Hisu, màn hình chờ đen, phụ đề và thông báo lỗi ngắn.
 - Gemini text streaming, context ngắn hạn, hủy phiên và timeout.
 - Voice theo lượt: nhấn nút nói, STT, LLM, TTS, speaker.
@@ -96,7 +96,6 @@ HisuOS/
 │   ├── hisu_board/               # Driver implementation cho board hiện tại
 │   ├── hisu_settings/            # Device config, validation, persistence
 │   ├── hisu_network/             # Wi-Fi lifecycle và provisioning
-│   ├── hisu_ble/                 # BLE provisioning transport
 │   ├── hisu_media/               # HTTP hotspot, xác thực và lưu hình nền
 │   ├── hisu_audio/               # Capture/playback, PCM queues, volume
 │   ├── hisu_power/               # Battery, backlight/power policy
@@ -122,7 +121,6 @@ Mỗi component có `CMakeLists.txt`, public headers trong `include/`, implement
 | GPIO, I2S, SPI, ADC, LEDC | Board drivers | Init/deinit, wiring, DMA, truy cập peripheral |
 | Capture và playback | Audio service | Buffer, stream lifecycle, volume, mute |
 | Wi-Fi radio và kết nối | Network service | Scan, join, reconnect, bật/tắt |
-| BLE host và bonding | BLE service | Pairing, transport, disconnect |
 | Local media upload / image records | Media service | AP-only HTTP window, authorization, bounded payload, durable storage |
 | Device settings | Settings service | Validation, cache, persistence |
 | LVGL objects | UI task | Tạo/sửa/hủy object, render menu và phụ đề |
@@ -158,16 +156,15 @@ Device settings tối thiểu:
 
 - Wi-Fi credentials và trạng thái radio.
 - Volume, speaker enabled, brightness, screen-off timeout.
-- BLE provisioning enabled và bonding state theo cơ chế BLE stack.
 - AI provider, model và credential theo cơ chế lưu trữ riêng.
 
-Settings service là nơi duy nhất validate và persist device values. UI, BLE và tools sử dụng cùng API; không có ba bản validation khác nhau.
+Settings service là nơi duy nhất validate và persist device values. UI, web và tools sử dụng cùng API; không có ba bản validation khác nhau.
 
-Network service serialize scan/join/reconnect. UI và BLE gửi command, nhận progress/result; không block UI task khi scan hoặc kết nối.
+Network service serialize scan/join/reconnect. UI và web gửi command, nhận progress/result; không block UI task khi scan hoặc kết nối.
 
-BLE cần pairing/bonding và bảo vệ đặc tính chứa credential. Không log, echo hoặc đưa password/API key vào status response. Quên điện thoại và quên Wi-Fi là hai thao tác riêng, cần xác nhận khi có tác động mất kết nối.
+Không log, echo hoặc đưa password/API key vào status response. Quên Wi-Fi cần xác nhận khi có tác động mất kết nối.
 
-Menu vẫn dùng được khi offline hoặc không có API key. BLE có thể tắt sau provisioning; không bắt buộc bật thường xuyên.
+Menu vẫn dùng được khi offline hoặc không có API key.
 
 ## 8. UI và phụ đề
 
@@ -182,7 +179,7 @@ UI tối thiểu: boot, idle, listening, thinking, speaking, settings và error.
 - Phụ đề streaming chữ chưa được coi là đồng bộ với audio TTS. Nếu cần đồng bộ, phải có segment/timestamp contract.
 - Setup hoặc màn hình lỗi có ưu tiên hiển thị rõ ràng; việc mở menu không được tự làm mất trạng thái hội thoại.
 
-Chỉ UI task được gọi LVGL. Các module khác gửi immutable event hoặc snapshot. Không gọi LVGL từ callback Wi-Fi, BLE, audio hoặc AI.
+Chỉ UI task được gọi LVGL. Các module khác gửi immutable event hoặc snapshot. Không gọi LVGL từ callback Wi-Fi, audio hoặc AI.
 
 Screen-off timeout ban đầu chỉ tắt backlight; không gọi đó là deep sleep. Deep sleep cần thiết kế riêng cho wake source, network và audio lifecycle.
 
@@ -229,11 +226,11 @@ IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE
                    └──────────── Error / Cancel ─────────→ IDLE
 ```
 
-State machine cấp ứng dụng là nơi quyết định phiên hội thoại. Network, BLE và audio vẫn có state machine nội bộ cho resource lifecycle. Settings là UI mode, không buộc phải trở thành voice state.
+State machine cấp ứng dụng là nơi quyết định phiên hội thoại. Network và audio vẫn có state machine nội bộ cho resource lifecycle. Settings là UI mode, không buộc phải trở thành voice state.
 
 Mọi session có ID; event từ session cũ bị bỏ qua sau cancel hoặc restart. Hủy phải dừng request/playback tương ứng và giải phóng buffer. Không chờ vô hạn.
 
-Không tạo task cho mọi class. Các execution context chính dự kiến là application/agent worker, audio capture/playback và UI; ESP-IDF/BLE/network có task riêng theo stack sử dụng. Chốt task count, priority, stack và core affinity bằng đo đạc.
+Không tạo task cho mọi class. Các execution context chính dự kiến là application/agent worker, audio capture/playback và UI; ESP-IDF/network có task riêng theo stack sử dụng. Chốt task count, priority, stack và core affinity bằng đo đạc.
 
 Queue phải hữu hạn và có overflow policy: backpressure, coalesce hoặc reject. Không âm thầm bỏ completion/error events. Callback driver không thực hiện AI request hoặc tác vụ chặn dài.
 
@@ -293,8 +290,9 @@ không bảo đảm tự mở trên mọi điện thoại. POST lạ trả 404, 
 Người có QR hotspot có quyền chỉnh Setting trong phiên; token tự cấp qua HTTP,
 vẫn cần kiểm tra Origin/Host/socket AP; web không được mở lại phiên đã đóng.
 Socket dual-stack chuẩn hóa IPv4-mapped IPv6 về IPv4 trước các kiểm tra AP/client; không cho phép IPv6 thuần.
-BLE source giữ để tham khảo nhưng không khởi động, không có option/icon Bluetooth.
-Các đoạn BLE ở roadmap bên dưới là thiết kế lưu lại, không phải feature đang bật.
+BLE source, companion web, cấu hình QR, test và workflow đã gỡ. `CONFIG_BT_ENABLED`
+phải tắt; build chặn sdkconfig cũ còn bật BT. Không khởi tạo hay giải phóng controller
+bằng API BT trong app vì bản này không link Bluetooth host/controller.
 HTTP không chống AP giả/MITM bằng TLS. Chưa xác minh AP/channel switching/flash trên board thực tế.
 
 ## 14. MCP và scheduler
@@ -358,7 +356,7 @@ Mỗi phần tái sử dụng phải ghi nguồn, commit/version, license, modif
 | Giai đoạn | Deliverable | Điều kiện qua |
 |---|---|---|
 | 1. Foundation | Board drivers, build, partition draft | Build 5.5.5; từng peripheral được test thật |
-| 2. Setup | Menu, Wi-Fi/BLE, settings | Offline setup; reconnect; persistence qua reboot |
+| 2. Setup | Menu, Wi-Fi/hotspot, settings | Offline setup; reconnect; persistence qua reboot |
 | 3. Text AI | Gemini, streaming subtitles, cancel | Tiếng Việt; timeout/lỗi; không block UI |
 | 4. Voice | Push-to-talk, STT/TTS, playback | Nghe/nói thực tế; hủy; buffer bounded |
 | 5. Tools | Bounded agent loop, device tools | Schema validation; tool failure; không loop vô hạn |
@@ -373,7 +371,7 @@ MVP hoàn thành khi giai đoạn 1–6 đạt điều kiện, không yêu cầu
 - Unit/host tests: settings validation, context bounds, tool schema, stream parser và session cancellation.
 - Provider fixtures: response chia chunk, Unicode, tool call partial, lỗi và response quá lớn.
 - Hardware tests: display, buttons, mic, speaker, battery, pairing, reconnect và reboot persistence.
-- Fault tests: mất mạng trong request, disconnect BLE khi setup, cancel khi playback và queue đầy.
+- Fault tests: mất mạng trong request, ngắt hotspot khi setup, cancel khi playback và queue đầy.
 - Soak tests: nhiều lượt hội thoại và setup; theo dõi heap, stack, underrun và watchdog.
 
 Không tự flash, erase NVS hoặc đổi eFuse trong build helper. Các thao tác ảnh hưởng board/dữ liệu cần được yêu cầu riêng.
@@ -382,7 +380,6 @@ Không tự flash, erase NVS hoặc đổi eFuse trong build helper. Các thao t
 
 - Wiring chính xác, battery calibration và chức năng các nút.
 - LVGL version, font tiếng Việt, display buffer và integration tương thích IDF.
-- BLE provisioning protocol, pairing UX và recovery khi không có điện thoại.
 - STT/TTS provider, model và tiếng Việt thực tế.
 - Partition sizes, storage format và credential security cho prototype/production.
 - Timeout/buffer/context/tool budgets dựa trên measurements.

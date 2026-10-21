@@ -43,8 +43,6 @@ CONFIG_LV_FONT_MONTSERRAT_20=y
 # The Vietnamese font uses compressed glyph bitmaps (bitmap_format = 1).
 CONFIG_LV_USE_FONT_COMPRESSED=y
 CONFIG_LV_USE_LOG=y
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
-CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=128
+# Bluetooth is intentionally absent; setup uses the Wi-Fi hotspot.
+# CONFIG_BT_ENABLED is not set
 CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y

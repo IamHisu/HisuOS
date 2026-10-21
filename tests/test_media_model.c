@@ -65,6 +65,7 @@ int main(void)
     bad = record; bad.sequence=0; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
     bad = record; bad.reserved[0]=1; assert(!hisu_media_record_header_valid(&bad));
     bad = record; bad.magic=UINT32_MAX; checksum(&bad); assert(!hisu_media_record_header_valid(&bad));
+    /* Read compatibility only: old firmware could persist an empty record. */
     record.flags=0; record.length=0; record.crc=0; checksum(&record);
     assert(hisu_media_record_valid(&record,NULL));
     record.crc=1; checksum(&record); assert(!hisu_media_record_header_valid(&record));

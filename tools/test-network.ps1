@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+& (Join-Path $PSScriptRoot 'test-bluetooth-disabled.ps1')
 $compiler = Get-ChildItem -Path 'C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe' |
     Sort-Object FullName | Select-Object -Last 1
 if (!$compiler) { throw 'MSVC x64 compiler is required.' }

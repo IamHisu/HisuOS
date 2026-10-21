@@ -30,6 +30,12 @@ License font được lưu tại `DejaVuSans-LICENSE.txt`. Không sao chép driv
 
 LVGL 9.4.0 được tải bằng ESP-IDF Component Manager, cùng license do upstream cung cấp trong managed component.
 
+Lookup dùng thêm một bản build riêng của source cJSON 1.7.19 từ managed component
+`espressif/cjson` 1.7.19~2, không sửa source upstream; namespace `hisu_lookup_`
+và cấp phát PSRAM tách khỏi cJSON thường. Copyright (c) 2009-2017 Dave Gamble
+and cJSON contributors, MIT. Toàn văn giấy phép vẫn được giữ ở đầu source
+`managed_components/espressif__cjson/cJSON/cJSON.c` và license của dependency.
+
 `hisu_calendar.c` viết lại bằng C các phương trình thiên văn và quy tắc lịch âm Việt Nam do Hồ Ngọc Đức công bố tại https://www.xemamlich.uhm.vn/calrules.html (18/08/2008). Dùng kinh tuyến UTC+7; không sao chép bảng lịch hoặc thư viện JavaScript. Thuật toán thiên văn giản lược, giới hạn giao diện 2024–2099.
 
 Bộ resize GIF trong trang Setting được chuyển từ `FriendOS/main/web-src/gif-resize.js`, commit `71654b47462d4723e1dd4f1b6e2108a4d54cbe85`, theo yêu cầu của chủ repository:

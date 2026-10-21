@@ -678,11 +678,6 @@ static void render_setup(void)
         setup_line(root,network.setup_ip,152,0xeeeeee);
         footer(LV_SYMBOL_LIST,media.enabled ? LV_SYMBOL_POWER : LV_SYMBOL_OK,LV_SYMBOL_CLOSE); return;
     }
-    if (s_model.preview == UI_SETUP_RESET) {
-        label(root,"Khôi phục nền mặc định?",12,76,216,0xeeeeee);
-        label(root,"Ảnh đã lưu sẽ được bỏ",12,114,216,0x8c9690);
-        footer("back",LV_SYMBOL_OK,LV_SYMBOL_CLOSE); return;
-    }
     char text[112];
     if (media.enabled && network.setup_enabled) {
         if (s_setup_url) snprintf(text,sizeof(text),"http://%s/",network.setup_ip);
@@ -1394,11 +1389,9 @@ static void handle_key(hisu_key_t key)
     }
     if (s_model.page == UI_SETUP_PAGE) {
         hisu_media_status_t media; hisu_media_get(&media);
-        int view = s_model.preview;
         hisu_ui_model_key(&s_model, key);
         if (key == HISU_KEY_BOOT) {
-            if (view == UI_SETUP_RESET) hisu_media_restore_default();
-            else if (media.enabled || media.opening) hisu_media_close();
+            if (media.enabled || media.opening) hisu_media_close();
             else {
                 s_setup_url = false;
                 hisu_media_open();
@@ -1520,14 +1513,35 @@ static void ui_run_timers(esp_timer_handle_t wake_timer)
     }
 }
 
+typedef struct { size_t internal,dma,psram; } ui_ram_sample_t;
+
+static ui_ram_sample_t ui_log_ram(const char *phase,const ui_ram_sample_t *previous)
+{
+    ui_ram_sample_t now={
+        .internal=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        .dma=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
+        .psram=heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT),
+    };
+    ESP_LOGI("UI","RAM phase=%s internal_free=%u internal_used_delta=%d internal_largest=%u DMA_free=%u DMA_used_delta=%d PSRAM_free=%u PSRAM_used_delta=%d",
+        phase,(unsigned)now.internal,previous ? (int)previous->internal-(int)now.internal : 0,
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)now.dma,previous ? (int)previous->dma-(int)now.dma : 0,
+        (unsigned)now.psram,previous ? (int)previous->psram-(int)now.psram : 0);
+    return now;
+}
+
 static void ui_task(void *arg)
 {
     (void)arg;
+    ui_ram_sample_t ram=ui_log_ram("before_lv_init",NULL);
     lv_init();
+    ram=ui_log_ram("after_lv_init",&ram);
     lv_tick_set_cb(tick_ms);
     lv_display_t *display = lv_display_create(HISU_DISPLAY_WIDTH, HISU_DISPLAY_HEIGHT);
+    ram=ui_log_ram("after_display_create",&ram);
     size_t buffer_size = HISU_DISPLAY_WIDTH * 40 * 2;
     void *buffer = heap_caps_malloc(buffer_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    ram=ui_log_ram("after_draw_buffer",&ram);
     if (!display || !buffer) {
         if (display) lv_display_delete(display);
         heap_caps_free(buffer);
@@ -1537,10 +1551,12 @@ static void ui_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    ESP_LOGI("UI","Display draw buffer: bytes=%u memory=internal_DMA",(unsigned)buffer_size);
     lv_display_set_color_format(display, LV_COLOR_FORMAT_RGB565);
     lv_display_set_buffers(display, buffer, NULL, buffer_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(display, flush);
     esp_err_t err = hisu_board_init(lcd_done, display);
+    ram=ui_log_ram("after_board_init",&ram);
     if (err != ESP_OK) {
         ESP_LOGE("UI", "Board initialization failed: %s", esp_err_to_name(err));
         lv_display_delete(display);
@@ -1567,6 +1583,7 @@ static void ui_task(void *arg)
     /* Refresh only invalidated areas; a shorter cadence reduces GIF display lag. */
     lv_timer_set_period(lv_display_get_refr_timer(display), 16);
     render_boot_splash();
+    ram=ui_log_ram("after_splash_ui",&ram);
     /* Draw with backlight off; display-on drains the final asynchronous DMA. */
     lv_refr_now(display);
     err = s_first_frame_error;
@@ -1606,7 +1623,9 @@ static void ui_task(void *arg)
             }
             boot_splash = false;
             s_activity_ms = esp_timer_get_time() / 1000;
+            ram=ui_log_ram("before_idle_ui",NULL);
             render();
+            ram=ui_log_ram("after_idle_ui",&ram);
         }
         hisu_board_enable_volume_hold((s_model.page == UI_WIFI_PASSWORD || s_model.page == UI_CALENDAR_PAGE || audio_controls_visible()) && !s_asleep);
         hisu_board_enable_menu_close_hold(s_model.page == UI_MENU && !s_asleep);

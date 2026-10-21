@@ -192,6 +192,13 @@ authorization check, not a substitute for Gemini's conversational understanding 
 a guarantee that speech recognition is correct. An explicit request such as "chọn đại 1 bài", "bạn chọn đi" or "bài nào cũng được" also authorizes choosing any member of the spoken offer, with the same offered-id and actual-transcript checks. Generic assent still does not choose a song. A clear supported selection is
 the confirmation; it does not need another confirmation question. Supported
 ordinal forms include "bài số 3", "bài số ba", "bài ba", "số 3" and "3".
+Natural particles such as "bài số 1 á bạn", "bài 2 đó bạn" and
+"chọn bài 3 nha bạn ơi" are accepted as complete choices. Negation,
+questions and multiple alternatives still do not authorize playback.
+The current play_music schema accepts only id: the model maps a choice to an
+offered id, while firmware checks the real input. Old position/selection_text
+arguments remain supported internally for compatibility, not requested by the
+schema. Multi-song offer results require selection, not another yes/no confirmation.
 After rejection, the model must call offer_music again before asking a new
 confirmation question: a spoken question alone does not renew the offer.
 Host tests validate list bounds, duplicates, unknown ids, order, every selected id,

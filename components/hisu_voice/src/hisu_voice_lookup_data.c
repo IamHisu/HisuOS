@@ -1,4 +1,5 @@
 #include "hisu_voice_lookup_data.h"
+#include "hisu_voice_lookup_json.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>

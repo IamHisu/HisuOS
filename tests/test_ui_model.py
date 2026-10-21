@@ -214,18 +214,18 @@ class UiModelTests(unittest.TestCase):
         self.assertEqual(m.page, 1)
 
     def test_setup_back_preserves_view_without_confirming_stop(self):
-        for view in range(3):
+        for view in range(2):
             for key in (2, 4):
                 m = Model(9, 8, 0, view, 5)
                 self.key(m, key)
                 self.assertEqual((m.page, m.preview, m.selected), (1, view, 8))
 
-    def test_setup_options_and_stop_confirmation(self):
+    def test_setup_only_cycles_qr_and_info(self):
         m = Model(9, 8, 0, 0, 5)
-        for view in (1, 2, 0):
+        for view in (1, 0, 1, 0):
             self.key(m, 3)
             self.assertEqual((m.page, m.preview), (9, view))
-        for view, expected in ((0, 0), (1, 0), (2, 0)):
+        for view, expected in ((0, 0), (1, 0)):
             m = Model(9, 8, 0, view, 5)
             self.key(m, 1)
             self.assertEqual((m.page, m.preview), (9, expected))

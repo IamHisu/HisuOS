@@ -8,6 +8,12 @@ if(WIN32)
         "\"${CMAKE_COMMAND}\" -E env PYTHONIOENCODING=utf-8")
 endif()
 project(HisuOS VERSION 0.1.0)
+if(CONFIG_BT_ENABLED)
+    message(FATAL_ERROR
+        "Bluetooth support was removed from HisuOS. Disable CONFIG_BT_ENABLED "
+        "in your existing sdkconfig, or run tools/build.ps1 -RefreshConfig "
+        "to regenerate it from defaults (custom settings are backed up).")
+endif()
 include(cmake/network_memory.cmake)
 include(cmake/battery_audio.cmake)
 include(cmake/feedback_audio.cmake)

@@ -32,6 +32,29 @@ class WallpaperPolicyTests(unittest.TestCase):
         self.assertNotIn("set_wallpaper", prompt)
         self.assertIn("get_wallpaper", prompt)
 
+    def test_no_restore_control_or_firmware_command(self):
+        paths = (
+            "components/hisu_ui/src/hisu_ui.c",
+            "components/hisu_ui/src/hisu_ui_model.h",
+            "components/hisu_media/include/hisu_media.h",
+            "components/hisu_media/src/hisu_media.c",
+            "components/hisu_media/src/hisu_setup_api.c",
+            "components/hisu_media/web/index.html",
+            "components/hisu_media/web/app.js",
+        )
+        for path in paths:
+            source = (ROOT / path).read_text(encoding="utf-8")
+            for removed in ("UI_SETUP_RESET", "CMD_DEFAULT", "save_default",
+                            "hisu_media_restore_default", "Khôi phục nền mặc định"):
+                with self.subTest(path=path, removed=removed):
+                    self.assertNotIn(removed, source)
+        html = (ROOT / "components/hisu_media/web/index.html").read_text(encoding="utf-8")
+        self.assertIn("Căn lại ảnh</button>", html)
+        media = (ROOT / "components/hisu_media/src/hisu_media.c").read_text(encoding="utf-8")
+        writer = media.split("static esp_err_t persist(", 1)[1].split("static esp_err_t load_image(", 1)[0]
+        self.assertLess(writer.index("if (!pixels || !length"), writer.index("esp_partition_erase_range"))
+        self.assertIn(".flags = gif ? 2 : 1", writer)
+
 
 if __name__ == "__main__":
     unittest.main()

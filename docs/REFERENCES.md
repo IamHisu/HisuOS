@@ -29,7 +29,7 @@ Kiến trúc, ownership và roadmap của HisuOS theo [System Design](SYSTEM_DES
 - **ESP-IDF:** [Manifest](https://github.com/beancookie/xiaoclaw/blob/55550bd461a5f760c256f59f32cbe2200a87e2c9/main/idf_component.yml) khai báo `>=5.5.2`; 5.5.5 đáp ứng điều kiện khai báo, nhưng chưa chứng minh toàn bộ dependency/API build được trên HisuOS.
 - **Flash:** [Partition XiaoClaw](https://github.com/beancookie/xiaoclaw/blob/55550bd461a5f760c256f59f32cbe2200a87e2c9/partitions/partitions_xiaoclaw.csv) dành cho 32MB, vượt board N16R8 của HisuOS. Không copy nguyên layout; chọn assets/storage sau khi đo app size, heap và PSRAM, bảo toàn hai OTA slots.
 - **Pin:** [Power manager Zhengchen](https://github.com/beancookie/xiaoclaw/blob/55550bd461a5f760c256f59f32cbe2200a87e2c9/main/boards/zhengchen-1.54tft-wifi/power_manager.h) vẫn cộng offset ADC `80`, bảng từ `2030` tới `2606`, tương đương raw ADC `2526` tại 100%. Không phải bản sửa sai lệch pin trên board Hisu; cần xác minh điện áp, mạch chia áp và calibration thực tế.
-- **BLE:** Chưa xác định được implementation ghép Web Bluetooth riêng trong phần đã xem có thể sửa lỗi Windows của HisuOS. Không lấy sự tồn tại của hỗ trợ board làm bằng chứng pairing tương thích. Chẩn đoán hiện tại theo [BLE Setup](BLE_SETUP.md).
+- **BLE (lịch sử):** Không lấy sự tồn tại của hỗ trợ board làm bằng chứng pairing tương thích. Bluetooth và companion cũ đã gỡ khỏi HisuOS ngày 2026-10-21; setup hiện dùng [hotspot Setting](WALLPAPER_SETUP.md).
 - **License:** Repo hiển thị MIT; phải kiểm tra license/NOTICE của phần kế thừa và dependency trước khi đưa code vào HisuOS. Ghi nhận nguồn tham khảo chưa có nghĩa đã import code hoặc hoàn thành kiểm tra license.
 
 ### Quyết Định Cho HisuOS
@@ -47,5 +47,4 @@ Giữ nền HisuOS hiện tại và dùng XiaoClaw như mẫu tích hợp chọn
 ## Quan Sát Trên HisuOS Chưa Giải Quyết
 
 - Người dùng báo ADC `2378` khi đèn sạc báo đầy, `2369` rồi `2366` sau rút sạc; lần khác ADC `2415` khi đèn chưa báo đầy. Đây là mẫu quan sát, không phải bộ calibration, chưa chọn mốc 100% mới.
-- Log BLE có `Pairing action=3`, inject PIN `rc=0`, sau khoảng 4,25 giây `Security result: status=7` và disconnect `531`, trước khi người dùng nhập PIN. Đối chiếu header NimBLE của IDF 5.5.5: `7` là `BLE_HS_ENOTCONN`, `531 = 0x200 + 0x13` là HCI remote user termination. Không phải bằng chứng nhập sai mã; chưa xác định nguyên nhân máy tính ngắt kết nối.
-- Việc giữ màn hình PIN khi thất bại và thêm log không kéo dài timeout SMP, không xác nhận đã sửa nguyên nhân pairing. Test mock GATT và build thành công không thay thế kiểm thử radio trên board.
+- Lịch sử BLE trước khi gỡ: pairing từng ngắt trước khi nhập PIN; test mock GATT không xác minh radio thực tế. Không còn là tính năng hoặc lỗi cần sửa trong bản hiện tại.

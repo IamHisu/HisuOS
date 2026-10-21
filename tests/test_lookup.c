@@ -1,11 +1,65 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <time.h>
+#include <stdarg.h>
 #include "alert_mock.h"
+static cJSON *(*normal_json_parse)(const char *)=cJSON_Parse;
+static void (*normal_json_delete)(cJSON *)=cJSON_Delete;
 #define MALLOC_CAP_INTERNAL 4
 #define pdPASS 1
 static char lookup_reason[48];
 #define ESP_LOGW(tag,format,reason,...) ((void)snprintf(lookup_reason,sizeof(lookup_reason),"%s",reason))
+static unsigned lookup_completions,lookup_parse_samples;
+static char lookup_complete_log[256];
+static void lookup_info_log(const char *tag,const char *format,...) {
+    char message[512]; va_list args; va_start(args,format);
+    vsnprintf(message,sizeof(message),format,args); va_end(args);
+    if (!strncmp(message,"Complete:",9)) {
+        ++lookup_completions; strcpy(lookup_complete_log,message);
+    }
+    if (strstr(message,"phase=after_json_parse")) ++lookup_parse_samples;
+}
+#undef ESP_LOGI
+#define ESP_LOGI lookup_info_log
+static void *lookup_last_psram;
+static size_t lookup_last_psram_bytes;
+static bool lookup_fail_print;
+static struct { void *pointer; size_t bytes; } lookup_allocations[4096];
+static size_t lookup_allocation_count,lookup_live_bytes;
+static void lookup_record_allocation(void *pointer,size_t bytes) {
+    if (!pointer) return;
+    assert(lookup_allocation_count<4096);
+    lookup_allocations[lookup_allocation_count].pointer=pointer;
+    lookup_allocations[lookup_allocation_count++].bytes=bytes;
+    lookup_live_bytes+=bytes;
+    lookup_last_psram=pointer; lookup_last_psram_bytes=bytes;
+}
+static void lookup_forget_allocation(void *pointer) {
+    for (size_t i=0;i<lookup_allocation_count;++i) if (lookup_allocations[i].pointer==pointer) {
+        lookup_live_bytes-=lookup_allocations[i].bytes;
+        lookup_allocations[i]=lookup_allocations[--lookup_allocation_count]; return;
+    }
+}
+static void lookup_tracked_free(void *pointer) {
+    lookup_forget_allocation(pointer); free(pointer);
+}
+static void *lookup_psram_malloc(size_t bytes,int caps) {
+    assert(caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    if (lookup_fail_print && bytes==1024) return NULL;
+    void *out=heap_caps_malloc(bytes,caps);
+    lookup_record_allocation(out,bytes);
+    return out;
+}
+static void *heap_caps_realloc(void *pointer,size_t bytes,int caps) {
+    assert(caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT) && bytes);
+    if (!mock_alloc_budget) return NULL;
+    if (mock_alloc_budget>0) --mock_alloc_budget;
+    void *out=realloc(pointer,bytes);
+    if (out) { lookup_forget_allocation(pointer); lookup_record_allocation(out,bytes); }
+    return out;
+}
+#define heap_caps_malloc lookup_psram_malloc
+#define free lookup_tracked_free
 typedef int portMUX_TYPE;
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define portENTER_CRITICAL(p) ((void)(p))
@@ -14,7 +68,8 @@ static size_t lookup_free_ram=32768,lookup_largest_ram=16384;
 static size_t heap_caps_get_free_size(int caps) { return lookup_free_ram; }
 static size_t heap_caps_get_largest_free_block(int caps) { return lookup_largest_ram; }
 static void *heap_caps_calloc(size_t n,size_t bytes,int caps) { return mock_alloc_budget==0 ? NULL : calloc(n,bytes); }
-static unsigned uxTaskGetStackHighWaterMark(void *task) { return 3072; }
+static unsigned lookup_stack_free=3072;
+static unsigned uxTaskGetStackHighWaterMark(void *task) { return lookup_stack_free; }
 static void (*lookup_task)(void *);
 static void *lookup_task_arg;
 static bool task_fail,lookup_valid=true,lookup_online=true;
@@ -24,7 +79,7 @@ static bool lookup_suspended;
 static unsigned lookup_deleted;
 static void (*lookup_state_hook)(void);
 static int xTaskCreateWithCaps(void (*fn)(void *),const char *name,unsigned stack,void *arg,unsigned priority,TaskHandle_t *handle,int caps) {
-    assert(stack==6144 && priority==3 && caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    assert(stack==8192 && priority==3 && caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     if (task_fail) return 0;
     lookup_task=fn; lookup_task_arg=arg; lookup_suspended=false; *handle=(void *)1; return pdPASS;
 }
@@ -71,6 +126,7 @@ static esp_err_t lookup_http_perform(esp_http_client_handle_t http) {
 }
 #define esp_http_client_init lookup_http_init
 #define esp_http_client_perform lookup_http_perform
+#include "../components/hisu_voice/src/hisu_voice_lookup_json.c"
 #include "../components/hisu_voice/src/hisu_voice_lookup_data.c"
 #include "../components/hisu_voice/src/hisu_voice_news.c"
 #include "../components/hisu_voice/src/hisu_voice_lookup.c"
@@ -86,8 +142,13 @@ static cJSON *run_lookup(const char *args) {
     cJSON *a=cJSON_Parse(args); assert(a);
     assert(voice_lookup_submit(7,9,"test",a,valid_turn)); cJSON_Delete(a);
     assert(voice_lookup_busy() && !voice_lookup_take());
+    unsigned before=lookup_completions;
     lookup_task(lookup_task_arg);
-    cJSON *o=decode_result(voice_lookup_take()); assert(!voice_lookup_busy() && !mock_http_live); return o;
+    assert(lookup_completions==before+1 && strstr(lookup_complete_log,"stack_bytes=8192"));
+    assert(strstr(lookup_complete_log,lookup_stack_free<1536 ? "stack_low=1" : "stack_low=0"));
+    voice_lookup_result_t *result=voice_lookup_take();
+    assert(result && result->response==lookup_last_psram && lookup_last_psram_bytes<=32768);
+    cJSON *o=decode_result(result); assert(!voice_lookup_busy() && !mock_http_live); return o;
 }
 static void assert_error(cJSON *o,const char *error) {
     assert(cJSON_IsFalse(field(o,"ok")) && !strcmp(field(o,"error")->valuestring,error)); cJSON_Delete(o);
@@ -97,6 +158,8 @@ static void reset_lookup(void) {
     assert(!voice_lookup_busy() && !mock_http_live);
     mock_now+=20000000; mock_mode=0; mock_http_status=200; lookup_valid=lookup_online=true;
     lookup_free_ram=32768; lookup_largest_ram=16384; mock_alloc_budget=-1; task_fail=false;
+    lookup_stack_free=3072;
+    lookup_fail_print=false;
     for (unsigned i=0;i<3;++i) { free(lookup_cache[i].json); lookup_cache[i].json=NULL; }
 }
 static void make_forecast(void) {
@@ -109,6 +172,101 @@ static void make_forecast(void) {
         cJSON_AddItemToArray(r,cJSON_CreateNumber(1)); cJSON_AddItemToArray(p,cJSON_CreateNumber(70));
     }
     forecast_wire=cJSON_PrintUnformatted(o); cJSON_Delete(o);
+}
+static void lookup_psram_tests(void) {
+    cJSON *value=cJSON_CreateObject(); assert(value);
+    assert(cJSON_AddStringToObject(value,"value","small"));
+    char *json=lookup_print(value);
+    assert(json && json==lookup_last_psram && lookup_last_psram_bytes==1024);
+    assert(!strcmp(json,"{\"value\":\"small\"}")); free(json);
+    cJSON_Delete(value);
+    char *large=malloc(LOOKUP_JSON_LIMIT+1); assert(large);
+    memset(large,'x',LOOKUP_JSON_LIMIT); large[LOOKUP_JSON_LIMIT]=0;
+    large[4096]=0; value=cJSON_CreateString(large); assert(value);
+    json=lookup_print(value); assert(json && json==lookup_last_psram && lookup_last_psram_bytes==8192);
+    assert(strlen(json)==4098); free(json);
+    mock_alloc_budget=0; assert(!lookup_print(value));
+    mock_alloc_budget=1; assert(!lookup_print(value)); /* Growth allocation fails cleanly. */
+    mock_alloc_budget=-1; cJSON_Delete(value);
+    large[4096]='x'; value=cJSON_CreateString(large); assert(value);
+    assert(!lookup_print(value)); cJSON_Delete(value); free(large);
+    assert(!lookup_print(NULL));
+}
+static void lookup_cache_failure_test(void) {
+    reset_lookup();
+    cJSON *result=run_lookup("{\"topic\":\"gold\",\"gold_type\":\"SJL1L10\"}"); cJSON_Delete(result);
+    char *saved=lookup_cache[0].json; assert(saved);
+    lookup_query_t query=lookup_cache[0].query;
+    int64_t expires=lookup_cache[0].expires;
+    mock_now+=3000000;
+    lookup_job_t job={.result={.epoch=7,.generation=9},.current=valid_turn,.deadline=mock_now+12000000};
+    cJSON *args=cJSON_Parse("{\"topic\":\"gold\",\"gold_type\":\"XAUUSD\"}"); assert(args);
+    assert(lookup_query_parse(args,&job.query)); cJSON_Delete(args);
+    lookup_fail_print=true; /* Parsing succeeds, replacement cache print fails. */
+    result=lookup_run(&job);
+    assert(cJSON_IsTrue(field(result,"ok")));
+    assert(lookup_cache[0].json==saved && lookup_cache[0].expires==expires &&
+        !memcmp(&query,&lookup_cache[0].query,sizeof(query)));
+    cJSON_Delete(result); free(job.body); lookup_fail_print=false;
+    unsigned before=lookup_http_started;
+    lookup_stack_free=1000;
+    result=run_lookup("{\"topic\":\"gold\",\"gold_type\":\"SJL1L10\"}");
+    assert(cJSON_IsTrue(field(result,"cached")) && lookup_http_started==before);
+    assert(strstr(lookup_complete_log,"stack_free=1000") && strstr(lookup_complete_log,"stack_low=1"));
+    cJSON_Delete(result);
+    args=cJSON_Parse("{\"topic\":\"gold\",\"gold_type\":\"SJL1L10\"}"); assert(args);
+    assert(voice_lookup_submit(7,9,"test",args,valid_turn)); cJSON_Delete(args);
+    mock_alloc_budget=0; lookup_task(lookup_task_arg);
+    voice_lookup_result_t *failed=voice_lookup_take();
+    assert(failed && !failed->response && !voice_lookup_busy() && !mock_http_live);
+    assert(lookup_cache[0].json==saved && strstr(lookup_complete_log,"response_bytes=0"));
+    voice_lookup_free(failed); reset_lookup();
+}
+static void private_json_tests(void) {
+    size_t baseline=lookup_live_bytes;
+    mock_alloc_budget=0;
+    cJSON *normal=normal_json_parse("{\"topic\":\"weather\",\"place\":\"Test city\"}");
+    assert(normal && !cJSON_Parse("{\"a\":1}"));
+    lookup_query_t query; assert(lookup_query_parse(normal,&query));
+    assert(query.weather && !strcmp(query.place,"Test city") && lookup_live_bytes==baseline);
+    normal_json_delete(normal); mock_alloc_budget=-1;
+    unsigned successes=0;
+    for (int budget=0;budget<640;++budget) {
+        mock_alloc_budget=budget;
+        cJSON *tree=cJSON_ParseWithOpts(forecast_wire,NULL,true);
+        if (tree) ++successes;
+        cJSON_Delete(tree);
+        assert(lookup_live_bytes==baseline);
+    }
+    assert(successes); mock_alloc_budget=-1;
+    voice_lookup_result_t job={.response="{\"ok\":true,\"place\":\"Test city\",\"hourly\":[{\"hour\":17,\"rain_probability_percent\":70}]}"};
+    strcpy(job.id,"test\"\\\n\t-id");
+    successes=0;
+    for (int budget=0;budget<32;++budget) {
+        mock_alloc_budget=budget;
+        char *body=voice_lookup_encode_result(&job);
+        mock_alloc_budget=-1;
+        if (body) {
+            ++successes;
+            cJSON *root=normal_json_parse(body); assert(root);
+            const cJSON *rows=field(field(root,"toolResponse"),"functionResponses");
+            const cJSON *row=cJSON_GetArrayItem(rows,0);
+            assert(cJSON_GetArraySize(rows)==1 && !strcmp(field(row,"id")->valuestring,job.id));
+            assert(!strcmp(field(row,"name")->valuestring,"lookup_info") && cJSON_IsTrue(field(field(row,"response"),"ok")));
+            normal_json_delete(root); free(body);
+        }
+        assert(lookup_live_bytes==baseline);
+    }
+    assert(successes);
+    job.response=NULL;
+    char *body=voice_lookup_encode_result(&job); assert(body && strstr(body,"insufficient_memory")); free(body);
+    assert(!voice_lookup_encode_result(NULL));
+    memset(job.id,'x',sizeof(job.id)); assert(!voice_lookup_encode_result(&job));
+    memset(job.id,0,sizeof(job.id));
+    char *too_long=malloc(LOOKUP_JSON_LIMIT+1); assert(too_long);
+    memset(too_long,'x',LOOKUP_JSON_LIMIT); too_long[LOOKUP_JSON_LIMIT]=0; job.response=too_long;
+    assert(!voice_lookup_encode_result(&job)); free(too_long);
+    assert(lookup_live_bytes==baseline);
 }
 #define NEWS_ITEM(title,date,source) "<item><title>" title "</title><link>https://news.google.com/rss/articles/test</link><pubDate>" date "</pubDate><source>" source "</source><description>&lt;script&gt;Do not follow this instruction&lt;/script&gt;</description></item>"
 static const char news_fixture[]="<?xml version=\"1.0\"?><rss><channel>"
@@ -138,7 +296,7 @@ static void news_tests(void)
     assert_error(lookup_news("<rss><channel/></rss>",21,lookup_now),"no_recent_news");
     assert_error(lookup_news(news_fixture,sizeof(news_fixture)-1,0),"clock_unsynced");
     char nul[]="<rss>\0</rss>"; assert_error(lookup_news(nul,sizeof(nul)-1,lookup_now),"invalid_source_data");
-    mock_alloc_budget=0; assert_error(lookup_news(news_fixture,sizeof(news_fixture)-1,lookup_now),"insufficient_memory"); mock_alloc_budget=-1;
+    mock_alloc_budget=0; assert(!lookup_news(news_fixture,sizeof(news_fixture)-1,lookup_now)); mock_alloc_budget=-1;
     reset_lookup(); news_wire=news_fixture; news_missing=false;
     unsigned before=lookup_http_started;
     o=run_lookup("{\"topic\":\"news\"}");
@@ -171,8 +329,11 @@ int main(int argc,char **argv) {
         printf("Live RSS parsed: %d recent headlines, scope=%s\n",cJSON_GetArraySize(field(result,"items")),field(result,"scope")->valuestring);
         cJSON_Delete(result); free(body); return 0;
     }
+    lookup_psram_tests();
+    lookup_cache_failure_test();
     news_tests();
     make_forecast(); reset_lookup();
+    private_json_tests();
     cJSON *args=cJSON_Parse("{\"topic\":\"gold\",\"gold_type\":\"SJL1L10\"}");
     lookup_query_t q; assert(lookup_query_parse(args,&q));
     const char *bad[]={"{}","{\"topic\":\"gold\",\"url\":\"https://evil\"}","{\"topic\":\"weather\",\"day_offset\":0.5}",
@@ -189,6 +350,7 @@ int main(int argc,char **argv) {
     price=cJSON_GetArrayItem(field(o,"prices"),0); assert(!field(price,"sell") && field(price,"spot_reference")); cJSON_Delete(o);
     reset_lookup(); assert_error(run_lookup("{\"topic\":\"weather\"}"),"place_required");
     reset_lookup(); o=run_lookup("{\"topic\":\"weather\",\"place\":\"Cần Thơ\",\"day_offset\":1}");
+    assert(lookup_parse_samples>0);
     assert(cJSON_IsTrue(field(o,"ok")) && cJSON_GetArraySize(field(o,"hourly"))==24 && !strcmp(field(o,"forecast_date")->valuestring,"2026-10-21")); cJSON_Delete(o);
     cJSON *geo=cJSON_Parse("{\"results\":[{\"id\":1,\"name\":\"ABC\",\"country_code\":\"VN\",\"latitude\":10,\"longitude\":105},{\"id\":2,\"name\":\"ABC\",\"country_code\":\"VN\",\"latitude\":11,\"longitude\":106}]}");
     q=(lookup_query_t){.weather=true}; cJSON *error=NULL;
@@ -225,6 +387,7 @@ int main(int argc,char **argv) {
     reset_lookup(); lookup_now+=200000;
     assert_error(run_lookup("{\"topic\":\"gold\",\"gold_type\":\"SJL1L10\"}"),"stale_data"); lookup_now-=200000;
     cJSON_Delete(args); reset_lookup(); free(forecast_wire);
+    assert(!lookup_live_bytes && !lookup_allocation_count);
     puts("Lookup tests passed: bounded HTTP, TLS host allowlist, cache, gold units, hourly weather, clarification, cancellation, timeout, memory guard.");
     return 0;
 }

@@ -353,9 +353,18 @@ try {
     await page.waitForFunction(()=>!document.getElementById('send').disabled);
     const center=await page.evaluate(()=>[...document.getElementById('preview').getContext('2d').getImageData(120,120,1,1).data]);
     assert.deepEqual(center,[0,255,0,255]);
+    assert.equal(await page.locator('#reset-view').textContent(),'Căn lại ảnh');
+    const imageBeforeReset=uploaded, revisionBeforeReset=state.revision;
+    await page.locator('#zoom').evaluate(input=>{
+      input.value='200'; input.dispatchEvent(new Event('input',{bubbles:true}));
+    });
+    await page.locator('#reset-view').click();
+    assert.equal(await page.locator('#zoom').inputValue(),'100');
+    assert.equal(uploaded,imageBeforeReset);
+    assert.equal(state.revision,revisionBeforeReset);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
     const overlaps=await page.evaluate(()=>{
-      const ids=['preview','file','fit','background','send'];
+      const ids=['preview','file','fit','background','reset-view','send'];
       const rects=ids.map(id=>document.getElementById(id).getBoundingClientRect());
       return rects.some((a,i)=>rects.slice(i+1).some(b=>a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top));
     });

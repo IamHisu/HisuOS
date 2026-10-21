@@ -26,7 +26,7 @@ const ui = await readFile(new URL('../components/hisu_ui/src/hisu_ui.c',import.m
 assert.match(ui,/s_setup_url = media.enabled && network.setup_client_connected;/);
 const setupKeys = ui.split('if (s_model.page == UI_SETUP_PAGE) {')[1].split('if (s_model.page == UI_FLASHLIGHT_PAGE)')[0];
 assert.match(setupKeys,/hisu_ui_model_key\(&s_model, key\)/);
-assert.match(setupKeys,/else if \(media.enabled \|\| media.opening\) hisu_media_close\(\);/);
+assert.match(setupKeys,/if \(media.enabled \|\| media.opening\) hisu_media_close\(\);/);
 assert.equal((setupKeys.match(/hisu_media_close\(\)/g) || []).length,1);
 assert.doesNotMatch(ui,/UI_SETUP_STOP/);
 assert.doesNotMatch(ui,/s_setup_url = !s_setup_url/);
@@ -55,7 +55,7 @@ assert.match(keyGet,/"configured"/);
 assert.doesNotMatch(keyGet,/get_gemini|valuestring|"key"/);
 assert.match(media,/config.max_uri_handlers = 40/);
 assert.match(ui,/"http:\/\/%s\/"/);
-const open = media.split('if (cmd == CMD_OPEN)')[1].split('else if (cmd == CMD_DEFAULT)')[0];
+const open = media.split('if (cmd == CMD_OPEN) {')[1].split('/* Take ownership under the lock;')[0];
 assert.match(open,/hisu_network_setup\(true\)/);
 assert.doesNotMatch(open,/network\.connected|hisu_clock|wifi.*join/i,
   'Opening Setting must not depend on station connectivity, credentials or SNTP');

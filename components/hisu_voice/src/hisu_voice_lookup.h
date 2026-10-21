@@ -15,3 +15,5 @@ bool voice_lookup_submit(uint32_t epoch,uint32_t generation,const char *id,const
 voice_lookup_result_t *voice_lookup_take(void);
 bool voice_lookup_busy(void);
 void voice_lookup_free(voice_lookup_result_t *result);
+/* Serialized worker response only. Returned PSRAM buffer belongs to caller (free). */
+char *voice_lookup_encode_result(const voice_lookup_result_t *result);

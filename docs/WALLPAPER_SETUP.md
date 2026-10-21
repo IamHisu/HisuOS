@@ -4,7 +4,7 @@
 
 Setting dùng hotspot WPA2 tạm thời, mật khẩu ngẫu nhiên 16 ký tự mỗi phiên.
 Không dùng mật khẩu cố định cũ, mã truy cập riêng hoặc BOOT duyệt ảnh.
-Bluetooth vẫn tạm tắt. Không cần router, Internet hay GitHub Pages.
+Bluetooth đã gỡ khỏi firmware và code. Không cần router, Internet hay GitHub Pages.
 Không cần từng lưu hoặc kết nối Wi-Fi nhà để mở Setting; mục Wi-Fi trên board chỉ là lựa chọn nhập trực tiếp.
 
 ## Flow Sử Dụng
@@ -19,15 +19,17 @@ Không cần từng lưu hoặc kết nối Wi-Fi nhà để mở Setting; mục
 5. HTTP không có cảnh báo chứng chỉ tự ký, nhưng trình duyệt vẫn có thể ghi Không bảo mật.
 6. Trang tự lấy token qua HTTP, không hỏi mã kết nối. Các tab là **Wi-Fi**, **Hình nền**, **Thiết bị**.
 7. Gửi ảnh hợp lệ sẽ tự lưu và áp dụng; không cần xác nhận BOOT. Thoát Setting để xem hình nền.
-8. Vol+ / X hoặc giữ BOOT chỉ quay về menu, Setting vẫn chạy. Vol− chuyển lần lượt QR → thông tin → khôi phục nền; BOOT ở QR/thông tin bật/tắt hotspot và web. Bấm **Đã kết nối** trên web đóng toàn bộ phiên. Không giới hạn tổng thời gian 5 phút.
-9. Lưu ảnh nền mới hoặc khôi phục nền mặc định thành công sẽ tự đưa HISU về màn hình chính và đánh thức màn hình. Phiên Setting vẫn chạy; lưu lỗi không chuyển màn hình.
+8. Vol+ / X hoặc giữ BOOT chỉ quay về menu, Setting vẫn chạy. Vol− chuyển qua lại QR → thông tin → QR; BOOT bật/tắt hotspot và web. Bấm **Đã kết nối** trên web đóng toàn bộ phiên. Không giới hạn tổng thời gian 5 phút.
+9. Lưu ảnh nền mới thành công sẽ tự đưa HISU về màn hình chính và đánh thức màn hình. Phiên Setting vẫn chạy; lưu lỗi không chuyển màn hình.
    Ngắt hotspot sẽ đóng sau 10 giây nếu không nối lại. Đóng trang gửi `/leave`, chờ 8 giây để tải lại trang không mất phiên.
    Nếu trình duyệt bị tắt đột ngột không gửi được tín hiệu, mất request xác thực trong 90 giây sẽ đóng phiên dự phòng.
    Muốn mở lại, thao tác trên board và quét QR mới.
 
-Vol− / biểu tượng danh sách lần lượt mở thông tin hotspot/địa chỉ, khôi phục nền mặc định, rồi trở lại QR.
-Ở thông tin hotspot, BOOT bật/tắt Setting rồi quay về QR. Khôi phục nền mặc định vẫn cần thao tác vật lý xác nhận,
-không có API mạng để xóa nền. Giữ BOOT quay về menu, không đóng Setting.
+Vol− / biểu tượng danh sách chuyển qua lại thông tin hotspot/địa chỉ và QR.
+Ở thông tin hotspot, BOOT bật/tắt Setting rồi quay về QR. Giữ BOOT quay về menu, không đóng Setting.
+Không còn mục khôi phục nền, API/lệnh xóa ảnh hay ảnh nền mặc định nhúng sẵn.
+Chỉ dùng ảnh/GIF tải lên; chưa có ảnh hoặc ảnh lỗi thì nền đen/trắng theo theme.
+Nút **Căn lại ảnh** trên web chỉ đặt lại thu phóng/vị trí bản xem trước, không đổi ảnh đã lưu trên board.
 
 ## Wi-Fi Và Thiết Bị
 
@@ -94,7 +96,8 @@ không có API mạng để xóa nền. Giữ BOOT quay về menu, không đóng
   Ghi slot không active, đọc lại CRC pixels, ghi header cuối cùng, kiểm tra header rồi mới publish.
   Boot chọn record hợp lệ mới nhất và fallback record cũ nếu bản mới hỏng.
 - Thiếu RAM/ghi lỗi giữ nền cũ; không format storage hoặc erase NVS.
-- Khôi phục nền ghi tombstone, không phải secure deletion: ảnh cũ có thể còn ở slot dự phòng.
+- Firmware chỉ ghi ảnh/GIF tải lên, không tạo tombstone mới. Vẫn đọc tombstone từ firmware cũ
+  để không làm ảnh từng bị xóa xuất hiện lại khi nâng cấp; không xóa/format ảnh hiện tại.
 - Pixel buffer nằm trong PSRAM; UI giữ bản sao riêng. HTTP/flash không chạy trong UI task.
   Vẫn cần đo latency/cache stall trên board.
 

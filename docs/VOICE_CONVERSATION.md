@@ -21,9 +21,11 @@ nhận kết quả, AI nói một câu kết ngắn, không hỏi tiếp. Luồn
 chờ DMA rồi mới gửi `LIVE_END`, không chuyển qua `LIVE_DONE`/đang lắng nghe.
 Ngắt sang lượt mới xóa dấu đóng; gói hoàn tất cũ không đóng được lượt mới.
 
-Nhạc đi qua `search_music` → `offer_music` → câu hỏi tên bài + ca sĩ → lượt xác
-nhận mới của người dùng → `play_music`. Kể cả yêu cầu ban đầu nêu đúng bài vẫn
-phải chốt. Firmware giữ tối đa năm kết quả tìm kiếm trong khoảng 1,5 KiB PSRAM,
+Nhạc đi qua `search_music` → `offer_music` → đọc tên bài + ca sĩ → người dùng
+chọn kết quả → `play_music` chỉ với id. Chọn rõ số thứ tự/tên bản là phát ngay,
+không hỏi "đúng bài không" hay yêu cầu nói "đúng rồi" thêm lần nữa. Chỉ kết quả
+tìm kiếm chưa rõ bản nào mới hỏi chọn; đề xuất một bản thì chờ đồng ý một lần.
+Firmware giữ tối đa năm kết quả tìm kiếm trong khoảng 1,5 KiB PSRAM,
 chỉ cho đề xuất id thuộc kết quả đó, và chặn phát cùng lượt đề xuất. Lượt đề xuất
 phải hoàn tất phản hồi có audio; chỉ lượt người dùng ngay tiếp theo, có bản nhận
 dạng không bị tràn, được phép xác nhận đúng id trong 60 giây. Đổi bài cần đề xuất
