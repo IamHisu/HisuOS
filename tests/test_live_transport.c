@@ -918,7 +918,17 @@ static void music_list_offer_tests(void)
 {
     assert(music_choice_ordinal("Chọn bài thứ hai nha.")==2);
     assert(music_choice_ordinal("MO BAI THU 3 NHE!")==3);
+    assert(music_choice_ordinal("bài số 3")==3);
+    assert(music_choice_ordinal("Mở bài số ba đi.")==3);
+    assert(music_choice_ordinal("bài hai")==2);
+    assert(music_choice_ordinal("3")==3);
+    assert(!music_choice_ordinal("không chọn bài số 3"));
+    assert(!music_choice_ordinal("bài số 3 hoặc bài số 2"));
     assert(!music_choice_ordinal("không chọn bài thứ hai"));
+    assert(music_choice_delegated("Bạn chọn đại một bài nhé."));
+    assert(!music_choice_delegated("không chọn đại 1 bài"));
+    assert(!music_choice_delegated("nếu chọn đại 1 bài thì sao"));
+    assert(!music_choice_delegated("ừ"));
     assert(!music_choice_ordinal("bài thứ hai?"));
     assert(!music_choice_ordinal("\"bài thứ hai\""));
     assert(music_choice_phrase("Mở Sóng Gió đi.","Sóng Gió"));
@@ -947,15 +957,20 @@ static void music_list_offer_tests(void)
     for (unsigned i=0;i<sizeof(invalid)/sizeof(*invalid);++i) {
         check_tool("offer_music",invalid[i],false); assert(!s_pending_music && !s_music_offer.pending);
     }
-    for (unsigned selected=0;selected<3;++selected) {
+    for (unsigned scenario=0;scenario<12;++scenario) {
+        unsigned selected=scenario%3;
         reset(); offer_test_list();
         check_tool("play_music","{\"id\":\"song2\"}",false);
         s_reply_state.audio=true; finish_spoken_reply(s_epoch,s_generation);
         assert(s_music_offer.spoken && voice_live_begin(s_generation+1)); live_turn_end(&s_turn);
         char wire[150]; snprintf(wire,sizeof(wire),"{\"serverContent\":{\"inputTranscription\":{\"text\":\"Bài thứ %u\"}}}",selected+1);
+        if (scenario>=3) strcpy(wire,"{\"serverContent\":{\"inputTranscription\":{\"text\":\"Chọn đại 1 bài trong 3 bài đó đi\"}}}");
+        if (scenario>=9) snprintf(wire,sizeof(wire),"{\"serverContent\":{\"inputTranscription\":{\"text\":\"Bài số %u\"}}}",selected+1);
         receive(wire);
         static const char *const ids[]={"song2","qYD31k5TVTCQ","song1"};
         char args[180]; snprintf(args,sizeof(args),"{\"id\":\"%s\",\"position\":%u,\"selection_text\":\"Bài thứ %u\"}",ids[selected],selected+1,selected+1);
+        if (scenario>=3) snprintf(args,sizeof(args),"{\"id\":\"%s\",\"position\":%u,\"selection_text\":\"Chọn đại 1 bài trong 3 bài đó đi\"}",ids[selected],selected+1);
+        if (scenario>=6) snprintf(args,sizeof(args),"{\"id\":\"%s\"}",ids[selected]);
         bool ended=false; cJSON *result=invoke_tool("play_music",args,&ended);
         /* Model maps meaning; firmware validates membership and turn boundaries. */
         assert(ended && cJSON_IsTrue(cJSON_GetObjectItem(result,"ok")) && s_pending_music);
@@ -993,7 +1008,7 @@ static void music_list_offer_tests(void)
     }
     reset(); offer_test_list(); s_reply_state.audio=true; finish_spoken_reply(s_epoch,s_generation);
     assert(voice_live_begin(s_generation+1)); live_turn_end(&s_turn); strcpy(s_confirmation,"Bài thứ hai");
-    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\"}",false);
+    check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":0,\"selection_text\":\"Bài thứ hai\"}",false);
     check_tool("play_music","{\"id\":\"song1\",\"position\":2,\"selection_text\":\"Bài thứ hai\"}",false);
     check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":1,\"selection_text\":\"Bài thứ hai\"}",false);
     check_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":2.5,\"selection_text\":\"Bài thứ hai\"}",false);
@@ -1004,6 +1019,16 @@ static void music_list_offer_tests(void)
     strcpy(s_confirmation,"Bài thứ hai nha");
     bool ended=false; cJSON *result=invoke_tool("play_music","{\"id\":\"qYD31k5TVTCQ\",\"position\":2,\"selection_text\":\"Bài thứ hai nha\"}",&ended);
     assert(ended && cJSON_IsTrue(cJSON_GetObjectItem(result,"ok"))); cJSON_Delete(result);
+    /* A rejected vague list choice must be re-offered before generic assent. */
+    reset(); offer_test_list(); s_reply_state.audio=true; finish_spoken_reply(s_epoch,s_generation);
+    assert(voice_live_begin(s_generation+1)); live_turn_end(&s_turn); strcpy(s_confirmation,"Đúng rồi");
+    check_tool("play_music","{\"id\":\"song1\"}",false);
+    check_tool("offer_music","{\"id\":\"song1\"}",true);
+    s_reply_state.audio=true; finish_spoken_reply(s_epoch,s_generation);
+    assert(voice_live_begin(s_generation+1)); live_turn_end(&s_turn); strcpy(s_confirmation,"Đúng rồi");
+    result=invoke_tool("play_music","{\"id\":\"song1\"}",&ended);
+    assert(ended && cJSON_IsTrue(cJSON_GetObjectItem(result,"ok")) && s_pending_music);
+    cJSON_Delete(result);
     reset();
 }
 static void music_confirmation_tests(void)

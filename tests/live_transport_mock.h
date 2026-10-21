@@ -140,8 +140,10 @@ typedef struct {
     int buffer_size, task_stack, task_prio, network_timeout_ms;
     esp_transport_handle_t ext_transport;
 } esp_websocket_client_config_t;
+enum { WEBSOCKET_ERROR_TYPE_NONE=0, WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT=1 };
 typedef struct {
-    struct { int esp_ws_handshake_status_code, esp_tls_stack_err; } error_handle;
+    struct { int esp_ws_handshake_status_code, esp_tls_stack_err, error_type,
+        esp_tls_last_esp_err, esp_tls_cert_verify_flags, esp_transport_sock_errno; } error_handle;
     int op_code, data_len, payload_offset, payload_len;
     bool fin;
     const char *data_ptr;

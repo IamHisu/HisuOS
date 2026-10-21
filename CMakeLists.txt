@@ -8,6 +8,7 @@ if(WIN32)
         "\"${CMAKE_COMMAND}\" -E env PYTHONIOENCODING=utf-8")
 endif()
 project(HisuOS VERSION 0.1.0)
+include(cmake/network_memory.cmake)
 include(cmake/battery_audio.cmake)
 include(cmake/feedback_audio.cmake)
 
