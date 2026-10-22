@@ -60,17 +60,21 @@ static uint32_t theme_color(uint32_t dark)
     }
 }
 
-typedef enum { UI_EVENT_STATUS, UI_EVENT_FLASHLIGHT, UI_EVENT_EXPRESSION } ui_event_kind_t;
+typedef enum { UI_EVENT_STATUS, UI_EVENT_FLASHLIGHT, UI_EVENT_EXPRESSION, UI_EVENT_MUSIC_LYRIC } ui_event_kind_t;
 typedef struct {
     ui_event_kind_t kind;
     hisu_ui_status_t status;
     bool flashlight_enabled;
     hisu_face_t expression;
+    uint32_t music_ticket;
+    char *music_next;
     char text[256];
 } status_event_t;
 static QueueHandle_t s_events;
 static hisu_ui_voice_control_fn s_voice_control;
 static bool (*s_voice_wake)(void), (*s_voice_boot)(void);
+static int (*s_playback_control)(bool cycle);
+void hisu_ui_set_playback_control(int (*mode)(bool cycle)) { s_playback_control=mode; }
 
 void hisu_ui_set_voice_buttons(bool (*wake)(void), bool (*boot)(void))
 {
@@ -97,7 +101,10 @@ static lv_obj_t *s_face_eyes[2], *s_face_cuts[2], *s_face_caption;
 static lv_timer_t *s_face_timer;
 static hisu_face_t s_expression;
 static int s_face_state;
-static lv_obj_t *s_music_view;
+static lv_obj_t *s_music_view, *s_music_caption, *s_music_previous, *s_music_upcoming;
+static char *s_music_next_text; /* Owned PSRAM copy of the next LRC line. */
+static lv_obj_t *s_playback_icon, *s_playback_glyph, *s_playback_mark;
+static int s_playback_icon_mode=-2;
 static lv_timer_t *s_music_timer;
 static atomic_uint s_music_meter;
 static unsigned s_music_energy;
@@ -966,6 +973,80 @@ static void animate_music(lv_timer_t *timer)
     lv_obj_invalidate(s_music_view);
 }
 
+static void music_caption_y(void *object,int32_t y) { lv_obj_set_y(object,y); }
+
+static void music_caption_slide(lv_obj_t *object,int from,int to)
+{
+    lv_anim_delete(object,music_caption_y);
+    lv_obj_set_y(object,from);
+    lv_anim_t animation; lv_anim_init(&animation);
+    lv_anim_set_var(&animation,object); lv_anim_set_exec_cb(&animation,music_caption_y);
+    lv_anim_set_values(&animation,from,to); lv_anim_set_duration(&animation,200);
+    lv_anim_set_path_cb(&animation,lv_anim_path_ease_out); lv_anim_start(&animation);
+}
+
+static hisu_music_lyric_layout_t music_caption_layout(const char *text)
+{
+    lv_point_t size;
+    lv_text_get_size(&size,text ? text : "",lv_obj_get_style_text_font(s_music_caption,0),
+        0,0,220,LV_TEXT_FLAG_NONE);
+    return hisu_music_lyric_layout(size.y);
+}
+
+static void update_music_lyrics(const char *text,const char *next)
+{
+    if (!s_music_caption) return;
+    int previous_height=lv_obj_get_height(s_music_caption);
+    lv_label_set_text(s_music_previous,lv_label_get_text(s_music_caption));
+    lv_obj_set_height(s_music_previous,previous_height);
+    lv_label_set_text(s_music_caption,text);
+    hisu_music_lyric_layout_t layout=music_caption_layout(text);
+    int height=layout.current_height;
+    lv_obj_set_height(s_music_caption,height);
+    lv_label_set_text(s_music_upcoming,layout.next_height && next ? next : "");
+    music_caption_slide(s_music_previous,0,-previous_height);
+    music_caption_slide(s_music_caption,previous_height,0);
+    music_caption_slide(s_music_upcoming,previous_height+height,height);
+}
+
+static void update_playback_icon(void)
+{
+    int mode=s_playback_control ? s_playback_control(false) : -1;
+    if (s_face_caption && s_subtitle_body) {
+        int width=mode>=0 ? 184 : 216;
+        if (lv_obj_get_width(s_subtitle_body)!=width) {
+            lv_obj_set_width(s_subtitle_body,width); lv_obj_set_width(s_face_caption,width);
+            lv_obj_update_layout(s_subtitle_body);
+            lv_obj_scroll_to_y(s_subtitle_body,LV_COORD_MAX,LV_ANIM_OFF);
+        }
+    }
+    if (mode<0 || s_model.page!=UI_IDLE) {
+        if (s_playback_icon) lv_obj_add_flag(s_playback_icon,LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (!s_playback_icon) {
+        s_playback_icon=lv_obj_create(lv_screen_active());
+        lv_obj_remove_style_all(s_playback_icon);
+        lv_obj_remove_flag(s_playback_icon,LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_pos(s_playback_icon,204,206); lv_obj_set_size(s_playback_icon,28,26);
+        lv_obj_set_style_bg_opa(s_playback_icon,LV_OPA_TRANSP,0);
+        s_playback_glyph=lv_label_create(s_playback_icon);
+        lv_obj_set_style_text_font(s_playback_glyph,&lv_font_montserrat_20,0);
+        s_playback_mark=lv_label_create(s_playback_icon);
+        lv_obj_set_style_text_font(s_playback_mark,&lv_font_montserrat_14,0);
+        s_playback_icon_mode=-2;
+    }
+    lv_obj_remove_flag(s_playback_icon,LV_OBJ_FLAG_HIDDEN);
+    if (mode==s_playback_icon_mode) return;
+    s_playback_icon_mode=mode;
+    lv_label_set_text(s_playback_glyph,mode==2 ? LV_SYMBOL_NEXT : LV_SYMBOL_LOOP);
+    lv_label_set_text(s_playback_mark,mode==1 ? "1" : mode==0 ? "/" : "");
+    lv_obj_align(s_playback_glyph,LV_ALIGN_CENTER,0,0);
+    lv_obj_align(s_playback_mark,LV_ALIGN_CENTER,0,0);
+    lv_obj_set_style_text_color(s_playback_glyph,lv_color_hex(mode ? 0x7cead8 : 0x949a98),0);
+    lv_obj_set_style_text_color(s_playback_mark,lv_color_hex(mode ? 0x7cead8 : 0x949a98),0);
+}
+
 static void render_music(int state, const char *text)
 {
     if (!s_music_frame)
@@ -974,19 +1055,41 @@ static void render_music(int state, const char *text)
     hisu_music_scene_init(&s_music_scene,hisu_music_hash(now^0x487375U),now);
     lv_obj_t *root=lv_screen_active();
     lv_obj_set_style_bg_color(root,lv_color_hex(0x000000),0);
-    lv_obj_t *title=label(root,state==HISU_UI_MUSIC_LOADING ? "Đang tải nhạc" : "Đang phát",12,2,216,0xa1a9a5);
-    lv_obj_set_style_text_color(title,lv_color_hex(0xa1a9a5),0);
-    lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    if (state==HISU_UI_MUSIC_LOADING) {
+        lv_obj_t *title=label(root,"Đang tải nhạc",12,2,216,0xa1a9a5);
+        lv_obj_set_style_text_color(title,lv_color_hex(0xa1a9a5),0);
+        lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    }
     s_music_view=lv_obj_create(root);
     lv_obj_remove_style_all(s_music_view);
     lv_obj_remove_flag(s_music_view,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(s_music_view,0,HISU_MUSIC_VIEW_Y); lv_obj_set_size(s_music_view,240,HISU_MUSIC_VIEW_HEIGHT);
     lv_obj_add_event_cb(s_music_view,draw_music,LV_EVENT_DRAW_MAIN,NULL);
-    lv_obj_t *caption=label(root,text && text[0] ? text : "",10,22,220,0xeeeeee);
+    lv_obj_t *viewport=lv_obj_create(root);
+    lv_obj_remove_style_all(viewport); lv_obj_remove_flag(viewport,LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(viewport,10,state==HISU_UI_MUSIC_LOADING ? 22 : 4);
+    lv_obj_set_size(viewport,220,state==HISU_UI_MUSIC_LOADING ? 44 : 66);
+    lv_obj_t *caption=label(viewport,text && text[0] ? text : "",0,0,220,0xeeeeee);
+    s_music_caption=caption;
     lv_obj_set_style_text_color(caption,lv_color_hex(0xeeeeee),0);
     lv_obj_set_height(caption,44);
     lv_label_set_long_mode(caption,LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(caption,LV_TEXT_ALIGN_CENTER,0);
+    lv_obj_set_style_text_line_space(caption,0,0);
+    hisu_music_lyric_layout_t layout=music_caption_layout(text);
+    int caption_height=layout.current_height;
+    lv_obj_set_height(caption,caption_height);
+    s_music_previous=label(viewport,"",0,-44,220,0xeeeeee);
+    s_music_upcoming=label(viewport,layout.next_height && s_music_next_text ? s_music_next_text : "",0,layout.next_y,220,0x88918e);
+    lv_obj_set_height(s_music_previous,44); lv_obj_set_height(s_music_upcoming,22);
+    lv_label_set_long_mode(s_music_previous,LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(s_music_upcoming,LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(s_music_previous,LV_TEXT_ALIGN_CENTER,0);
+    lv_obj_set_style_text_align(s_music_upcoming,LV_TEXT_ALIGN_CENTER,0);
+    lv_obj_set_style_text_color(s_music_previous,lv_color_hex(0xeeeeee),0);
+    lv_obj_set_style_text_color(s_music_upcoming,lv_color_hex(0x88918e),0);
+    lv_obj_set_style_text_line_space(s_music_previous,0,0);
+    lv_obj_set_style_text_line_space(s_music_upcoming,0,0);
     s_music_energy=0;
     s_music_timer=lv_timer_create(animate_music,50,NULL);
 }
@@ -1230,7 +1333,8 @@ static void render(void)
     if (s_face_timer) { lv_timer_delete(s_face_timer); s_face_timer = NULL; }
     if (s_music_timer) { lv_timer_delete(s_music_timer); s_music_timer=NULL; }
     if (s_battery_timer) { lv_timer_delete(s_battery_timer); s_battery_timer=NULL; }
-    s_music_view=NULL;
+    s_music_view=s_music_caption=s_music_previous=s_music_upcoming=NULL;
+    s_playback_icon=s_playback_glyph=s_playback_mark=NULL;
     s_face_caption = NULL;
     s_face_eyes[0] = s_face_eyes[1] = NULL;
     lv_obj_clean(root);
@@ -1613,6 +1717,8 @@ static void ui_task(void *arg)
     uint32_t seen_wallpaper_revision = initial_media.revision;
     hisu_ui_boot_click_t boot_click={0};
     bool audio_boot_latched=false;
+    bool audio_boot_cancelled=false;
+    int boot_context=0;
     for (;;) {
         if (boot_splash) {
             /* Discard splash inputs rather than replaying them into the menu. */
@@ -1631,27 +1737,61 @@ static void ui_task(void *arg)
         hisu_board_enable_menu_close_hold(s_model.page == UI_MENU && !s_asleep);
         hisu_board_enable_idle_boot_hold(s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && !s_asleep);
         hisu_key_t key=hisu_board_poll_key();
-        int audio_boot=hisu_ui_audio_boot(&audio_boot_latched,hisu_board_boot_stable_pressed(),audio_controls_visible());
+        bool audio_buttons=audio_controls_visible();
+        int playback_mode=s_playback_control ? s_playback_control(false) : -1;
+        int context=audio_buttons ? (playback_mode>=0 ? 2 : 3) :
+            s_model.page==UI_IDLE && s_status.status==HISU_UI_IDLE ? 1 : 0;
+        if (context!=boot_context) {
+            boot_click.pending=boot_click.second_pressed=false; boot_context=context;
+            if (audio_boot_latched) audio_boot_cancelled=true;
+        }
+        bool boot_pressed=hisu_board_boot_stable_pressed();
+        /* Chat can stop speaking on the first press; a later second click ends
+         * the session. Media singles wait so a double never changes its mode. */
+        if (context==3 && boot_pressed && !audio_boot_latched && !boot_click.pending && s_voice_control)
+            (void)s_voice_control(false);
+        int audio_boot=hisu_ui_audio_release(&audio_boot_latched,boot_pressed,audio_buttons && !audio_boot_cancelled);
+        if (!boot_pressed) audio_boot_cancelled=false;
         if (audio_boot==1) key=HISU_KEY_BOOT;
         else if (audio_boot<0 && (key==HISU_KEY_BOOT || key==HISU_KEY_BACK)) key=HISU_KEY_NONE;
         bool idle=s_model.page==UI_IDLE && s_status.status==HISU_UI_IDLE;
         bool waking=s_asleep;
         int click=hisu_ui_boot_click(&boot_click,key==HISU_KEY_BOOT,
-            hisu_board_boot_pressed(),idle && (key==HISU_KEY_NONE || key==HISU_KEY_BOOT),
+            boot_pressed,(idle || audio_buttons) && (key==HISU_KEY_NONE || key==HISU_KEY_BOOT),
             waking,esp_timer_get_time()/1000);
-        if (idle && key==HISU_KEY_BOOT) {
+        if ((idle || audio_buttons) && key==HISU_KEY_BOOT) {
             s_asleep=false; s_activity_ms=esp_timer_get_time()/1000; key=HISU_KEY_NONE;
         }
         if (click==HISU_BOOT_CLICK_DOUBLE) {
-            if (s_voice_wake) (void)s_voice_wake();
-        } else if (click==HISU_BOOT_CLICK_SINGLE) key=HISU_KEY_BOOT;
+            ESP_LOGI("UI","BOOT double: context=%d playback_mode=%d",context,playback_mode);
+            if (audio_buttons) {
+                bool handled=s_voice_boot && s_voice_boot();
+                ESP_LOGI("UI","BOOT stop handled=%d",handled);
+            }
+            else if (s_voice_wake) (void)s_voice_wake();
+        } else if (click==HISU_BOOT_CLICK_SINGLE) {
+            ESP_LOGI("UI","BOOT single: context=%d playback_mode=%d",context,playback_mode);
+            if (audio_buttons) {
+                bool playback=s_playback_control && s_playback_control(true)>=0;
+                (void)playback; /* Ordinary Chat already interrupted on press. */
+            } else key=HISU_KEY_BOOT;
+        }
         handle_key(key);
         update_volume_overlay();
+        update_playback_icon();
         status_event_t event;
         bool changed = false;
         // Bound draining so a fast producer cannot starve input/rendering.
         for (int i = 0; i < 8 && xQueueReceive(s_events, &event, 0) == pdTRUE; ++i) {
-            if (event.kind == UI_EVENT_FLASHLIGHT) {
+            if (event.kind == UI_EVENT_MUSIC_LYRIC) {
+                if (s_status.status==HISU_UI_MUSIC && event.music_ticket==s_status.music_ticket) {
+                    free(s_music_next_text); s_music_next_text=event.music_next; event.music_next=NULL;
+                    update_music_lyrics(event.text,s_music_next_text);
+                    memcpy(s_status.text,event.text,sizeof(s_status.text));
+                }
+                free(event.music_next);
+                continue;
+            } else if (event.kind == UI_EVENT_FLASHLIGHT) {
                 s_flashlight_enabled = event.flashlight_enabled;
                 s_flashlight_mode = 0;
                 s_flashlight_start_ms = esp_timer_get_time() / 1000;
@@ -1663,6 +1803,8 @@ static void ui_task(void *arg)
                     (event.status == HISU_UI_THINKING && s_status.status != HISU_UI_THINKING))
                     s_expression = HISU_FACE_AUTO;
                 s_status.status = event.status;
+                free(s_music_next_text); s_music_next_text=NULL;
+                s_status.music_ticket=event.music_ticket;
                 s_status_shown_ms = esp_timer_get_time() / 1000;
                 memcpy(s_status.text, event.text, sizeof(s_status.text));
                 if (event.status==HISU_UI_REMINDER) s_model.page=UI_IDLE;
@@ -1767,20 +1909,45 @@ esp_err_t hisu_ui_start(void)
     return s_startup_result;
 }
 
-esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle)
+static esp_err_t post_music_text(hisu_ui_status_t status, uint32_t ticket, const char *subtitle, const char *next)
 {
+    bool lyric=next!=NULL;
     if (!s_events || !s_startup || !(xEventGroupGetBits(s_startup) & 1) || s_startup_result != ESP_OK) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (status < HISU_UI_IDLE || status > HISU_UI_SLEEP || !hisu_ui_valid_utf8(subtitle, 255)) {
+    if (status < HISU_UI_IDLE || status > HISU_UI_SLEEP || !hisu_ui_valid_utf8(subtitle, 255) ||
+        (lyric && !hisu_ui_valid_utf8(next,255))) {
         return ESP_ERR_INVALID_ARG;
     }
     if (status==HISU_UI_SLEEP) { atomic_store(&s_sleep_requested,true); return ESP_OK; }
-    status_event_t event = {.kind = UI_EVENT_STATUS, .status = status};
+    status_event_t event = {.kind = lyric ? UI_EVENT_MUSIC_LYRIC : UI_EVENT_STATUS,
+        .status = status, .music_ticket = ticket};
     memcpy(event.text, subtitle, strlen(subtitle) + 1);
-    atomic_store(&s_sleep_requested,false);
-    if (xQueueSend(s_events, &event, 0)!=pdTRUE) return ESP_ERR_TIMEOUT;
+    if (lyric) {
+        event.music_next=heap_caps_malloc(strlen(next)+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if (!event.music_next) return ESP_ERR_NO_MEM;
+        strcpy(event.music_next,next);
+    }
+    if (!lyric) atomic_store(&s_sleep_requested,false);
+    if (xQueueSend(s_events, &event, 0)!=pdTRUE) { free(event.music_next); return ESP_ERR_TIMEOUT; }
     return ESP_OK;
+}
+
+esp_err_t hisu_ui_post_status(hisu_ui_status_t status, const char *subtitle)
+{
+    return post_music_text(status,0,subtitle,NULL);
+}
+
+esp_err_t hisu_ui_post_music(hisu_ui_status_t status, uint32_t ticket, const char *text)
+{
+    if (!ticket || (status!=HISU_UI_MUSIC && status!=HISU_UI_MUSIC_LOADING)) return ESP_ERR_INVALID_ARG;
+    return post_music_text(status,ticket,text,NULL);
+}
+
+esp_err_t hisu_ui_post_music_lyric(uint32_t ticket, const char *text, const char *next)
+{
+    if (!ticket || !next) return ESP_ERR_INVALID_ARG;
+    return post_music_text(HISU_UI_MUSIC,ticket,text,next);
 }
 
 esp_err_t hisu_ui_post_flashlight(bool enabled)

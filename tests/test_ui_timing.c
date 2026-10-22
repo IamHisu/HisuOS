@@ -5,19 +5,20 @@
 int main(void)
 {
     bool latched=false;
-    assert(hisu_ui_audio_boot(&latched,false,true)==0);
-    assert(hisu_ui_audio_boot(&latched,true,true)==1 && latched);
-    assert(hisu_ui_audio_boot(&latched,true,true)==-1);
-    assert(hisu_ui_audio_boot(&latched,true,false)==-1); /* View changed before release. */
-    assert(hisu_ui_audio_boot(&latched,false,false)==-1 && !latched);
-    assert(hisu_ui_audio_boot(&latched,true,false)==0); /* Idle double-click unchanged. */
+    assert(hisu_ui_audio_release(&latched,false,true)==0);
+    assert(hisu_ui_audio_release(&latched,true,true)==-1 && latched);
+    assert(hisu_ui_audio_release(&latched,true,true)==-1);
+    assert(hisu_ui_audio_release(&latched,false,true)==1 && !latched);
+    assert(hisu_ui_audio_release(&latched,false,true)==0);
+    assert(hisu_ui_audio_release(&latched,true,true)==-1);
+    assert(hisu_ui_audio_release(&latched,false,false)==-1 && !latched);
     hisu_ui_boot_click_t click={0};
     assert(hisu_ui_boot_click(&click,true,false,true,false,1000)==HISU_BOOT_CLICK_NONE);
     assert(hisu_ui_boot_click(&click,false,false,true,false,1350)==HISU_BOOT_CLICK_NONE);
     assert(hisu_ui_boot_click(&click,true,false,true,false,1350)==HISU_BOOT_CLICK_DOUBLE);
     assert(hisu_ui_boot_click(&click,false,false,true,false,1800)==HISU_BOOT_CLICK_NONE);
     assert(hisu_ui_boot_click(&click,true,false,true,false,2000)==HISU_BOOT_CLICK_NONE);
-    assert(hisu_ui_boot_click(&click,false,false,true,false,2351)==HISU_BOOT_CLICK_SINGLE);
+    assert(hisu_ui_boot_click(&click,false,false,true,false,2451)==HISU_BOOT_CLICK_SINGLE);
     (void)hisu_ui_boot_click(&click,true,false,true,true,3000);
     assert(hisu_ui_boot_click(&click,false,false,true,false,3400)==HISU_BOOT_CLICK_NONE);
     (void)hisu_ui_boot_click(&click,true,false,true,true,4000);
@@ -29,6 +30,24 @@ int main(void)
     (void)hisu_ui_boot_click(&click,true,false,true,false,6000);
     assert(hisu_ui_boot_click(&click,false,false,false,false,6200)==HISU_BOOT_CLICK_NONE);
     assert(!click.pending); /* New voice state/menu/key cancels delayed menu entry. */
+    click=(hisu_ui_boot_click_t){0};
+    assert(hisu_ui_boot_click(&click,true,false,true,false,7000)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,false,true,true,false,7400)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,false,true,true,false,7500)==HISU_BOOT_CLICK_NONE);
+    assert(hisu_ui_boot_click(&click,true,false,true,false,7600)==HISU_BOOT_CLICK_DOUBLE);
+    assert(!click.pending && !click.second_pressed); /* Second press began on time; release can be later. */
+    assert(hisu_ui_boot_click(&click,false,false,true,false,8000)==HISU_BOOT_CLICK_NONE);
+    (void)hisu_ui_boot_click(&click,true,false,true,false,8100);
+    (void)hisu_ui_boot_click(&click,false,true,true,false,8400);
+    assert(hisu_ui_boot_click(&click,true,false,true,false,8600)==HISU_BOOT_CLICK_DOUBLE);
+    (void)hisu_ui_boot_click(&click,true,false,true,false,9000);
+    (void)hisu_ui_boot_click(&click,false,true,true,false,9300);
+    assert(hisu_ui_boot_click(&click,true,false,true,false,10100)==HISU_BOOT_CLICK_NONE);
+    assert(!click.pending); /* Holding the second press is not a double click. */
+    (void)hisu_ui_boot_click(&click,true,false,true,false,11000);
+    (void)hisu_ui_boot_click(&click,false,true,true,false,11300);
+    (void)hisu_ui_boot_click(&click,false,true,false,false,11350);
+    assert(!click.pending && !click.second_pressed);
     for (int brightness = 0; brightness <= 100; ++brightness) {
         assert(hisu_ui_power_brightness(false, brightness) == brightness);
         assert(hisu_ui_power_brightness(true, brightness) == (brightness > 10 ? 10 : brightness));

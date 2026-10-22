@@ -46,6 +46,7 @@ class ProtocolTests(unittest.TestCase):
         _, events = chat.Protocol().feed(
             b"I (1) HISU_STATE: processing\nI (2) HISU_STATE: waiting\nI (3) HISU_STATE: unexpected\n")
         self.assertEqual(events,[chat.Event("state","processing"),chat.Event("state","waiting")])
+        self.assertEqual(chat.parse_line("I (4) HISU_STATE: validating"),chat.Event("state","validating"))
 
     def test_ansi_crlf_input_ack_and_rejection(self):
         _, events = chat.Protocol().feed(
@@ -299,6 +300,19 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(self.app.typing)
         self.assertEqual(self.app.typing_label.cget("text")," ")
         self.assertEqual(self.app.history.get("1.0","end-1c"),"Hi Su\nRồi nè.")
+
+    def test_noise_validation_does_not_show_typing(self):
+        self.app.handle(chat.Event("state","validating"))
+        self.app.handle(chat.Event("heard","background conversation",(1,2)))
+        self.app.animate_typing(time.monotonic())
+        self.assertFalse(self.app.typing)
+        self.assertEqual(self.app.typing_label.cget("text")," ")
+        self.app.handle(chat.Event("state","waiting"))
+        self.assertFalse(self.app.typing)
+        self.app.handle(chat.Event("input","Chiều nay có mưa không?"))
+        self.assertTrue(self.app.typing)
+        self.app.handle(chat.Event("state","processing"))
+        self.assertTrue(self.app.typing)
 
     def test_typing_old_firmware_timeout_and_disconnect(self):
         self.app.handle(chat.Event("input","test"))

@@ -40,6 +40,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Voice test linking failed.' }
 & $exe
 if ($LASTEXITCODE -ne 0) { throw 'Voice tests failed.' }
 $stubs = Join-Path $out 'stubs'
+$cryptoStubs = Join-Path $out 'crypto-stubs'
+New-Item -ItemType Directory -Force -Path $cryptoStubs | Out-Null
+foreach ($header in @('includes.h','common.h','crypto.h')) {
+    Set-Content -LiteralPath (Join-Path $cryptoStubs $header) -Encoding ascii -Value "#pragma once`n#define CRYPTO_H`n#include <stdint.h>`n#include <stddef.h>`ntypedef uint8_t u8;`ntypedef uint32_t u32;"
+}
+$idf = if ($env:IDF_PATH) { $env:IDF_PATH } else { 'C:\esp\v5.5.5\esp-idf' }
+& $compiler.FullName /nologo /c /std:c11 /MT /GS- /W3 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$cryptoStubs" "/Fo$out\rc4.obj" (Join-Path $idf 'components\wpa_supplicant\src\crypto\rc4.c')
+if ($LASTEXITCODE -ne 0) { throw 'SDK lyric crypto dependency compilation failed.' }
 foreach ($directory in @('', 'driver', 'freertos', 'mbedtls', 'lwip')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $stubs $directory) | Out-Null
 }
@@ -47,13 +55,13 @@ foreach ($directory in @('', 'driver', 'freertos', 'mbedtls', 'lwip')) {
 foreach ($header in @('esp_err.h', 'esp_app_desc.h', 'esp_system.h', 'esp_websocket_client.h', 'esp_crt_bundle.h', 'esp_heap_caps.h',
     'esp_transport_ssl.h', 'esp_transport_ws.h', 'lwip/sockets.h', 'lwip/tcp.h',
     'esp_timer.h', 'esp_log.h', 'driver/spi_master.h', 'driver/i2s_std.h', 'freertos/FreeRTOS.h',
-    'freertos/task.h', 'freertos/queue.h', 'mbedtls/base64.h')) {
+    'freertos/task.h', 'freertos/queue.h', 'freertos/idf_additions.h', 'mbedtls/base64.h')) {
     Set-Content -LiteralPath (Join-Path $stubs $header) -Value '#include "live_transport_mock.h"' -Encoding ascii
 }
 & $compiler.FullName /nologo /c /std:c11 /MT /utf-8 /GS- /W3 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$stubs" "/I$root\tests" "/I$root\components\hisu_media\include" "/I$root\components\hisu_network\include" "/I$root\components\hisu_settings\include" "/I$root\components\hisu_voice\src" "/I$root\boards\zhengchen_154" "/I$root\managed_components\espressif__cjson\cJSON" "/Fo$out\" (Join-Path $root 'tests\test_live_transport.c') (Join-Path $root 'components\hisu_voice\src\hisu_voice_live_message.c') (Join-Path $root 'components\hisu_voice\src\hisu_voice_music_protocol.c')
 if ($LASTEXITCODE -ne 0) { throw 'Live transport host compilation failed.' }
 $liveExe = Join-Path $out 'live-transport-test.exe'
-& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$liveExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_live_transport.obj') (Join-Path $out 'hisu_voice_live_message.obj') (Join-Path $out 'hisu_voice_music_protocol.obj') (Join-Path $out 'hisu_voice_live_turn.obj') (Join-Path $out 'cJSON.obj')
+& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$liveExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_live_transport.obj') (Join-Path $out 'hisu_voice_live_message.obj') (Join-Path $out 'hisu_voice_music_protocol.obj') (Join-Path $out 'hisu_voice_live_turn.obj') (Join-Path $out 'cJSON.obj') (Join-Path $out 'rc4.obj')
 if ($LASTEXITCODE -ne 0) { throw 'Live transport host linking failed.' }
 & $liveExe
 if ($LASTEXITCODE -ne 0) { throw 'Live transport host tests failed.' }
@@ -68,7 +76,7 @@ foreach ($header in @('esp_err.h','esp_http_client.h','esp_crt_bundle.h','esp_he
 & $compiler.FullName /nologo /c /std:c11 /MT /utf-8 /GS- /W3 /wd4505 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$musicStubs" "/I$root\tests" "/I$root\components\hisu_voice\src" "/I$root\managed_components\espressif__cjson\cJSON" "/Fo$out\" (Join-Path $root 'tests\test_music.c') (Join-Path $root 'components\hisu_voice\src\hisu_voice_music_protocol.c')
 if ($LASTEXITCODE -ne 0) { throw 'Music host compilation failed.' }
 $musicExe = Join-Path $out 'music-test.exe'
-& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$musicExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_music.obj') (Join-Path $out 'hisu_voice_music_protocol.obj') (Join-Path $out 'cJSON.obj')
+& (Join-Path $compiler.DirectoryName 'link.exe') /nologo /subsystem:console "/out:$musicExe" "/LIBPATH:$msvc\lib\x64" "/LIBPATH:$sdkLib\ucrt\x64" "/LIBPATH:$sdkLib\um\x64" (Join-Path $out 'test_music.obj') (Join-Path $out 'hisu_voice_music_protocol.obj') (Join-Path $out 'cJSON.obj') (Join-Path $out 'rc4.obj')
 if ($LASTEXITCODE -ne 0) { throw 'Music host linking failed.' }
 & $musicExe
 if ($LASTEXITCODE -ne 0) { throw 'Music host tests failed.' }

@@ -17,7 +17,19 @@ static bool text(const cJSON *n,size_t max) {
 }
 cJSON *lookup_error(const char *code) {
     cJSON *o=cJSON_CreateObject();
-    cJSON_AddBoolToObject(o,"ok",false); cJSON_AddStringToObject(o,"error",code); return o;
+    const char *message="Hi Su chưa lấy được thông tin lúc này.";
+    if (!strcmp(code,"place_required")) message="Bạn muốn xem thời tiết ở khu vực nào?";
+    else if (!strcmp(code,"place_not_found")) message="Hi Su chưa tìm được địa điểm đó. Bạn cho thêm tên thành phố hoặc tỉnh nha.";
+    else if (!strcmp(code,"place_ambiguous")) message="Có nhiều nơi trùng tên. Bạn chọn giúp Hi Su địa điểm trong danh sách nha.";
+    else if (!strcmp(code,"clock_unsynced")) message="Đồng hồ chưa cập nhật nên Hi Su chưa kiểm tra được thông tin đúng ngày.";
+    else if (!strcmp(code,"stale_data")) message="Dữ liệu đang có đã cũ, Hi Su chưa có số liệu mới để trả lời chính xác.";
+    else if (!strcmp(code,"rate_limited")) message="Hi Su vừa tra cứu xong, chờ một chút rồi thử lại nha.";
+    if (!o || !cJSON_AddBoolToObject(o,"ok",false) || !cJSON_AddStringToObject(o,"error",code) ||
+        !cJSON_AddStringToObject(o,"message",message) ||
+        !cJSON_AddStringToObject(o,"speech_hint","Chỉ diễn đạt message bằng tiếng Việt tự nhiên. Không đọc JSON, tên trường, mã lỗi hoặc nguồn. Không gọi lại cùng yêu cầu đang lỗi trong lượt này. Không bịa kết quả.")) {
+        cJSON_Delete(o); return NULL;
+    }
+    return o;
 }
 bool lookup_query_parse(const cJSON *args,lookup_query_t *q) {
     memset(q,0,sizeof(*q));
@@ -67,7 +79,7 @@ cJSON *lookup_gold(const cJSON *root,const lookup_query_t *q,int64_t now) {
     cJSON *o=data_result("https://www.vang.today/vi/",now),*list=cJSON_AddArrayToObject(o,"prices");
     cJSON_AddNumberToObject(o,"updated_at_utc",stamp->valuedouble);
     cJSON_AddBoolToObject(o,"stale",now-stamp->valuedouble>21600);
-    cJSON_AddStringToObject(o,"speech_hint","Giá tham khảo từ Vang.today, không phải báo giá giao dịch. Nói rõ thời điểm cập nhật, mua vào/bán ra và đơn vị; stale=true thì nói là dữ liệu cũ, không gọi là giá hiện tại. Không dự đoán giá.");
+    cJSON_AddStringToObject(o,"speech_hint","Giá tham khảo, không phải báo giá giao dịch. Nói rõ thời điểm cập nhật, mua vào/bán ra và đơn vị; stale=true thì nói là dữ liệu cũ, không gọi là giá hiện tại. Không dự đoán giá. Không nhắc tên nguồn trừ khi được hỏi.");
     for (unsigned i=0;i<sizeof(types)/sizeof(types[0]);++i) {
         bool summary=!strcmp(q->type,"summary");
         if (summary ? (i!=0 && i!=1 && i!=7) : (strcmp(q->type,"all") && strcmp(q->type,types[i].code))) continue;
@@ -163,7 +175,7 @@ cJSON *lookup_weather(const cJSON *root,const cJSON *location,const lookup_query
         cJSON_AddNumberToObject(row,"rain_probability_percent",p->valuedouble); cJSON_AddNumberToObject(row,"precipitation_mm",r->valuedouble);
         if (cJSON_GetArraySize(row)!=4) { cJSON_Delete(o); return NULL; }
     }
-    cJSON_AddStringToObject(o,"speech_hint","Dự báo Open-Meteo theo giờ Việt Nam, không phải chắc chắn. Chỉ tóm tắt khung giờ người dùng hỏi; không dùng thời tiết hiện tại thay dự báo buổi chiều/ngày mai. Nói xác suất mưa, không khẳng định chắc chắn có hoặc không mưa.");
+    cJSON_AddStringToObject(o,"speech_hint","Dự báo theo giờ Việt Nam, không phải chắc chắn. Chỉ tóm tắt khung giờ người dùng hỏi; không dùng thời tiết hiện tại thay dự báo buổi chiều/ngày mai. Nói xác suất mưa, không khẳng định chắc chắn có hoặc không mưa. Không nhắc tên nguồn trừ khi được hỏi.");
     if (cJSON_GetArraySize(o)!=(text(region,96) ? 12 : 11) || cJSON_GetArraySize(rows)!=24) { cJSON_Delete(o); return NULL; }
     return o;
 }

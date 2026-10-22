@@ -3,28 +3,38 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef struct { bool pending, woke_screen; int64_t released_ms; } hisu_ui_boot_click_t;
+typedef struct { bool pending, woke_screen, second_pressed; int64_t released_ms, second_ms; } hisu_ui_boot_click_t;
 enum { HISU_BOOT_CLICK_NONE, HISU_BOOT_CLICK_SINGLE, HISU_BOOT_CLICK_DOUBLE };
 
-/* Active audio acts on press; swallow its later release/hold even after a view change. */
-static inline int hisu_ui_audio_boot(bool *latched,bool pressed,bool enabled)
+/* Active audio uses release edges; a held button cannot become two clicks.
+ * Swallow the release even when the screen changes before the user lets go. */
+static inline int hisu_ui_audio_release(bool *latched,bool pressed,bool enabled)
 {
-    if (*latched) { if (!pressed) *latched=false; return -1; }
-    if (pressed && enabled) { *latched=true; return 1; }
+    if (*latched) {
+        if (!pressed) { *latched=false; return enabled ? 1 : -1; }
+        return -1;
+    }
+    if (pressed && enabled) { *latched=true; return -1; }
     return 0;
 }
 
-/* Delay only idle single clicks; other buttons cancel them, never replay them. */
+/* Resolve a single only after the double-click window; other buttons cancel it. */
 static inline int hisu_ui_boot_click(hisu_ui_boot_click_t *s, bool released,
     bool pressed, bool enabled, bool waking, int64_t now)
 {
-    if (!enabled) { s->pending=false; return HISU_BOOT_CLICK_NONE; }
+    if (!enabled) { s->pending=s->second_pressed=false; return HISU_BOOT_CLICK_NONE; }
     if (released) {
-        if (s->pending && now>=s->released_ms && now-s->released_ms<=350) {
-            s->pending=false; return HISU_BOOT_CLICK_DOUBLE;
+        if (s->pending && now>=s->released_ms &&
+            ((s->second_pressed && now>=s->second_ms && now-s->second_ms<800) ||
+             (!s->second_pressed && now-s->released_ms<=450))) {
+            s->pending=s->second_pressed=false; return HISU_BOOT_CLICK_DOUBLE;
         }
-        s->pending=true; s->woke_screen=waking; s->released_ms=now;
-    } else if (s->pending && !pressed && now>=s->released_ms && now-s->released_ms>350) {
+        if (s->second_pressed) { s->pending=s->second_pressed=false; return HISU_BOOT_CLICK_NONE; }
+        s->pending=true; s->second_pressed=false; s->woke_screen=waking; s->released_ms=now;
+    } else if (s->pending && pressed && !s->second_pressed &&
+               now>=s->released_ms && now-s->released_ms<=450) {
+        s->second_pressed=true; s->second_ms=now;
+    } else if (s->pending && !pressed && !s->second_pressed && now>=s->released_ms && now-s->released_ms>450) {
         s->pending=false;
         return s->woke_screen ? HISU_BOOT_CLICK_NONE : HISU_BOOT_CLICK_SINGLE;
     }

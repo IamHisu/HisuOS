@@ -21,6 +21,13 @@ typedef int StaticQueue_t;
 #define portEXIT_CRITICAL(mux) ((void)(mux))
 #define ESP_LOGI(...) ((void)0)
 enum { MALLOC_CAP_SPIRAM = 1, MALLOC_CAP_8BIT = 2, MALLOC_CAP_INTERNAL = 4, MALLOC_CAP_DMA = 8 };
+static bool mock_decode_task_failure;
+static int xTaskCreateWithCaps(void (*task)(void *),const char *name,int stack,void *arg,int priority,void *handle,int caps) {
+    assert(stack==8192 && caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+    if (mock_decode_task_failure) return 0;
+    return xTaskCreate(task,name,stack,arg,priority,handle);
+}
+static void vTaskDeleteWithCaps(TaskHandle_t task) { vTaskDelete(task); }
 static int mock_live_alloc_left = -1;
 static bool mock_live_allocate(void) {
     if (mock_live_alloc_left==0) return false;
@@ -33,7 +40,8 @@ static size_t heap_caps_get_free_size(int caps) { return 1024 * 1024; }
 static size_t heap_caps_get_minimum_free_size(int caps) { return 512 * 1024; }
 static size_t heap_caps_get_largest_free_block(int caps) { return 256 * 1024; }
 static QueueHandle_t xQueueCreateStatic(unsigned count, size_t size, uint8_t *storage, StaticQueue_t *control) { return (void *)1; }
-static unsigned uxQueueMessagesWaiting(QueueHandle_t queue) { return 0; }
+static unsigned mock_queue_messages;
+static unsigned uxQueueMessagesWaiting(QueueHandle_t queue) { return mock_queue_messages; }
 static int (*mock_queue_peek)(QueueHandle_t queue, void *data);
 static int xQueuePeek(QueueHandle_t queue, void *data, int timeout) { return mock_queue_peek ? mock_queue_peek(queue, data) : 0; }
 static void (*mock_delay_hook)(void);

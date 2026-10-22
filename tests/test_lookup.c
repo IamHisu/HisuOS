@@ -101,6 +101,7 @@ static const char *news_wire;
 static bool news_missing;
 static esp_http_client_handle_t lookup_http_init(const esp_http_client_config_t *config) {
     assert(config->crt_bundle_attach && config->is_async && config->timeout_ms==1000 && config->disable_auto_redirect);
+    assert(config->buffer_size==4096 && config->buffer_size_tx==4096);
     assert(!strncmp(config->url,"https://www.vang.today/api/prices",31) ||
         !strncmp(config->url,"https://news.google.com/rss/search?",sizeof("https://news.google.com/rss/search?")-1) ||
         !strncmp(config->url,"https://geocoding-api.open-meteo.com/v1/search?",44) ||
@@ -222,6 +223,20 @@ static void lookup_cache_failure_test(void) {
     assert(lookup_cache[0].json==saved && strstr(lookup_complete_log,"response_bytes=0"));
     voice_lookup_free(failed); reset_lookup();
 }
+static void lookup_failure_cooldown_test(void) {
+    reset_lookup(); mock_mode=7;
+    const char *args="{\"topic\":\"gold\",\"gold_type\":\"SJL1L10\"}";
+    cJSON *o=run_lookup(args);
+    assert(cJSON_IsString(field(o,"message")) && cJSON_IsString(field(o,"speech_hint")));
+    assert_error(o,"source_unavailable");
+    unsigned before=lookup_http_started;
+    o=run_lookup(args);
+    assert(cJSON_IsTrue(field(o,"cached")) && lookup_http_started==before);
+    assert_error(o,"source_unavailable");
+    mock_now+=15000001; mock_mode=0;
+    o=run_lookup(args); assert(cJSON_IsTrue(field(o,"ok")) && lookup_http_started==before+1);
+    cJSON_Delete(o); reset_lookup();
+}
 static void private_json_tests(void) {
     size_t baseline=lookup_live_bytes;
     mock_alloc_budget=0;
@@ -259,7 +274,10 @@ static void private_json_tests(void) {
     }
     assert(successes);
     job.response=NULL;
-    char *body=voice_lookup_encode_result(&job); assert(body && strstr(body,"insufficient_memory")); free(body);
+    char *body=voice_lookup_encode_result(&job); assert(body && !strstr(body,"insufficient_memory") && strstr(body,"message")); free(body);
+    job.response="{\"ok\":false,\"error\":\"source_unavailable\",\"message\":\"Unavailable\",\"choices\":[{\"location_id\":1}]}";
+    body=voice_lookup_encode_result(&job);
+    assert(body && !strstr(body,"source_unavailable") && strstr(body,"Unavailable") && strstr(body,"location_id")); free(body);
     assert(!voice_lookup_encode_result(NULL));
     memset(job.id,'x',sizeof(job.id)); assert(!voice_lookup_encode_result(&job));
     memset(job.id,0,sizeof(job.id));
@@ -320,17 +338,28 @@ static void news_tests(void)
     reset_lookup();
 }
 int main(int argc,char **argv) {
-    if (argc==4 && !strcmp(argv[1],"--news")) {
+    if (argc==4 && (!strcmp(argv[1],"--news") || !strcmp(argv[1],"--gold") || !strcmp(argv[1],"--weather"))) {
         FILE *f=fopen(argv[2],"rb"); assert(f);
         char *body=malloc(HISU_NEWS_BODY_LIMIT+1); assert(body);
         size_t bytes=fread(body,1,HISU_NEWS_BODY_LIMIT+1,f); fclose(f); assert(bytes<=HISU_NEWS_BODY_LIMIT);
-        cJSON *result=lookup_news(body,bytes,_strtoi64(argv[3],NULL,10));
+        body[bytes]=0;
+        int64_t now=_strtoi64(argv[3],NULL,10);
+        cJSON *result;
+        if (!strcmp(argv[1],"--news")) result=lookup_news(body,bytes,now);
+        else {
+            cJSON *root=cJSON_Parse(body); assert(root);
+            lookup_query_t q={.weather=!strcmp(argv[1],"--weather")}; strcpy(q.type,"summary");
+            cJSON *place=cJSON_CreateObject(); assert(place && cJSON_AddStringToObject(place,"name","Probe location"));
+            result=q.weather ? lookup_weather(root,place,&q,now) : lookup_gold(root,&q,now);
+            cJSON_Delete(root); cJSON_Delete(place);
+        }
         assert(cJSON_IsTrue(field(result,"ok")));
-        printf("Live RSS parsed: %d recent headlines, scope=%s\n",cJSON_GetArraySize(field(result,"items")),field(result,"scope")->valuestring);
+        printf("Live provider parsed successfully: %s\n",argv[1]);
         cJSON_Delete(result); free(body); return 0;
     }
     lookup_psram_tests();
     lookup_cache_failure_test();
+    lookup_failure_cooldown_test();
     news_tests();
     make_forecast(); reset_lookup();
     private_json_tests();

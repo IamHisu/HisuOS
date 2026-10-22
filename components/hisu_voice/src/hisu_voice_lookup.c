@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <errno.h>
 
 #define LOOKUP_BODY_LIMIT 16384U
 #define LOOKUP_JSON_LIMIT 32768U
@@ -60,7 +61,17 @@ char *voice_lookup_encode_result(const voice_lookup_result_t *job) {
     cJSON *root=cJSON_CreateObject(),*tool=root ? cJSON_AddObjectToObject(root,"toolResponse") : NULL;
     cJSON *list=tool ? cJSON_AddArrayToObject(tool,"functionResponses") : NULL;
     cJSON *row=list ? cJSON_CreateObject() : NULL;
-    cJSON *data=row ? cJSON_CreateRaw(response) : NULL;
+    /* Keep diagnostic codes in monitor/cache, not in the model's spoken answer.
+     * Successful (potentially large) weather payloads remain zero-tree raw JSON. */
+    bool failure=!strncmp(response,"{\"ok\":false",11);
+    cJSON *data=row ? (failure ? cJSON_Parse(response) : cJSON_CreateRaw(response)) : NULL;
+    if (failure && data) {
+        cJSON_DeleteItemFromObjectCaseSensitive(data,"error");
+        if (!cJSON_GetObjectItemCaseSensitive(data,"message") &&
+            !cJSON_AddStringToObject(data,"message","Hi Su chưa lấy được thông tin lúc này.")) {
+            cJSON_Delete(data); data=NULL;
+        }
+    }
     bool built=row && data && cJSON_AddItemToArray(list,row);
     if (!built) cJSON_Delete(row);
     else {
@@ -114,22 +125,32 @@ static bool lookup_download(lookup_job_t *j,bool rss) {
     if (!lookup_current(j) || heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)<6144 ||
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)<2048) return false;
     j->used=0; j->overflow=false; j->body[0]=0;
+    /* Larger than ALWAYSINTERNAL: HTTP buffers can live in PSRAM, leaving socket/DMA headroom. */
     esp_http_client_config_t config={.url=j->url,.timeout_ms=1000,.is_async=true,.disable_auto_redirect=true,
-        .crt_bundle_attach=esp_crt_bundle_attach,.event_handler=lookup_receive,.user_data=j,.buffer_size=1024,.buffer_size_tx=1024};
+        .crt_bundle_attach=esp_crt_bundle_attach,.event_handler=lookup_receive,.user_data=j,.buffer_size=4096,.buffer_size_tx=4096};
     esp_http_client_handle_t http=esp_http_client_init(&config);
     if (!http) return false;
     esp_err_t err=esp_http_client_set_header(http,"Accept-Encoding","identity");
-    int64_t request_deadline=rss ? esp_timer_get_time()+7000000 : j->deadline;
+    int64_t started=esp_timer_get_time();
+    int64_t request_deadline=rss ? started+7000000 : j->deadline;
+    bool timed_out=false;
     if (err==ESP_OK) err=esp_http_client_set_header(http,"Accept",rss ? "application/rss+xml, application/xml, text/xml" : "application/json");
     if (err==ESP_OK) do {
-        if (!lookup_current(j) || esp_timer_get_time()>=request_deadline) { err=ESP_FAIL; break; }
+        if (!lookup_current(j) || esp_timer_get_time()>=request_deadline) {
+            timed_out=esp_timer_get_time()>=request_deadline || esp_timer_get_time()>=j->deadline;
+            err=ESP_FAIL; break;
+        }
+        errno=0;
         err=esp_http_client_perform(http);
         if (err==ESP_ERR_HTTP_EAGAIN) vTaskDelay(pdMS_TO_TICKS(20));
     } while (err==ESP_ERR_HTTP_EAGAIN);
     int status=esp_http_client_get_status_code(http);
+    int socket_error=errno;
     bool ok=err==ESP_OK && status==200 && !j->overflow && esp_http_client_is_complete_data_received(http);
     esp_http_client_cleanup(http);
-    ESP_LOGI("LOOKUP","HTTP=%d err=%d bytes=%u stack=%u",status,(int)err,(unsigned)j->used,(unsigned)uxTaskGetStackHighWaterMark(NULL));
+    ESP_LOGI("LOOKUP","HTTP=%d err=%d bytes=%u elapsed_ms=%u timeout=%d socket_errno=%d overflow=%d stack=%u",
+        status,(int)err,(unsigned)j->used,(unsigned)((esp_timer_get_time()-started)/1000),timed_out,
+        socket_error,j->overflow,(unsigned)uxTaskGetStackHighWaterMark(NULL));
     return ok && lookup_current(j);
 }
 static cJSON *lookup_fetch(lookup_job_t *j) {
@@ -239,12 +260,20 @@ static cJSON *lookup_run(lookup_job_t *j) {
         cJSON_Delete(geo);
         if (!result) result=lookup_error("source_unavailable");
     }
-    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"ok")) && lookup_current(j)) {
+    const cJSON *error=cJSON_GetObjectItemCaseSensitive(result,"error");
+    bool unavailable=cJSON_IsString(error) &&
+        (!strcmp(error->valuestring,"source_unavailable") || !strcmp(error->valuestring,"news_unavailable"));
+    /* Cache short failures too: the model must not repeat a 12-second request in one turn.
+     * A deadline is not cancellation; never cache an interrupted or disconnected request. */
+    hisu_network_link_t link; hisu_network_get_link(&link);
+    bool valid=j->current(j->result.epoch,j->result.generation) && link.connected && !link.setup_enabled &&
+        link.internet==HISU_INTERNET_ONLINE;
+    if ((unavailable && valid) || (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"ok")) && lookup_current(j))) {
         char *json=lookup_print(result);
         if (json) {
             free(lookup_cache[slot].json); lookup_cache[slot].json=json;
             lookup_cache[slot].query=j->query;
-            int64_t ttl=j->query.news ? (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"partial")) ? 120000000 : 900000000) : slot ? 600000000 : 300000000;
+            int64_t ttl=unavailable ? 15000000 : j->query.news ? (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"partial")) ? 120000000 : 900000000) : slot ? 600000000 : 300000000;
             lookup_cache[slot].expires=esp_timer_get_time()+ttl;
             lookup_cache[slot].local_day=((int64_t)time(NULL)+25200)/86400;
             ESP_LOGI("LOOKUP","Cache stored: slot=%u json_bytes=%u memory=PSRAM",slot,(unsigned)strlen(json));
@@ -256,6 +285,8 @@ static void lookup_worker(void *arg) {
     lookup_job_t *j=arg;
     lookup_log_memory(j,"worker_start");
     cJSON *data=lookup_run(j);
+    const cJSON *error=cJSON_GetObjectItemCaseSensitive(data,"error");
+    if (cJSON_IsString(error)) ESP_LOGI("LOOKUP","Result error=%s",error->valuestring);
     j->result.response=lookup_print(data); cJSON_Delete(data);
     free(j->body); j->body=NULL;
     lookup_log_memory(j,"worker_cleaned");

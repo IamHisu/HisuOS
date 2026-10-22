@@ -167,9 +167,12 @@ int main(void)
     assert(!voice_session_capture(&session, 100199));
     assert(voice_session_capture(&session, 100200));
     assert(voice_session_finish(&session, session.generation, 101000));
-    assert(session.deadline_ms == 161300);
-    assert(!voice_session_expire(&session, 161299));
-    assert(voice_session_expire(&session, 161300));
+    assert(session.ready_ms == 101150 && session.deadline_ms == 161150);
+    assert(!voice_session_capture(&session, 101149));
+    voice_session_t capture_boundary=session;
+    assert(voice_session_capture(&capture_boundary, 101150));
+    assert(!voice_session_expire(&session, 161149));
+    assert(voice_session_expire(&session, 161150));
     assert(session.state == VOICE_IDLE);
     voice_session_open(&session, 180000);
     assert(session.session_id != id);

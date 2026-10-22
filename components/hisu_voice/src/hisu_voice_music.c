@@ -1,11 +1,12 @@
 #include "hisu_voice_music.h"
+#include "hisu_voice_provider_json.h"
+#include "hisu_voice_music_id3.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_audio_simple_dec.h"
 #include "esp_mp3_dec.h"
-#include "mbedtls/md.h"
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
 #include "miniz.h"
 #include "freertos/FreeRTOS.h"
@@ -13,7 +14,6 @@
 #include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <time.h>
 #include <errno.h>
 
 #define JSON_LIMIT (64 * 1024)
@@ -43,6 +43,11 @@ bool hisu_music_cancel(void)
     portEXIT_CRITICAL(&s_music_mux);
     return busy;
 }
+bool hisu_music_busy(void)
+{
+    portENTER_CRITICAL(&s_music_mux); bool busy=s_busy; portEXIT_CRITICAL(&s_music_mux);
+    return busy;
+}
 void hisu_music_finish(uint32_t ticket)
 {
     portENTER_CRITICAL(&s_music_mux);
@@ -51,21 +56,22 @@ void hisu_music_finish(uint32_t ticket)
 }
 
 typedef struct {
-    char cookies[2048];
     char encoded_query[541];
     bool html, compressed, gzip_encoding;
     struct {
-        char canonical[160], hash[65], signed_data[192], signature[129], url[1024];
-        unsigned char digest[64];
+        char url[1024];
     } api;
     char *body;
     size_t used;
     bool overflow;
+    uint32_t ticket;
+    int timeout_ms;
 } request_t;
 
 static esp_err_t http_event(esp_http_client_event_t *event)
 {
     request_t *request = event->user_data;
+    if (request->ticket && !hisu_music_current(request->ticket)) return ESP_FAIL;
     if (event->event_id == HTTP_EVENT_ON_HEADER && event->header_key && event->header_value) {
         if (!strcasecmp(event->header_key,"Content-Encoding")) {
             request->compressed = strcasecmp(event->header_value,"identity") != 0;
@@ -73,14 +79,6 @@ static esp_err_t http_event(esp_http_client_event_t *event)
         }
         if (!strcasecmp(event->header_key,"Content-Type"))
             request->html = !strncasecmp(event->header_value,"text/html",9);
-    }
-    if (event->event_id == HTTP_EVENT_ON_HEADER && event->header_key && event->header_value &&
-        !strcasecmp(event->header_key,"Set-Cookie")) {
-        size_t n = strcspn(event->header_value,";"), used = strlen(request->cookies);
-        if (used + n + 3 < sizeof(request->cookies)) {
-            if (used) { memcpy(request->cookies+used,"; ",2); used += 2; }
-            memcpy(request->cookies+used,event->header_value,n); request->cookies[used+n] = 0;
-        }
     }
     if (event->event_id == HTTP_EVENT_ON_DATA && request->body && event->data_len > 0) {
         if ((size_t)event->data_len > JSON_LIMIT - request->used) {
@@ -99,28 +97,9 @@ static esp_http_client_handle_t http_new(const char *url, int timeout_ms,
     esp_http_client_config_t cfg = {.url=url, .timeout_ms=timeout_ms,
         .crt_bundle_attach=esp_crt_bundle_attach, .disable_auto_redirect=true,
         .event_handler=handler, .user_data=user_data,
-        .buffer_size=2048, .buffer_size_tx=2048, .user_agent="HisuOS/0.1"};
+        /* Above ALWAYSINTERNAL=2048 so IDF malloc prefers PSRAM for both buffers. */
+        .buffer_size=4096, .buffer_size_tx=4096, .user_agent="HisuOS/0.1"};
     return esp_http_client_init(&cfg);
-}
-
-static esp_err_t cookies(request_t *request)
-{
-    esp_http_client_handle_t http = http_new("https://zingmp3.vn/",5000,http_event,request);
-    if (!http) return ESP_ERR_NO_MEM;
-    esp_err_t err = esp_http_client_open(http,0);
-    if (err == ESP_OK && esp_http_client_fetch_headers(http) < 0) err = ESP_FAIL;
-    int status = esp_http_client_get_status_code(http);
-    if (err == ESP_OK && status != 200) err = ESP_FAIL;
-    if (err != ESP_OK) ESP_LOGW("MUSIC","Session failed: err=%d HTTP=%d",(int)err,status);
-    esp_http_client_close(http); esp_http_client_cleanup(http);
-    return err;
-}
-
-static void hex(const unsigned char *bytes, size_t n, char *out)
-{
-    static const char digits[] = "0123456789abcdef";
-    for (size_t i=0;i<n;++i) { out[i*2]=digits[bytes[i]>>4]; out[i*2+1]=digits[bytes[i]&15]; }
-    out[n*2]=0;
 }
 
 static uint32_t little32(const unsigned char *p)
@@ -174,34 +153,18 @@ static bool gunzip_body(request_t *request)
 
 static cJSON *api(request_t *request, const char *path, const char *id, const char *query)
 {
-    /* Public web-client signing, not a user credential. Upstream can change this contract. */
-    static const char secret[] = "2aa2d1c561e809b267f3638c4a307aab";
-    time_t now = time(NULL);
-    if (now < 1700000000) { ESP_LOGW("MUSIC","Clock is not synchronized"); return NULL; }
-    /* Keep signing/URL scratch in the PSRAM request across the nested TLS call. */
-    if (query) {
-        /* The song-only endpoint signs its pagination and type, but not q. */
-        snprintf(request->api.canonical,sizeof(request->api.canonical),
-            "count=5ctime=%lldpage=1type=songversion=1.6.34",(long long)now);
-    } else {
-        snprintf(request->api.canonical,sizeof(request->api.canonical),"ctime=%lld%s%sversion=1.6.34",(long long)now,id ? "id=" : "",id ? id : "");
-    }
-    if (mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
-                   (const unsigned char *)request->api.canonical,strlen(request->api.canonical),request->api.digest)) return NULL;
-    hex(request->api.digest,32,request->api.hash);
-    snprintf(request->api.signed_data,sizeof(request->api.signed_data),"%s%s",path,request->api.hash);
-    if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA512),
-        (const unsigned char *)secret,strlen(secret),(const unsigned char *)request->api.signed_data,strlen(request->api.signed_data),request->api.digest)) return NULL;
-    hex(request->api.digest,64,request->api.signature);
-    int n = snprintf(request->api.url,sizeof(request->api.url),"https://zingmp3.vn%s?ctime=%lld&version=1.6.34&apiKey=88265e23d4284f25963e6eedac8fbfa3&sig=%s&%s=%s%s",
-        path,(long long)now,request->api.signature,id ? "id" : "q",id ? id : query,
-        query ? "&type=song&page=1&count=5" : "");
+    /* Anonymous NCT API; no account token, cookie, music key or request signing. */
+    int n=!strcmp(path,"/api/v2/song/lyric/detail") ? snprintf(request->api.url,sizeof(request->api.url),
+        "https://graph.nct.vn%s?songKey=%s",path,id) : query ? snprintf(request->api.url,sizeof(request->api.url),
+        "https://graph.nct.vn%s?keyword=%s&pageindex=1&pagesize=5&correct=true",path,query) :
+        snprintf(request->api.url,sizeof(request->api.url),"https://graph.nct.vn%s/%s",path,id);
     if (n < 0 || (size_t)n >= sizeof(request->api.url)) return NULL;
-    esp_http_client_handle_t http = http_new(request->api.url,5000,http_event,request);
+    esp_http_client_handle_t http = http_new(request->api.url,request->timeout_ms ? request->timeout_ms : 5000,http_event,request);
     if (!http) return NULL;
     request->used=0; request->overflow=false; request->body[0]=0;
     request->html=request->compressed=request->gzip_encoding=false;
-    esp_http_client_set_header(http,"Cookie",request->cookies);
+    esp_http_client_set_header(http,"x-os","android");
+    esp_http_client_set_header(http,"Content-Type","application/json");
     esp_http_client_set_header(http,"Accept","application/json");
     esp_http_client_set_header(http,"Accept-Encoding","identity");
     errno = 0;
@@ -235,14 +198,20 @@ static cJSON *api(request_t *request, const char *path, const char *id, const ch
         return NULL;
     }
     const char *parse_end = NULL;
-    cJSON *root = cJSON_ParseWithLengthOpts(request->body,request->used,&parse_end,false);
-    const cJSON *code = cJSON_GetObjectItemCaseSensitive(root,"err");
+    ESP_LOGI("MUSIC","JSON before parse: internal=%u min=%u largest=%u PSRAM=%u",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),(unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),(unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    cJSON *root = voice_provider_json_parse(request->body,request->used,&parse_end);
+    ESP_LOGI("MUSIC","JSON after parse: internal=%u min=%u largest=%u PSRAM=%u",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),(unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),(unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    const cJSON *code = cJSON_GetObjectItemCaseSensitive(root,"code");
     if (!root) {
         ESP_LOGW("MUSIC","%s JSON parse/allocation failed: bytes=%u offset=%u",
             path,(unsigned)request->used,(unsigned)(parse_end ? parse_end-request->body : 0));
     } else if (!cJSON_IsNumber(code)) {
         ESP_LOGW("MUSIC","%s invalid API envelope: bytes=%u",path,(unsigned)request->used);
-    } else if (code->valuedouble != 0) {
+    } else if (code->valuedouble != 0 || cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(root,"success"))) {
         ESP_LOGW("MUSIC","%s API error=%g bytes=%u",path,code->valuedouble,(unsigned)request->used);
     } else {
         ESP_LOGI("MUSIC","%s OK: bytes=%u",path,(unsigned)request->used);
@@ -258,10 +227,7 @@ static request_t *request_new(const char *query, esp_err_t *error)
         *error = ESP_ERR_INVALID_ARG; free(request); return NULL;
     }
     if (request) request->body = heap_caps_malloc(JSON_LIMIT+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if (request && request->body) {
-        *error = cookies(request);
-        if (*error == ESP_OK) return request;
-    }
+    if (request && request->body) { *error=ESP_OK; return request; }
     if (request) { free(request->body); free(request); }
     return NULL;
 }
@@ -272,11 +238,11 @@ esp_err_t hisu_music_search(const char *query, cJSON *results)
     esp_err_t error;
     request_t *request = request_new(query,&error);
     if (!request) return error;
-    cJSON *root = api(request,"/api/v2/search",NULL,request->encoded_query);
+    cJSON *root = api(request,"/api/v1/search/song",NULL,request->encoded_query);
     bool ok = hisu_music_parse_search(root,results);
     if (!ok) ESP_LOGW("MUSIC","Search unavailable or invalid response");
     else ESP_LOGI("MUSIC","Search results: %d",cJSON_GetArraySize(results));
-    cJSON_Delete(root); free(request->body); free(request);
+    voice_provider_json_delete(root); free(request->body); free(request);
     return ok ? ESP_OK : ESP_FAIL;
 }
 
@@ -285,6 +251,7 @@ esp_err_t hisu_music_queue(const char *id, hisu_music_track_t *track)
     if (!track || !hisu_music_valid_id(id)) return ESP_ERR_INVALID_ARG;
     memcpy(track->id,id,strlen(id)+1);
     track->title[0]=track->artist[0]=track->url[0]=0;
+    track->lyrics=NULL;
     portENTER_CRITICAL(&s_music_mux);
     track->ticket = ++s_ticket; s_busy = true;
     portEXIT_CRITICAL(&s_music_mux);
@@ -300,6 +267,17 @@ esp_err_t hisu_music_prepare(const char *id, hisu_music_track_t *track)
     return err;
 }
 
+esp_err_t hisu_music_repeat(uint32_t previous,const char *id,hisu_music_track_t *track)
+{
+    if (!track || !hisu_music_valid_id(id)) return ESP_ERR_INVALID_ARG;
+    memset(track,0,sizeof(*track)); strcpy(track->id,id);
+    portENTER_CRITICAL(&s_music_mux);
+    bool current=s_busy && previous==s_ticket;
+    if (current) { track->ticket=++s_ticket; s_busy=true; }
+    portEXIT_CRITICAL(&s_music_mux);
+    return current ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
 esp_err_t hisu_music_resolve(hisu_music_track_t *track)
 {
     if (!track || !hisu_music_valid_id(track->id)) return ESP_ERR_INVALID_ARG;
@@ -310,12 +288,65 @@ esp_err_t hisu_music_resolve(hisu_music_track_t *track)
     if (!hisu_music_current(track->ticket)) {
         free(request->body); free(request); return ESP_ERR_INVALID_STATE;
     }
-    cJSON *info = api(request,"/api/v2/song/get/info",track->id,NULL);
-    cJSON *stream = info && hisu_music_current(track->ticket) ? api(request,"/api/v2/song/get/streaming",track->id,NULL) : NULL;
-    bool ok = hisu_music_parse_track(info,stream,track) && hisu_music_current(track->ticket);
+    cJSON *info = api(request,"/api/v1/song/detail",track->id,NULL);
+    bool ok = hisu_music_parse_track(info,track) && hisu_music_current(track->ticket);
     if (!ok) ESP_LOGW("MUSIC","Song unavailable, restricted, or cancelled");
-    cJSON_Delete(info); cJSON_Delete(stream); free(request->body); free(request);
-    return ok ? ESP_OK : ESP_FAIL;
+    voice_provider_json_delete(info); free(request->body); free(request);
+    return !hisu_music_current(track->ticket) ? ESP_ERR_INVALID_STATE : ok ? ESP_OK : ESP_FAIL;
+}
+
+hisu_music_lyrics_t *hisu_music_load_lyrics(const hisu_music_track_t *track)
+{
+    if (!track || !hisu_music_valid_id(track->id) || !hisu_music_current(track->ticket)) return NULL;
+    esp_err_t error;
+    request_t *request=request_new(NULL,&error);
+    if (!request) return NULL;
+    request->ticket=track->ticket; request->timeout_ms=2000;
+    cJSON *root=api(request,"/api/v2/song/lyric/detail",track->id,NULL);
+    const cJSON *code=cJSON_GetObjectItemCaseSensitive(root,"code");
+    const cJSON *data=cJSON_GetObjectItemCaseSensitive(root,"data");
+    const cJSON *url=cJSON_GetObjectItemCaseSensitive(data,"timedLyric");
+    const cJSON *key=cJSON_GetObjectItemCaseSensitive(data,"keyDecryptLyric");
+    const cJSON *song=cJSON_GetObjectItemCaseSensitive(data,"songKey");
+    char decode_key[65]={0};
+    bool valid=cJSON_IsNumber(code) && code->valuedouble==0 &&
+        !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(root,"success")) &&
+        (!song || (cJSON_IsString(song) && !strcmp(song->valuestring,track->id))) &&
+        cJSON_IsString(url) && hisu_music_valid_url(url->valuestring) && strlen(url->valuestring)<sizeof(request->api.url) &&
+        cJSON_IsString(key) && key->valuestring[0] && strlen(key->valuestring)<sizeof(decode_key);
+    if (valid) {
+        strcpy(request->api.url,url->valuestring); strcpy(decode_key,key->valuestring);
+    }
+    /* Never overlap provider JSON allocations with the lyric-file TLS connection. */
+    voice_provider_json_delete(root);
+    hisu_music_lyrics_t *lyrics=NULL;
+    if (valid && hisu_music_current(track->ticket)) {
+        /* API gzip decoding may have replaced body with a much smaller buffer.
+         * Restore download capacity before reusing the bounded HTTP callback. */
+        free(request->body);
+        request->body=heap_caps_malloc(JSON_LIMIT+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if (!request->body) valid=false;
+    }
+    if (valid && hisu_music_current(track->ticket)) {
+        request->used=0; request->body[0]=0; request->overflow=false;
+        request->html=request->compressed=request->gzip_encoding=false;
+        esp_http_client_handle_t http=http_new(request->api.url,2000,http_event,request);
+        if (http) {
+            esp_http_client_set_header(http,"Accept-Encoding","identity");
+            esp_err_t err=esp_http_client_perform(http);
+            bool complete=esp_http_client_is_complete_data_received(http);
+            int status=esp_http_client_get_status_code(http);
+            esp_http_client_cleanup(http);
+            if (err==ESP_OK && complete && status==200 && !request->overflow && !request->html && !request->compressed &&
+                hisu_music_current(track->ticket) && hisu_music_lyrics_decode(request->body,&request->used,decode_key))
+                lyrics=hisu_music_lyrics_parse(request->body,request->used);
+        }
+    }
+    memset(decode_key,0,sizeof(decode_key));
+    free(request->body); free(request);
+    if (lyrics && !hisu_music_current(track->ticket)) { hisu_music_lyrics_free(lyrics); lyrics=NULL; }
+    ESP_LOGI("MUSIC","Timed lyrics: lines=%u, optional fallback=%d",lyrics ? lyrics->count : 0,lyrics==NULL);
+    return lyrics;
 }
 
 typedef struct {
@@ -372,6 +403,7 @@ esp_err_t hisu_music_play(const hisu_music_track_t *track, hisu_music_pcm_fn out
     esp_audio_err_t codec_ret=ESP_AUDIO_ERR_OK;
     size_t pcm_capacity=8192, received=0, decoded=0;
     bool first_decode=true;
+    music_id3_t id3={0};
     int http_status=0;
     ESP_LOGI("MUSIC","Playback start: initializing MP3 stream");
     if (!encoded || !pcm || !current_url) { err=ESP_ERR_NO_MEM; goto done; }
@@ -421,7 +453,13 @@ esp_err_t hisu_music_play(const hisu_music_track_t *track, hisu_music_pcm_fn out
         if (!received) ESP_LOGI("MUSIC","CDN first data: %d bytes, prefix=%02x %02x %02x",n,
             encoded[0],n>1 ? encoded[1] : 0,n>2 ? encoded[2] : 0);
         received+=(size_t)n;
-        esp_audio_simple_dec_raw_t raw = {.buffer=encoded,.len=(uint32_t)n,
+        size_t audio_bytes=(size_t)n;
+        stage="ID3 metadata";
+        if (!music_id3_feed(&id3,encoded,&audio_bytes,8192)) goto done;
+        if (!audio_bytes) continue;
+        if (first_decode && id3.discarded)
+            ESP_LOGI("MUSIC","Skipped ID3 metadata: %u bytes in %u tags",(unsigned)id3.discarded,id3.tags);
+        esp_audio_simple_dec_raw_t raw = {.buffer=encoded,.len=(uint32_t)audio_bytes,
             .eos=esp_http_client_is_complete_data_received(http)};
         unsigned iterations=0;
         while (raw.len && hisu_music_current(track->ticket)) {

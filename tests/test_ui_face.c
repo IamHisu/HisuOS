@@ -6,6 +6,15 @@
 
 int main(int argc, char **argv)
 {
+    for (int measured=0;measured<=220;measured++) {
+        hisu_music_lyric_layout_t layout=hisu_music_lyric_layout(measured);
+        assert(layout.current_height==(measured>44 ? 66 : measured>22 ? 44 : 22));
+        assert(layout.next_y==layout.current_height);
+        assert(layout.next_height==(measured>44 ? 0 : 22));
+        assert(layout.next_y+layout.next_height<=66);
+    }
+    assert(hisu_music_lyric_layout(44).next_height==22); /* Two current lines still leave one preview line. */
+    assert(hisu_music_lyric_layout(66).next_height==0);
     if (argc==4 && !strcmp(argv[1],"--music-json")) {
         hisu_music_frame_t frame;
         unsigned ms=(unsigned)strtoul(argv[2],NULL,10),energy=(unsigned)strtoul(argv[3],NULL,10);

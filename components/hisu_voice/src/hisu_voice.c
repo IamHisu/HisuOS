@@ -38,6 +38,7 @@ static esp_mn_iface_t *s_multinet;
 static model_iface_data_t *s_multinet_data;
 static SemaphoreHandle_t s_lock;
 static voice_session_t s_session;
+static bool s_mic_checking; /* Protected by s_lock; not a second capture-ready state. */
 static char s_reply[256];
 static char s_utterance[256];
 static srmodel_list_t *s_models;
@@ -85,12 +86,15 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         xSemaphoreGive(s_lock); return;
     }
     if (event == LIVE_MUSIC || event == LIVE_MUSIC_LOADING || event == LIVE_MUSIC_ERROR) {
-        if (s_session.state == VOICE_IDLE && hisu_music_current(generation))
-            (void)hisu_ui_post_status(event == LIVE_MUSIC_ERROR ? HISU_UI_ERROR :
-                event == LIVE_MUSIC_LOADING ? HISU_UI_MUSIC_LOADING : text[0] ? HISU_UI_MUSIC : HISU_UI_IDLE,text);
+        if (s_session.state == VOICE_IDLE && hisu_music_current(generation)) {
+            if (event==LIVE_MUSIC_ERROR || (event==LIVE_MUSIC && !text[0]))
+                (void)hisu_ui_post_status(event==LIVE_MUSIC_ERROR ? HISU_UI_ERROR : HISU_UI_IDLE,text);
+            else (void)hisu_ui_post_music(event==LIVE_MUSIC_LOADING ? HISU_UI_MUSIC_LOADING : HISU_UI_MUSIC,generation,text);
+        }
         xSemaphoreGive(s_lock); return;
     }
     if (!voice_session_current(&s_session, generation)) { xSemaphoreGive(s_lock); return; }
+    if (event!=LIVE_INPUT && event!=LIVE_EXPRESSION) s_mic_checking=false;
     if (event == LIVE_REKEY) {
         ++s_session.generation;
         s_session.state=VOICE_PROCESSING;
@@ -100,6 +104,9 @@ static void live_event(live_event_t event, uint32_t generation, const char *text
         s_reply[0] = s_utterance[0] = 0;
         s_session.state = VOICE_PROCESSING;
         (void)hisu_ui_post_status(HISU_UI_THINKING, text);
+    } else if (event == LIVE_THINKING) {
+        if (s_session.state==VOICE_PROCESSING)
+            (void)hisu_ui_post_status(HISU_UI_THINKING, "");
     } else if (event == LIVE_LISTENING) {
         s_reply[0]=s_utterance[0]=0;
         if (voice_session_finish(&s_session,generation,now_ms())) post_listening();
@@ -221,6 +228,7 @@ static bool wake_at(int64_t wake_us)
 }
 
 bool hisu_voice_wake(void) { return wake_at(esp_timer_get_time()); }
+int hisu_voice_playback_mode(bool cycle) { return voice_live_playback_mode(cycle); }
 
 bool hisu_voice_boot(void)
 {
@@ -240,6 +248,7 @@ static esp_err_t submit_text(const char *text, const voice_session_t *origin)
         xSemaphoreGive(s_lock); return ESP_ERR_INVALID_STATE;
     }
     s_session.state=VOICE_PROCESSING;
+    s_mic_checking=false;
     bool ok=voice_live_text(s_session.generation,text);
     if (ok) {
         s_reply[0]=0; snprintf(s_utterance,sizeof(s_utterance),"%s",text);
@@ -391,6 +400,7 @@ static void detection_task(void *arg)
     bool previous_mic_muted=false;
     voice_state_t reported_state=VOICE_IDLE;
     bool reported=false;
+    bool reported_checking=false;
     bool console=console_init();
     if (console) ESP_LOGI("HISU_CHAT","Nhấn đúp BOOT, đợi lắng nghe, nhập chữ UTF-8 rồi Enter");
     else ESP_LOGW("HISU_CHAT","Không mở được đầu vào Monitor, mic vẫn hoạt động bình thường");
@@ -438,11 +448,13 @@ static void detection_task(void *arg)
             (void)hisu_ui_post_status(HISU_UI_IDLE, "");
         }
         voice_session_t snapshot = s_session;
+        bool checking=s_mic_checking && snapshot.state==VOICE_PROCESSING;
         xSemaphoreGive(s_lock);
-        if (!reported || snapshot.state!=reported_state) {
+        if (!reported || snapshot.state!=reported_state || checking!=reported_checking) {
             static const char *const states[]={"idle","waiting","capturing","processing","speaking"};
-            ESP_LOGI("HISU_STATE","%s",states[snapshot.state]);
+            ESP_LOGI("HISU_STATE","%s",checking ? "validating" : states[snapshot.state]);
             reported_state=snapshot.state; reported=true;
+            reported_checking=checking;
         }
         if (seen_generation != snapshot.generation) {
             seen_generation = snapshot.generation;
@@ -483,7 +495,8 @@ static void detection_task(void *arg)
                 xSemaphoreTake(s_lock, portMAX_DELAY);
                 if (voice_session_current(&s_session, capture_generation)) {
                     s_session.state = VOICE_PROCESSING;
-                    (void)hisu_ui_post_status(HISU_UI_THINKING, "Đang trả lời...");
+                    s_mic_checking=true;
+                    post_listening();
                 }
                 xSemaphoreGive(s_lock);
                 (void)voice_live_end(capture_generation);

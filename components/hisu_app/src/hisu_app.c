@@ -36,6 +36,7 @@ void hisu_app_start(void)
     }
     hisu_ui_set_voice_control(hisu_voice_control);
     hisu_ui_set_voice_buttons(hisu_voice_wake,hisu_voice_boot);
+    hisu_ui_set_playback_control(hisu_voice_playback_mode);
     if (err == ESP_OK) err = hisu_ui_start();
     if (err == ESP_OK) {
         esp_err_t voice_err = hisu_voice_start();

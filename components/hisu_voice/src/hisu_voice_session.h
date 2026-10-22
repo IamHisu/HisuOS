@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #define VOICE_LISTEN_TIMEOUT_MS 60000
+#define VOICE_REPLY_GUARD_MS 150
 
 typedef enum { VOICE_IDLE, VOICE_WAITING, VOICE_CAPTURING, VOICE_PROCESSING, VOICE_SPEAKING } voice_state_t;
 typedef struct {

@@ -10,6 +10,14 @@
 #define HISU_MUSIC_VIEW_Y 72
 #define HISU_MUSIC_VIEW_HEIGHT 168
 #define HISU_MUSIC_BASELINE (HISU_MUSIC_VIEW_HEIGHT-1)
+
+typedef struct { int current_height, next_y, next_height; } hisu_music_lyric_layout_t;
+
+static inline hisu_music_lyric_layout_t hisu_music_lyric_layout(int measured_height)
+{
+    int height=measured_height>44 ? 66 : measured_height>22 ? 44 : 22;
+    return (hisu_music_lyric_layout_t){height,height,height<66 ? 22 : 0};
+}
 typedef struct { int x, height; uint32_t color; } hisu_music_bar_t;
 enum { HISU_NOTE_REST, HISU_NOTE_RISE, HISU_NOTE_WAIT, HISU_NOTE_BURST, HISU_NOTE_FADE };
 typedef struct { int x, y, size, kind; uint32_t color; unsigned phase, opacity; } hisu_music_note_t;

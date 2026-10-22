@@ -1,4 +1,5 @@
 /* Compile the managed parser in a private namespace, without modifying it. */
+#include "hisu_voice_provider_json.h"
 #include "hisu_voice_lookup_json.h"
 #include <stdlib.h>
 #include "esp_heap_caps.h"
@@ -18,3 +19,13 @@ static void *lookup_json_resize(void *pointer,size_t bytes)
 #include "cJSON.c"
 #undef malloc
 #undef realloc
+
+cJSON *voice_provider_json_parse(const char *text, size_t bytes, const char **end)
+{
+    return cJSON_ParseWithLengthOpts(text,bytes,end,false);
+}
+
+void voice_provider_json_delete(cJSON *tree)
+{
+    cJSON_Delete(tree);
+}

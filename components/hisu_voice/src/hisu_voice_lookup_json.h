@@ -1,7 +1,7 @@
 #pragma once
 #include "cJSON.h"
 
-/* Private cJSON 1.7.19 namespace. Only lookup translation units include this.
+/* Private cJSON 1.7.19 namespace. Lookup uses aliases; music uses narrow wrappers.
  * Keep declarations synchronized with the managed dependency; host tests verify it.
  * Never attach these trees to another module or change either instance's hooks. */
 #define cJSON_Version hisu_lookup_cJSON_Version

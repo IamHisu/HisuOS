@@ -26,7 +26,7 @@ ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 TAG = re.compile(r"^[IWE] \(\d+\) ([A-Za-z_]+): ?(.*)$")
 REPLY = re.compile(r"^\[(\d+):(\d+)\] (.*)$")
 MIC_LEASE_SECONDS = 2
-VOICE_STATES = frozenset(("idle", "waiting", "capturing", "processing", "speaking"))
+VOICE_STATES = frozenset(("idle", "waiting", "capturing", "validating", "processing", "speaking"))
 
 
 @dataclass(frozen=True)
@@ -491,7 +491,10 @@ class ChatWindow:
             self.show_status("Hi Su đã nhận tin.")
         elif event.kind in ("reply", "heard"):
             self.append(event.kind, event.text, event.turn)
-            if event.kind == "heard" or self.board_state_supported:
+            if event.kind == "heard":
+                # A transcript can be background speech; firmware validates it first.
+                pass
+            elif self.board_state_supported:
                 self.set_typing(True)
             else:
                 self.set_typing(False)  # Older firmware has no explicit end-of-reply event.

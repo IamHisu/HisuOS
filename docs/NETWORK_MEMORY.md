@@ -1,5 +1,78 @@
 # Gemini connection memory
 
+## Receive Pipeline (2026-10-22)
+
+Live retains direct Gemini PCM/base64; no Opus relay or Xiaozhi dependency is
+introduced. WSS assembles fragmented messages in the existing 128 KiB PSRAM
+buffer, then copies complete messages into a bounded PSRAM ingress ring.
+`live_decode` parses JSON and base64 in wire order before handing PCM/captions
+to the existing `live_play` worker. Only `live_send` writes to WSS.
+
+Ingress permits 32 queued messages and 384 KiB total payload, including the
+message currently being decoded. Payload is allocated on demand, not reserved
+at startup. The descriptor ring and an 8 KiB decoder stack are in PSRAM; the
+task control block still needs internal memory. The JSON tree and decoded PCM
+temporarily coexist with the input message, so 384 KiB is not a total pipeline
+memory budget. Existing PCM queue limits and I2S DMA configuration are unchanged.
+
+At ingress saturation the callback waits in cancellable 10 ms steps, applying
+TCP backpressure. Three seconds without ingress drain progress fails the
+session; allocation failure also fails explicitly. Mixed tool/control messages
+must not be dropped to make space. Close/error notifications share the ring
+and cannot overtake a queued goAway or turnComplete. After stopping WSS, the
+sender pauses/drains ingress and waits for in-flight decode before handoff.
+No queued item borrows the SDK buffer or stack-local connection.
+
+`Receive pipeline` at WSS cleanup logs peak ingress bytes/messages and decoder
+stack high-water bytes. Test normal chat, interrupt/BOOT, reconnect, music
+handoff and return, reader and interpreter transitions. Watch for a steadily
+falling warmed-up PSRAM baseline, decoder stack below 1,536 bytes, allocation
+errors or sustained ingress saturation. Host tests cover framing, ownership,
+ordering, canceled turns, OOM, limits/backpressure and startup rollback, not
+real hardware stack depth or scheduling.
+
+Voice starts a new session at 500 ms (750 ms wait cap). After underrun, the
+resume target uses the larger of 800/1,200/2,000 ms progression, the last
+observed receive gap plus 200 ms, and learned startup plus 300 ms; it is capped
+at 2,000 ms. A troubled reply teaches the next reply's startup buffer, capped
+at 1,500 ms. Each clean completed reply reduces that by 250 ms toward 500 ms;
+new sessions reset it. Learned startup/rebuffer waits allow 750 ms above their
+target. Finished tails drain immediately, cancellation is checked every 10 ms,
+and a near-full output slot budget releases playback even below the time target
+so tiny PCM/caption items cannot deadlock the producer. Music retains its
+500 ms startup and 300/500/800 ms resume policy from the first patch.
+
+`Voice buffer ready` logs target/actual hold, completion and slot pressure.
+This trades additional delay after starvation for fewer short fragments, but
+cannot mask an indefinitely slow network/server. `Voice queue starved` logs
+the next target; `max_rx_gap` includes decoder scheduling/backpressure and must
+not be treated as a pure network measurement.
+
+### Music SRAM Pressure Follow-Up
+
+The October 22 log had 37 voice underruns without ingress saturation (peak
+51,518 bytes/six messages, decoder stack free 4,464 bytes). Following music,
+internal low-water was 12 bytes although current free had recovered to 12,435.
+This is pressure evidence, not proof of a leak or a single responsible phase.
+
+Music provider JSON now reuses the existing fixed-PSRAM cJSON instance through
+narrow parse/delete wrappers. No global hooks change; returned provider nodes
+are only read, never attached to ordinary Live/tool result trees. Extracted
+title/artist are copied to the track and the full info tree is destroyed before
+opening the streaming API's TLS connection. Music HTTP RX/TX buffers are 4 KiB
+each, above the configured ALWAYSINTERNAL=2 KiB cutoff, so ordinary IDF malloc
+prefers PSRAM rather than requesting two 2 KiB internal buffers. This preference
+does not eliminate every internal allocation or guarantee heap headroom.
+
+`MUSIC: JSON before parse` / `after parse` log internal free/min/largest and
+PSRAM. Reboot before retesting to establish a fresh historical minimum; alternate
+chat -> search/play -> BOOT back to chat five times. Compare warmed-up current
+free/largest and minimum at the same phases; send these logs with underrun and
+buffer-ready lines. Host tests check explicit PSRAM capabilities, allocator
+separation, freeing metadata before stream HTTP, OOM cleanup across allocation
+budgets, learned buffer caps/reset/decay, cancellation and full-slot escape.
+Actual reduction in pressure and audible improvement still require the board.
+
 ## Bluetooth Removed (2026-10-21)
 
 BLE provisioning, NimBLE configuration, companion web and its workflow/tests
@@ -182,3 +255,32 @@ After flashing the corrected build, compare `Speaker ready RAM`,
 completes, microphone turns reach Gemini and music starts after confirmation.
 A stable build and configuration checks cannot establish runtime free memory,
 network reliability, or audible playback without testing the physical device.
+
+October 22 lookup hardening: HTTP RX/TX buffers are now 4096 bytes each, above
+the 2048-byte ALWAYSINTERNAL preference, so ordinary HTTP allocation can use
+PSRAM rather than consuming two 1 KiB internal buffers. The internal-memory
+start/continuation guards remain unchanged. HTTP logs distinguish elapsed time,
+deadline expiry, socket errno and body overflow; WSS teardown logs its stop and
+decoder-drain phases. These logs diagnose stalls, not proof that every timeout
+or teardown problem is solved.
+
+Identical source/news failures are cached in PSRAM for 15 seconds after failure
+to prevent repeated slow requests in one response. Cache entries are not stored
+after cancellation/disconnection. Successful data retains its existing TTL.
+Failed lookup envelopes parse only the small failure result to remove internal
+codes; successful weather/news envelopes still avoid building a second JSON tree.
+
+Read-only desktop probes on October 22 returned HTTP 200 for gold, hourly
+weather and RSS; the actual host C parsers accepted all three live payloads.
+NCT search/detail/lyrics returned HTTP 200, and a 128 kbps MP3 range returned
+206 with valid frames after its ID3 tag. This does not measure board TLS/SRAM,
+audible playback or jitter. The geocoder returned no match for `Quan 7` alone;
+ask for the city when needed, and never label a city forecast district-specific.
+
+Music list recovery retains at most 2 KiB of played captions in PSRAM, only
+after a search in the current session, plus a temporary 2 KiB PSRAM snapshot
+on a play request. It stores nothing to flash and adds no task. LRC storage is
+bounded to 32 KiB text plus 256 entries in PSRAM; its optional 64 KiB download
+buffer is freed before MP3 streaming. The current/next lyric viewport adds
+three small LVGL objects (viewport, outgoing and next labels); next-line queue
+payloads use owned PSRAM strings, not a second large inline SRAM event array.

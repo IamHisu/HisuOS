@@ -2,10 +2,10 @@
 
 ## BOOT Và Chat Chữ Qua USB
 
-- Màn hình chờ: nhấn đúp BOOT (hai lần thả trong 350ms) gọi Hi Su qua cùng luồng wake word, gồm phản hồi offline, kiểm tra mạng và kết nối Live. Nhấn đơn vẫn mở menu sau 350ms; nếu màn hình đang tắt thì lần đầu chỉ đánh thức màn hình, nhấn lần hai trong cửa sổ vẫn gọi được Hi Su.
-- Trong chat thường: BOOT ngắn kết thúc phiên, về màn hình chờ. Gọi bằng giọng nói trong phiên vẫn ngắt lượt và nghe tiếp.
-- Khi đang có audio/phiên thoại, BOOT xử lý ngay lúc nhấn đã chống dội, không chờ thả; lần thả/giữ sau đó không kích hoạt lần hai. Màn hình chờ vẫn dùng nhấn đúp như cũ. Vol+/Vol- chỉnh âm lượng từng 5%, giữ để lặp; thanh dọc bên phải hiện 1,8 giây, dùng cả Chat, nhạc và kể chuyện.
-- Đang phát nhạc: BOOT ngắn dừng nhạc rồi mở chat. Đang kể chuyện, kể cả lúc chuyển sang Reader: BOOT ngắn hủy kể/hẹn giờ ngủ và chuyển về Chat. Kết nối có thể cần mở lại do đổi key; không tự kể tiếp sau đó.
+- Màn hình chờ: nhấn đúp BOOT (bắt đầu lần nhấn thứ hai trong 450ms sau lần thả đầu) gọi Hi Su qua cùng luồng wake word, gồm phản hồi offline, kiểm tra mạng và kết nối Live. Nhấn đơn vẫn mở menu sau 450ms; nếu màn hình đang tắt thì lần đầu chỉ đánh thức màn hình, nhấn lần hai trong cửa sổ vẫn gọi được Hi Su.
+- Trong chat thường: nhấn đơn BOOT ngắt lượt nói/thu và nghe lại trên cùng kết nối; nhấn đúp kết thúc phiên về màn hình chờ.
+- BOOT ghi nhận lần nhấn thứ hai đã chống dội trong 450 ms, cho phép thả sau cửa sổ đó nhưng không giữ quá 800 ms. Chat ngắt lời ngay lần nhấn đầu đã chống dội, lần thứ hai đóng phiên; không ngắt lại khi hết cửa sổ. Nhạc/truyện chờ hết cửa sổ mới đổi chế độ để nhấn đúp không đổi chế độ trước. Giữ nút không tạo thêm click; click/lần thả đang chờ bị bỏ khi đổi ngữ cảnh. Vol+/Vol- vẫn chỉnh từng 5%, giữ để lặp; thanh dọc hiện 1,8 giây. Log `BOOT double` và `BOOT stop handled` giúp phân biệt nhận nút với xử lý dừng.
+- Trong nhạc/kể chuyện: nhấn đơn BOOT chuyển Tắt -> Lặp một -> Tự chuyển -> Tắt. Nhấn đúp dừng và về Chat; Reader có thể cần kết nối lại bằng Chat key. Icon ở góc dưới phải đè lên visualizer. Hẹn giờ ru ngủ luôn ưu tiên, không tăng theo số lần lặp.
 - Trong VS Code dùng Terminal chạy `idf.py monitor`, không dùng Debug Console. Khi Hi Su đã lắng nghe, nhập hoặc dán một dòng UTF-8 rồi Enter. Monitor có thể không hiện từng ký tự đang gõ; dòng được chấp nhận có log `HISU_INPUT`, câu trả lời tiếp tục có `HISU_REPLY` và phụ đề/loa như bình thường. Có thể tự chỉnh âm lượng về 0.
 - Giới hạn 255 byte mỗi dòng (không phải 255 ký tự tiếng Việt). CR, LF, CRLF và xóa lùi ký tự UTF-8 được xử lý; bỏ toàn bộ dòng quá dài, sai UTF-8 hoặc chứa ký tự điều khiển. Không nhập API key/mật khẩu vào chat. Tin khi chưa sẵn sàng, đang xử lý/phát, hoặc gõ dở rồi đổi phiên sẽ bị từ chối để nhập lại, không giữ gửi vào phiên khác.
 - Chữ gửi bằng `clientContent` trên cùng Gemini Live, không đổi sang STT → LLM → TTS. Trí nhớ/công cụ dùng như lượt mic; xác nhận nhạc dựa trên đúng chữ người dùng nhập. Dòng xác nhận vượt vùng chứng cứ 159 byte không được dùng để phát nhạc.
@@ -53,7 +53,7 @@ hạn cứng 1-2 câu. Giọng địa phương là hướng dẫn cho model, kh�
 Reader và bảo vệ dữ liệu vẫn giữ nguyên. Clip offline không được tạo lại bởi thay đổi này.
 
 Trong lời thoại không tự đọc tên nguồn, website, API hay nhà cung cấp/model
-(kể cả Gemini, Google, Zing MP3), bao gồm lời chào và lỗi. Hi Su vẫn nói kết quả,
+(kể cả Gemini, Google, NhacCuaTui), bao gồm lời chào và lỗi. Hi Su vẫn nói kết quả,
 đơn vị, thời điểm cập nhật và lỗi thực tế; chỉ nêu nguồn trung thực khi được hỏi.
 Metadata nguồn và log kỹ thuật vẫn giữ để kiểm tra, không xóa thông tin gốc.
 
@@ -92,13 +92,15 @@ Giọng ưu tiên từ "dùm" thay "giùm", đọc gi/v như d miền Nam: gì/d
 vậy/dậy. Phụ đề vẫn giữ chính tả chuẩn, không đổi âm r hoặc áp dụng cách này cho
 tiếng Anh/Nhật. Không thay voiceName Leda.
 
-Ngữ cảnh nằm trong phiên Gemini đang kết nối; phiên mới bắt đầu ngữ cảnh mới. Phụ đề lấy từ output audio transcription, hiển thị tối đa 255 byte. Không log API key; nội dung hỏi/đáp có trong HISU_INPUT, HISU_HEARD và HISU_REPLY, cần giữ log riêng tư. Nhấn BOOT hoặc nói “thôi nhé”/“tạm biệt” để đóng phiên (nhận câu kết thúc phụ thuộc transcript server). Sau khi loa phát xong chờ 300ms rồi nghe tiếp tối đa 60 giây; gọi một lần để hỏi đáp nhiều lượt, không gửi audio nền khi im lặng.
+Ngữ cảnh nằm trong phiên Gemini đang kết nối; phiên mới bắt đầu ngữ cảnh mới. Phụ đề lấy từ output audio transcription, hiển thị tối đa 255 byte. Không log API key; nội dung hỏi/đáp có trong HISU_INPUT, HISU_HEARD và HISU_REPLY, cần giữ log riêng tư. Nhấn đúp BOOT hoặc nói “thôi nhé”/“tạm biệt” để đóng phiên (nhận câu kết thúc phụ thuộc transcript server). Sau marker kết thúc câu, task loa giữ 100ms để thoát đuôi DMA rồi mở lại trạng thái chờ với guard mic 150ms (trước đây 300ms), nghe tiếp tối đa 60 giây; gọi một lần để hỏi đáp nhiều lượt, không gửi audio nền khi im lặng. VAD vẫn cần tiếng nói đủ lâu trước khi bắt đầu capture; không giảm lọc tiếng ồn. Nếu server gửi marker chậm sau audio cuối thì còn thêm thời gian chờ đó, không cam kết nhận mic ngay sau âm cuối.
 
-Gọi “Hi Su” trong phiên hủy audio cũ bằng generation và nghe lại trên cùng kết nối Live, giữ ngữ cảnh. BOOT ngắn đóng chat thường; khi kể chuyện/nhạc thì chuyển về Chat như mô tả ở trên. `activityStart` dùng `START_OF_ACTIVITY_INTERRUPTS` để hủy câu trả lời phía server. Khi ngắt giữa lúc thu, gửi kết thúc activity cũ trước khi mở activity mới. Các `turnComplete` của lượt bị hủy được bỏ qua, không kết thúc nhầm lượt mới; chờ ranh giới hủy tối đa 10 giây rồi báo lỗi nếu không nhận được. Không AEC và chưa có ngắt lời bằng câu nói bất kỳ, nên gọi khi loa phát cần thử trên board. Loa tắt vẫn nhận phụ đề; âm lượng áp dụng khi phát. Session resumption sau mất kết nối vẫn chưa có.
+Gọi “Hi Su” trong phiên hủy audio cũ bằng generation và nghe lại trên cùng kết nối Live, giữ ngữ cảnh. BOOT ngắn ngắt lời để nghe lại trong Chat; nhấn đúp đóng Chat hoặc rời nhạc/truyện về Chat như mô tả ở trên. `activityStart` dùng `START_OF_ACTIVITY_INTERRUPTS` để hủy câu trả lời phía server. Khi ngắt giữa lúc thu, gửi kết thúc activity cũ trước khi mở activity mới. Các `turnComplete` của lượt bị hủy được bỏ qua, không kết thúc nhầm lượt mới; chờ ranh giới hủy tối đa 10 giây rồi báo lỗi nếu không nhận được. Không AEC và chưa có ngắt lời bằng câu nói bất kỳ, nên gọi khi loa phát cần thử trên board. Loa tắt vẫn nhận phụ đề; âm lượng áp dụng khi phát. Session resumption sau mất kết nối vẫn chưa có.
 
 ## Giới hạn và xử lý lỗi
 
-Input queue chứa tối đa 256 frame 40ms trong PSRAM; không block task fetch. Message WebSocket tối đa 128KiB, hỗ trợ các event chia nhỏ và continuation frames. Output queue tối đa 96 items và 1536KiB PCM, cấp phát theo nhu cầu. Khi đầy, nhận audio/phụ đề/chốt lượt chờ theo tiến độ playback; chỉ lỗi nếu không có tiến độ trong 3 giây. Không bỏ PCM cũ. Setup timeout 15 giây, phản hồi timeout sau 60 giây không có audio mới. Kể chuyện bật nén ngữ cảnh và dùng session resumption sau `goAway`, tại cuối đoạn đã phát hết, cùng key và giữ nguyên giờ tự tắt. Thiếu handle hoặc mất kết nối trước khi nhận đủ đoạn vẫn dừng; Chat thường chưa tự phục hồi sau mất mạng. Xem [Bedtime Stories](BEDTIME_STORIES.md).
+Input queue chứa tối đa 256 frame 40ms trong PSRAM; không block task fetch. Message WebSocket tối đa 128KiB, hỗ trợ các event chia nhỏ và continuation frames. Callback chuyển message hoàn chỉnh sang hàng đợi PSRAM (32 message, tối đa 384KiB kể cả message đang giải mã); task `live_decode` xử lý JSON/base64 theo thứ tự, kể cả close/error. Chỉ khi hàng đợi nhận đầy mới chậm đọc socket, kiểm tra hủy mỗi 10ms và lỗi sau 3 giây không tiến triển. Output queue tối đa 96 items và 1536KiB PCM, cấp phát theo nhu cầu. Khi đầy, task giải mã chờ theo tiến độ playback; chỉ lỗi nếu không có tiến độ trong 3 giây. Không bỏ PCM cũ. Setup timeout 15 giây, phản hồi timeout sau 60 giây không có audio mới. Kể chuyện bật nén ngữ cảnh và dùng session resumption sau `goAway`, tại cuối đoạn đã phát hết, cùng key và giữ nguyên giờ tự tắt. Thiếu handle hoặc mất kết nối trước khi nhận đủ đoạn vẫn dừng; Chat thường chưa tự phục hồi sau mất mạng. Xem [Bedtime Stories](BEDTIME_STORIES.md).
+
+Phiên voice mới bắt đầu với đệm 500ms. Nếu hụt, mức đệm lại dựa trên số lần hụt và khoảng ngắt nhận thực tế, tối đa 2 giây; câu sau nhớ mức đệm đầu đã học (tối đa 1,5 giây), giảm 250ms sau mỗi câu hoàn tất không hụt. Phiên mới reset; phần đuôi hoàn tất không chờ đủ đệm. Nhạc vẫn giữ đệm đầu 500ms và đệm lại 300 → 500 → 800ms. `Voice queue starved` ghi mức đệm kế tiếp, `Voice buffer ready` ghi thời gian giữ thực tế. Vẫn dùng PCM của Gemini Live, không giảm băng thông như Opus; cần nghe thử trên board để xác nhận mức cải thiện. Xem [Receive Pipeline](NETWORK_MEMORY.md#receive-pipeline-2026-10-22).
 
 Live khai báo function tool `set_flashlight(enabled)` để bật/tắt đèn pin bằng giọng nói; tool response gửi lại trên cùng kết nối. Điều khiển menu/nút vẫn dùng được. Gemini key phải có quyền/quota cho model Live; compile không xác nhận API thật.
 
@@ -109,7 +111,7 @@ CPU 240MHz, I-cache 32KiB, D-cache 64KiB/line 64B, PSRAM 80MHz; mbedTLS dùng PS
 1. Flash đầy đủ, Wi-Fi kết nối và có Gemini key. Gọi “Hi Su”: đợi setup hoàn tất, nói một câu. Log `LIVE: First audio: ... ms after activityEnd` đo thời gian từ gửi kết thúc câu tới audio đầu tiên.
 2. Hỏi tiếp có nhắc câu trước; kiểm tra ngữ cảnh trong cùng kết nối.
 3. Sau câu trả lời, im lặng: không có `Capture start`, không tự suy nghĩ/đáp, đóng sau khoảng 60 giây. Thử giọng nhỏ, bình thường và phòng có tiếng nền.
-4. Nhấn đúp BOOT ở màn hình chờ để mở phiên; BOOT ngắn khi chat đóng phiên. BOOT ngắn khi nhạc/kể chuyện đưa về Chat, không tự phát/kể lại. Thử cả màn hình tắt, đang kết nối và đang chuyển key. Wake word trong phiên vẫn ngắt lượt trên cùng kết nối. Nhập một câu có dấu qua Monitor, kiểm tra log/phụ đề/loa; gửi lúc bận phải bị từ chối. Kết nối đóng có thể đợi TLS hiện tại/timeout trước khi giải phóng.
+4. Nhấn đúp BOOT ở màn hình chờ để mở phiên. Trong Chat, nhấn đơn ngắt lời/nghe lại, nhấn đúp đóng phiên. Trong nhạc/truyện, nhấn đơn đổi chế độ và nhấn đúp về Chat. Thử khi tắt màn hình, đang kết nối, chuyển key, trước khi hết bài và đang chờ bài lặp. Kiểm tra hẹn giờ truyện vẫn dừng đúng giờ.
 5. Mất Wi-Fi, key sai/quota hết, API lỗi, loa tắt: hiện lỗi/phụ đề đúng, không treo/reboot. Chạy 20 lượt, theo dõi heap và queue warnings.
 6. Kiểm tra UI/Wi-Fi/GIF và cảnh báo AFE; đo độ trễ thực tế. Chưa cam kết nhanh bằng Xiaozhi hoặc mức thời gian cố định.
 
@@ -188,7 +190,57 @@ Naturalness and actual model compliance still require a new conversation test.
 
 ## Conversation Closure Diagnostics
 
-The listening idle timeout remains 60 seconds after the 300 ms post-reply guard;
+### Dependent Tools And Silent Recovery
+
+The October 22 monitor captured `get_clock` followed by a tool-only completion
+while answering weather. Immediate spoken recovery incorrectly rejected the
+subsequent `lookup_info` call and closed the conversation. Recovery now waits
+three seconds after a tool boundary, is cancelled by tool/audio output, and
+permits a dependent structured tool even if recovery was already sent. A limit
+of 12 tool calls per real input bounds runaway chains; ordinary permission and
+generation checks still apply. Recovery polling uses the existing send task.
+
+Lookup failures carry a Vietnamese message and speaking guidance. Internal
+error identifiers remain in monitor/cache but are removed from failed lookup
+responses sent to the model. The caption marker filter also strips the observed
+`{error:source_unavailable,ok:` leak across chunk boundaries. This is not an
+audio-content classifier: pronunciation/model compliance still needs a board
+test. A failed AUTO NEXT music search now revokes its temporary auto-play scope.
+
+The later October 22 log showed a bare `speech>` response after a noise turn,
+not a failed first selection: that earlier `play_music` was accepted and MP3
+playback started. The streaming marker filter now also recognizes orphaned
+no-speech suffixes and closing/compact forms, across all transcription chunks.
+When a recognized marker is the only transcribed output so far, subsequent PCM
+is discarded and normal one-shot silent recovery applies. Genuine text after
+a marker allows subsequent PCM again. Audio already consumed before its
+transcript arrives cannot be retroactively filtered.
+
+Typed turns cannot be discarded by `ignore_input`; delayed mic transcripts
+cannot append to their confirmation text. `ignore_input` must be the first tool
+of an audio turn, before other tools or speech. When a noise-only selection turn
+is discarded, the existing spoken offer moves to the next input generation
+without extending its original deadline or changing its order/IDs. This does
+not disable the microphone or eliminate acoustic false positives.
+
+### Quiet Input Validation
+
+Microphone capture completion still enters internal PROCESSING to prevent a
+second overlapping capture, but leaves the TFT in its listening appearance
+while the model checks the input. The monitor publishes `HISU_STATE: validating`
+for this phase. A non-discarded tool publishes LIVE_THINKING; real reply text or
+audio also leaves validation. `ignore_input` and rejected late tools after it
+do not publish thinking. Discard completion restores ordinary listening.
+
+The desktop chat recognizes validating without animating typing. A raw
+HISU_HEARD transcript is diagnostic, not proof of a user request, and does not
+start typing either. Typed requests retain their immediate typing indication.
+Restart the desktop chat to load this behavior; firmware flashing alone does
+not update an already-running Python window. VAD thresholds, capture timing
+and microphone sensitivity are unchanged. This fixes premature status display,
+not speaker identification or all background-speech recognition.
+
+The listening idle timeout remains 60 seconds after the 150 ms post-reply guard;
 it is not a board power-off or reboot. VAD noise alone does not extend it.
 Session expiry logs `Conversation close: reason=listen_timeout` with current
 internal heap, largest block, lifetime minimum, PSRAM and current task stack

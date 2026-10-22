@@ -49,6 +49,57 @@ static inline unsigned music_choice_ordinal(const char *text)
     return 0;
 }
 
+/* Recover only an explicit numbered, uniquely identified list actually spoken
+ * by the player. Search order and the model's tool arguments are not evidence. */
+static inline unsigned music_list_marker(const char *p,size_t *bytes)
+{
+    static const char *const words[]={"một là ","hai là ","ba là "};
+    for (unsigned i=0;i<3;++i) if (!strncmp(p,words[i],strlen(words[i]))) {
+        *bytes=strlen(words[i]); return i+1;
+    }
+    const char *start=p;
+    if (!strncmp(p,"số ",strlen("số "))) p+=strlen("số ");
+    if (p[0]>='1' && p[0]<='9' && (p[1]==':' || (p[1]=='.' && p[2]==' '))) {
+        *bytes=(size_t)(p-start)+2; return (unsigned)(p[0]-'0');
+    }
+    return 0;
+}
+
+static inline unsigned music_presented_list(char *text,const char *const *titles,unsigned count,unsigned indices[3])
+{
+    if (!text || !music_choice_normalize(text,text,2048)) return 0;
+    const char *parts[3],*ends[3]; unsigned found=0;
+    for (const char *p=text;*p;++p) {
+        if (p!=text && p[-1]!=' ' && p[-1]!=';' && p[-1]!='\n') continue;
+        size_t bytes=0; unsigned position=music_list_marker(p,&bytes);
+        if (!position) continue;
+        if (found==3 || position!=found+1) return 0;
+        if (found) ends[found-1]=p;
+        parts[found++]=p+bytes;
+        p+=bytes-1;
+    }
+    if (found<2) return 0;
+    ends[found-1]=text+strlen(text);
+    for (unsigned n=0;n<found;++n) {
+        const char *p=parts[n];
+        while (p<ends[n] && (*p==' ' || *p=='\"')) ++p;
+        unsigned matches=0;
+        for (unsigned i=0;i<count;++i) {
+            char title[160];
+            if (!music_choice_normalize(titles[i],title,sizeof(title))) continue;
+            size_t length=strlen(title);
+            if ((size_t)(ends[n]-p)<length || strncmp(p,title,length)) continue;
+            const char *tail=p+length;
+            if (*tail=='\"') ++tail;
+            if (strncmp(tail," của ",strlen(" của ")) && strncmp(tail," - ",3)) continue;
+            ++matches; indices[n]=i;
+        }
+        if (matches!=1) return 0;
+        for (unsigned i=0;i<n;++i) if (indices[i]==indices[n]) return 0;
+    }
+    return found;
+}
+
 /* Explicit delegation authorizes any member of the current spoken offer.
  * Match complete phrases so negated/conditional requests cannot grant consent. */
 static inline bool music_choice_delegated(const char *text)
