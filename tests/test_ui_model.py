@@ -32,7 +32,7 @@ dll.hisu_wifi_password_is_valid.argtypes = [ctypes.c_char_p]
 dll.hisu_wifi_password_is_valid.restype = ctypes.c_int
 dll.hisu_wifi_can_auto_join.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p]
 dll.hisu_wifi_can_auto_join.restype = ctypes.c_int
-dll.hisu_wifi_setup_password.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+dll.hisu_wifi_setup_password.argtypes = [ctypes.c_char_p]
 dll.hisu_wifi_setup_password.restype = ctypes.c_int
 dll.hisu_power_percent_from_adc.argtypes = [ctypes.c_int]
 dll.hisu_power_percent_from_adc.restype = ctypes.c_int
@@ -122,16 +122,13 @@ class UiModelTests(unittest.TestCase):
             ):
                 self.assertEqual(choose(data, width, height, stride, x, y, w, h, previous), previous)
 
-    def test_random_hotspot_password(self):
-        for start in range(256):
-            entropy = bytes((start + i) % 256 for i in range(8))
-            out = ctypes.create_string_buffer(17)
-            self.assertEqual(dll.hisu_wifi_setup_password(entropy, out), 1)
-            self.assertEqual(out.value, entropy.hex().encode())
-            self.assertEqual(len(out.value), 16)
+    def test_fixed_hotspot_password(self):
+        out = ctypes.create_string_buffer(17)
+        for _ in range(2):
+            self.assertEqual(dll.hisu_wifi_setup_password(out), 1)
+            self.assertEqual(out.value, b"11121112")
             self.assertEqual(dll.hisu_wifi_password_is_valid(out.value), 1)
-        self.assertEqual(dll.hisu_wifi_setup_password(None, out), 0)
-        self.assertEqual(dll.hisu_wifi_setup_password(entropy, None), 0)
+        self.assertEqual(dll.hisu_wifi_setup_password(None), 0)
 
     def test_wifi_auto_join_policy(self):
         eligible = dll.hisu_wifi_can_auto_join

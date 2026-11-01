@@ -84,6 +84,16 @@
         <label for="timeout">Tắt màn hình sau</label><select id="timeout" data-setting="timeout"><option value="0">Không tự tắt</option><option value="30">30 giây</option><option value="60">1 phút</option><option value="120">2 phút</option><option value="300">5 phút</option><option value="600">10 phút</option></select>
         <label for="timezone">Múi giờ UTC (phút)</label><input id="timezone" type="number" min="-720" max="840" step="1" data-setting="timezone">
         <button id="time-sync" type="button">Đồng bộ giờ điện thoại</button>
+        <h2>Slang tự cập nhật</h2>
+        <label class="toggle"><input id="slang-enabled" type="checkbox">Tự cập nhật slang mỗi ngày khi rảnh</label>
+        <p id="slang-status" role="status"></p>
+        <p>Từ điển mở Wiktionary, không gọi thêm API Gemini khi cập nhật. Không bảo đảm có mọi trend mới.</p>
+        <details><summary>Slang đã học và nguồn</summary><ul id="slang-list"></ul><p id="slang-license"></p></details>
+        <h2>Nguồn tra cứu</h2>
+        <p>Bản tin hoặc slang vừa tra, kèm nguồn và gợi ý tìm kiếm.</p>
+        <button id="research-refresh" class="secondary" type="button">Xem bản tra cứu gần nhất</button>
+        <p id="research-status" role="status"></p>
+        <div id="research-result" hidden><div id="research-text" style="white-space:pre-wrap"></div><ul id="research-sources"></ul><div id="research-suggestions"></div></div>
         <h2>Giọng báo offline</h2>
         <p id="battery-audio-status" role="status"></p>
         <h2>Trí nhớ</h2>

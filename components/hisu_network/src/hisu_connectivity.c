@@ -1,6 +1,7 @@
 #include "hisu_connectivity.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_log.h"
 #include <string.h>
 
 static hisu_internet_state_t probe(const char *url, const char *expected)
@@ -16,7 +17,9 @@ static hisu_internet_state_t probe(const char *url, const char *expected)
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return HISU_INTERNET_OFFLINE;
     hisu_internet_state_t result = HISU_INTERNET_OFFLINE;
-    if (esp_http_client_open(client, 0) == ESP_OK && esp_http_client_fetch_headers(client) >= 0) {
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) ESP_LOGW("NETWORK", "Internet probe %s failed: %s", url, esp_err_to_name(err));
+    if (err == ESP_OK && esp_http_client_fetch_headers(client) >= 0) {
         int status = esp_http_client_get_status_code(client);
         if ((status >= 300 && status < 400) || status == 511) result = HISU_INTERNET_CAPTIVE;
         else if (!expected && status == 204) result = HISU_INTERNET_ONLINE;

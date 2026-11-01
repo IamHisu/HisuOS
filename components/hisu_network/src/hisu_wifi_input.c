@@ -1,14 +1,10 @@
 #include "hisu_wifi_input.h"
 
-int hisu_wifi_setup_password(const unsigned char random[8], char out[17])
+int hisu_wifi_setup_password(char out[17])
 {
-    if (!random || !out) return 0;
-    static const char hex[] = "0123456789abcdef";
-    for (unsigned i = 0; i < 8; ++i) {
-        out[i * 2] = hex[random[i] >> 4];
-        out[i * 2 + 1] = hex[random[i] & 15];
-    }
-    out[16] = 0;
+    if (!out) return 0;
+    static const char password[17] = "11121112";
+    for (unsigned i = 0; i < sizeof(password); ++i) out[i] = password[i];
     return 1;
 }
 

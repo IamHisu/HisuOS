@@ -38,8 +38,8 @@ Giữ nền HisuOS hiện tại và dùng XiaoClaw như mẫu tích hợp chọn
 
 ## Nguồn Nền Tảng
 
-- [ESP-IDF 5.5.5 cho ESP32-S3](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/): nền tảng firmware.
-- [ADC calibration ESP32-S3](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/api-reference/peripherals/adc_calibration.html): đổi ADC sang điện áp đã hiệu chỉnh; vẫn cần tỉ lệ chia áp và profile pin đúng.
+- [ESP-IDF 6.1 cho ESP32-S3](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/): nền tảng firmware.
+- [ADC calibration ESP32-S3](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/api-reference/peripherals/adc_calibration.html): đổi ADC sang điện áp đã hiệu chỉnh; vẫn cần tỉ lệ chia áp và profile pin đúng.
 - [Xiaozhi](https://github.com/78/xiaozhi-esp32): voice pipeline và board reference.
 - [MimiClaw](https://github.com/memovai/mimiclaw): agent, tools, memory và scheduling reference.
 - Muse: nguồn setup/UI/board đang tham khảo trong workspace `muse-gadget-sdk`; attribution của code đã lấy theo [NOTICE](../licenses/NOTICE.md).

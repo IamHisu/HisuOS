@@ -25,6 +25,10 @@ CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=16
 # TLS handshake allocations must leave internal RAM available for Wi-Fi/DMA.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Keep public roots and support cross-signed server chains on ESP-IDF 6.1.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 # AES DMA needs temporary internal buffers even when TLS lives in PSRAM.
 # Use software AES so speaker DMA and TLS reception do not compete for them.
 CONFIG_MBEDTLS_HARDWARE_AES=n
@@ -46,3 +50,7 @@ CONFIG_LV_USE_LOG=y
 # Bluetooth is intentionally absent; setup uses the Wi-Fi hotspot.
 # CONFIG_BT_ENABLED is not set
 CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+
+# Ask for time as soon as Wi-Fi has an IP; retain independent server fallbacks.
+CONFIG_LWIP_SNTP_STARTUP_DELAY=n
+CONFIG_LWIP_SNTP_MAX_SERVERS=3

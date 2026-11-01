@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 typedef struct {
-    bool weather, news;
-    char place[97], type[17];
+    bool weather, news, slang;
+    char place[97], type[17], query[257], mode[9];
     int day;
     int64_t location_id;
 } lookup_query_t;

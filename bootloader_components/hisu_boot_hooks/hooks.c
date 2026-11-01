@@ -1,5 +1,6 @@
 #include "hal/gpio_ll.h"
 #include "soc/gpio_struct.h"
+#include "soc/gpio_sig_map.h"
 #include "esp_rom_sys.h"
 
 void bootloader_hooks_include(void) {}
@@ -11,7 +12,7 @@ static void keep_backlight_dark(void)
 {
     gpio_ll_set_level(&GPIO, 20, 0);
     gpio_ll_func_sel(&GPIO, 20, PIN_FUNC_GPIO);
-    gpio_ll_matrix_out_default(&GPIO, 20);
+    gpio_ll_set_output_signal_matrix_source(&GPIO, 20, SIG_GPIO_OUT_IDX, false);
     gpio_ll_output_enable(&GPIO, 20);
     /* Keep the shared USB D+ pad low until the app installs zero-duty PWM. */
     gpio_ll_hold_en(&GPIO, 20);
@@ -21,7 +22,7 @@ static void keep_panel_reset(void)
 {
     gpio_ll_set_level(&GPIO, 45, 0);
     gpio_ll_func_sel(&GPIO, 45, PIN_FUNC_GPIO);
-    gpio_ll_matrix_out_default(&GPIO, 45);
+    gpio_ll_set_output_signal_matrix_source(&GPIO, 45, SIG_GPIO_OUT_IDX, false);
     gpio_ll_output_enable(&GPIO, 45);
 }
 

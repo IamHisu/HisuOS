@@ -1,8 +1,10 @@
 #include "hisu_setup_api.h"
+#include "hisu_media.h"
 #include "hisu_settings.h"
 #include "hisu_network.h"
 #include "hisu_clock.h"
 #include "hisu_memory.h"
+#include "hisu_memory_json_guard.h"
 #include "hisu_alert.h"
 #include "hisu_power.h"
 #include "cJSON.h"
@@ -207,6 +209,40 @@ static esp_err_t time_api(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"saved\":true}");
 }
 
+static esp_err_t research_api(httpd_req_t *req)
+{
+    if (!s_guard(req)) return error(req,"403 Forbidden","Session expired.");
+    char *view=hisu_media_research_snapshot();
+    if (!s_guard(req)) { free(view); return error(req,"403 Forbidden","Session expired."); }
+    s_headers(req); httpd_resp_set_type(req,"application/json");
+    esp_err_t err=httpd_resp_sendstr(req,view ? view : "{\"ok\":false,\"message\":\"Chưa có bản tra cứu.\"}");
+    free(view); return err;
+}
+
+static esp_err_t slang_api(httpd_req_t *req)
+{
+    if (!s_guard(req)) return error(req,"403 Forbidden","Session expired.");
+    if (req->method==HTTP_POST) {
+        cJSON *json=body(req),*enabled=cJSON_GetObjectItemCaseSensitive(json,"enabled");
+        bool valid=cJSON_IsObject(json) && cJSON_GetArraySize(json)==1 && cJSON_IsBool(enabled);
+        esp_err_t err=valid && s_guard(req) ? hisu_settings_set(HISU_SETTING_SLANG_AUTO,cJSON_IsTrue(enabled)) : ESP_ERR_INVALID_ARG;
+        cJSON_Delete(json);
+        if (err!=ESP_OK) return error(req,"400 Bad Request","Slang setting rejected.");
+    }
+    char *text=malloc(6145);
+    cJSON *json=NULL;
+    if (text && hisu_settings_load_slang(text,6145)==ESP_OK && hisu_memory_json_shallow(text,8) && !strstr(text,"\\u0000"))
+        json=cJSON_ParseWithOpts(text,NULL,true);
+    free(text);
+    if (!cJSON_IsObject(json)) { cJSON_Delete(json); json=cJSON_CreateObject(); }
+    if (json) {
+        cJSON_DeleteItemFromObjectCaseSensitive(json,"enabled");
+        cJSON_AddBoolToObject(json,"enabled",hisu_settings_get(HISU_SETTING_SLANG_AUTO)==1);
+    }
+    if (!s_guard(req)) { cJSON_Delete(json); return error(req,"403 Forbidden","Session expired."); }
+    return json_response(req,json);
+}
+
 static esp_err_t asr_key_api(httpd_req_t *req)
 {
     if (!s_guard(req)) return error(req, "403 Forbidden", "Session expired.");
@@ -292,6 +328,9 @@ esp_err_t hisu_setup_api_register(httpd_handle_t server, bool (*guard)(httpd_req
         {.uri="/wifi/join", .method=HTTP_POST, .handler=wifi_action},
         {.uri="/wifi/power", .method=HTTP_POST, .handler=wifi_action},
         {.uri="/time", .method=HTTP_POST, .handler=time_api},
+        {.uri="/research", .method=HTTP_GET, .handler=research_api},
+        {.uri="/slang", .method=HTTP_GET, .handler=slang_api},
+        {.uri="/slang", .method=HTTP_POST, .handler=slang_api},
         {.uri="/asr-key", .method=HTTP_GET, .handler=asr_key_api},
         {.uri="/asr-key", .method=HTTP_POST, .handler=asr_key_api},
         {.uri="/gemini-key", .method=HTTP_GET, .handler=asr_key_api},

@@ -8,7 +8,7 @@ if (!$Python) {
     $eimPath = 'C:\Espressif\tools\eim_idf.json'
     if (Test-Path -LiteralPath $eimPath) {
         $eim = Get-Content -LiteralPath $eimPath -Raw | ConvertFrom-Json
-        $candidates += @($eim.idfInstalled | Where-Object name -eq 'v5.5.5' | ForEach-Object python)
+        $candidates += @($eim.idfInstalled | Where-Object name -Match '^v6\.1(?:\.\d+)?$' | ForEach-Object python)
     }
     $command = Get-Command python -ErrorAction SilentlyContinue
     if ($command) { $candidates += $command.Source }

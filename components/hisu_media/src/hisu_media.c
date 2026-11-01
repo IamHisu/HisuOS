@@ -48,9 +48,32 @@ static uint32_t s_page;
 static char s_token[65];
 static bool s_claimed;
 static bool s_setup_requested;
+static char *s_research_view;
 
 static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(s_lock); }
+
+bool hisu_media_research_publish(const char *json)
+{
+    if (!s_lock || !json) return false;
+    size_t bytes=strnlen(json,32768);
+    if (!bytes || bytes>=32768) return false;
+    char *copy=heap_caps_malloc(bytes+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!copy) return false;
+    memcpy(copy,json,bytes+1);
+    lock(); char *previous=s_research_view; s_research_view=copy; unlock();
+    free(previous); return true;
+}
+
+char *hisu_media_research_snapshot(void)
+{
+    if (!s_lock) return NULL;
+    lock();
+    size_t bytes=s_research_view ? strlen(s_research_view)+1 : 0;
+    char *copy=bytes ? heap_caps_malloc(bytes,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT) : NULL;
+    if (copy) memcpy(copy,s_research_view,bytes);
+    unlock(); return copy;
+}
 static bool window_valid(void)
 {
     return s_status.enabled && !hisu_media_session_should_close(esp_timer_get_time(),
@@ -119,7 +142,7 @@ static void response_headers(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
     httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
     httpd_resp_set_hdr(req, "Content-Security-Policy",
-        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; "
+        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:; "
         "connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 }
 
@@ -439,7 +462,7 @@ static void media_task(void *arg)
                 lock(); invalidate(); s_status.opening = true; s_claimed = false; s_status.error = ESP_OK;
                 uint32_t generation = s_generation;
                 unlock();
-                /* Finish closing the old AP before opening a fresh random-password window. */
+                /* Finish closing the old AP before opening a fresh setup window. */
                 hisu_setup_portal_stop();
                 if (s_server) { httpd_stop(s_server); s_server = NULL; }
                 esp_err_t err = hisu_network_setup(false);

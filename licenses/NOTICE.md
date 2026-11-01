@@ -20,7 +20,7 @@ Pin và luồng bàn phím Wi-Fi tham khảo Muse Gadget SDK, nhánh `feature/zh
 - `esp32/components/muse/boards/board_zhengchen_154.c`: GPIO8/ADC1_CH7, GPIO9 active-high, bảng ADC/phần trăm và offset +80; port sang board driver và power service HisuOS.
 - `esp32/components/muse/muse_menu.c`: ý tưởng bàn phím 8×5, Vol− sang cột, Vol+ sang hàng, BOOT chọn; viết lại cho UI tiếng Việt, thêm đầy đủ ký tự ASCII và lưu cấu hình khi kết nối thành công.
 - Copyright (c) Meta Platforms, Inc. and affiliates. Apache License 2.0, bản đầy đủ trong `Muse-Apache-2.0.txt`.
-- Không mang backend, token hoặc giao thức BLE Muse vào HisuOS. Mạng dùng API ESP-IDF 5.5.5 trực tiếp.
+- Không mang backend, token hoặc giao thức BLE Muse vào HisuOS. Mạng dùng API ESP-IDF 6.1 trực tiếp.
 
 UI hiện dùng `font_vi_semibold_16.c`, raster hóa từ Source Code Pro Semibold 16px (Adobe, 2010–2020), đặt symbol riêng `hisu_font_vi_semibold_16`. License SIL OFL 1.1 trong `SourceCodePro-LICENSE.txt`. Generator: `tools/generate-ui-font.py` (Pillow, nhận TTF nguồn làm tham số). Bitmap 4bpp không nén, hỗ trợ ASCII và dấu tiếng Việt. Font cũ bên dưới được giữ làm nguồn tham khảo.
 
@@ -43,3 +43,14 @@ Bộ resize GIF trong trang Setting được chuyển từ `FriendOS/main/web-sr
 - Nguồn: https://github.com/IamHisu/FriendOS/tree/71654b47462d4723e1dd4f1b6e2108a4d54cbe85/main/web-src
 - Dùng `gifuct-js` 2.1.2 để parse/giải mã frame và `gifenc` 1.0.3 để lượng tử màu/mã hóa lại. Hai package dùng giấy phép MIT; thông tin phiên bản, license và integrity được giữ trong `components/hisu_media/web-src/package-lock.json`.
 - Bundle được nhúng trực tiếp vào firmware, không tải mã hoặc tài nguyên từ Internet khi dùng hotspot.
+
+
+## Runtime slang dictionary
+
+Optional automatically downloaded definitions are adapted from Wiktionary
+contributors under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+The adaptation removes HTML from definition text. Each stored entry retains
+its page ID; Setting > Thiết bị > Slang đã học và nguồn links to the entry and
+its contribution history at `https://en.wiktionary.org/?curid=PAGEID`.
+This license applies to the downloaded dictionary data, not to HisuOS code.
+See [Wiktionary copyrights](https://en.wiktionary.org/wiki/Wiktionary:Copyrights).

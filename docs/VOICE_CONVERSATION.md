@@ -100,7 +100,7 @@ Gọi “Hi Su” trong phiên hủy audio cũ bằng generation và nghe lại 
 
 Input queue chứa tối đa 256 frame 40ms trong PSRAM; không block task fetch. Message WebSocket tối đa 128KiB, hỗ trợ các event chia nhỏ và continuation frames. Callback chuyển message hoàn chỉnh sang hàng đợi PSRAM (32 message, tối đa 384KiB kể cả message đang giải mã); task `live_decode` xử lý JSON/base64 theo thứ tự, kể cả close/error. Chỉ khi hàng đợi nhận đầy mới chậm đọc socket, kiểm tra hủy mỗi 10ms và lỗi sau 3 giây không tiến triển. Output queue tối đa 96 items và 1536KiB PCM, cấp phát theo nhu cầu. Khi đầy, task giải mã chờ theo tiến độ playback; chỉ lỗi nếu không có tiến độ trong 3 giây. Không bỏ PCM cũ. Setup timeout 15 giây, phản hồi timeout sau 60 giây không có audio mới. Kể chuyện bật nén ngữ cảnh và dùng session resumption sau `goAway`, tại cuối đoạn đã phát hết, cùng key và giữ nguyên giờ tự tắt. Thiếu handle hoặc mất kết nối trước khi nhận đủ đoạn vẫn dừng; Chat thường chưa tự phục hồi sau mất mạng. Xem [Bedtime Stories](BEDTIME_STORIES.md).
 
-Phiên voice mới bắt đầu với đệm 500ms. Nếu hụt, mức đệm lại dựa trên số lần hụt và khoảng ngắt nhận thực tế, tối đa 2 giây; câu sau nhớ mức đệm đầu đã học (tối đa 1,5 giây), giảm 250ms sau mỗi câu hoàn tất không hụt. Phiên mới reset; phần đuôi hoàn tất không chờ đủ đệm. Nhạc vẫn giữ đệm đầu 500ms và đệm lại 300 → 500 → 800ms. `Voice queue starved` ghi mức đệm kế tiếp, `Voice buffer ready` ghi thời gian giữ thực tế. Vẫn dùng PCM của Gemini Live, không giảm băng thông như Opus; cần nghe thử trên board để xác nhận mức cải thiện. Xem [Receive Pipeline](NETWORK_MEMORY.md#receive-pipeline-2026-10-22).
+Phiên trò chuyện bắt đầu với đệm 1,2 giây; kể chuyện giữ tối thiểu 8 giây âm thanh trước khi phát. Nếu hụt, mức đệm lại tăng 3 → 6 → 12 giây, đồng thời tính phần thiếu hụt khi tốc độ nhận thấp hơn tốc độ phát. Câu sau nhớ mức đệm đầu đã học (tối đa 6 giây), giảm 250ms sau mỗi câu hoàn tất không hụt. Câu hoàn tất được phát ngay dù chưa đủ mục tiêu. Hàng đợi có 256 slot trong PSRAM; giới hạn PCM vẫn 1,5 MiB. Thời gian chờ có giới hạn và cho phép hủy khi đổi phiên. Nhạc giữ đệm đầu 500ms và đệm lại 300 → 500 → 800ms. Khi loa đang nói và 500ms sau đó, ngưỡng wake tăng từ 0,20 lên 0,65 để giảm nhận nhầm tiếng loa; gọi ngắt đủ rõ vẫn hoạt động. Các thay đổi này cần nghe thử trên board. Nếu nguồn liên tục cung cấp chậm hơn thời gian thực, bộ đệm hữu hạn vẫn có thể cạn. Xem [Receive Pipeline](NETWORK_MEMORY.md#receive-pipeline-2026-10-22).
 
 Live khai báo function tool `set_flashlight(enabled)` để bật/tắt đèn pin bằng giọng nói; tool response gửi lại trên cùng kết nối. Điều khiển menu/nút vẫn dùng được. Gemini key phải có quyền/quota cho model Live; compile không xác nhận API thật.
 
@@ -248,3 +248,29 @@ headroom before WSS cleanup. Explicit model closure, sleep and Live failures
 log separate reasons. These are diagnostics only, not a timeout change or an
 assertion that every idle transition is memory-related. No user text is logged
 by this diagnostic. Physical BOOT/other local control paths retain their behavior.
+
+
+Khi mở phiên bằng lời gọi/nút wake, firmware cung cấp ngày giờ địa phương theo
+múi giờ đã cài và yêu cầu một câu mở chuyện ngắn theo hoàn cảnh. Âm báo offline
+vẫn xác nhận đã nghe; AI không lặp lời chào cố định. Không có giờ hợp lệ thì
+không suy đoán buổi/ngày. Khi cần giờ mới trong phiên dài, dùng get_clock.
+Phiên mở bởi tin nhắn văn bản không thêm lời mở chuyện trước yêu cầu.
+
+
+Sáng tác (thơ, truyện, lời bài hát mới, câu đố, nhập vai) được trả lời trực tiếp,
+không cần tool hay tính năng phần cứng. Chỉ dẫn phân biệt tưởng tượng trong tác
+phẩm với thông tin thực tế và kết quả thao tác thiết bị. Yêu cầu phát bản nhạc
+có sẵn vẫn dùng luồng tìm/phát; không thay bản thu bằng lời tự bịa.
+
+
+Giọng hội thoại giữ Leda với tiếng Việt miền Nam nhẹ. Bỏ ép chuyển từng phụ
+âm/thanh điệu và chỉ dẫn diễn xuất mạnh. Chat, thơ và Reader dùng cùng chất
+giọng, cao độ và nhịp nói; không đổi giọng nhân vật hay thì thào khi kể chuyện.
+Đây là chỉ dẫn cho mô hình sinh giọng, cần nghe thử trên thiết bị để đánh giá
+độ ổn định; không phải cơ chế khóa âm sắc tuyệt đối.
+
+
+Cá tính Hi Su được phép chủ động bắt miếng, cà khịa thân thiện, giả bộ hờn và
+nói quá theo ngữ cảnh. Hư cấu hài hước không bị coi là bịa dữ kiện thực tế;
+số pin, giờ và kết quả thao tác vẫn phải đúng. Khi người dùng khó chịu hoặc
+cần nói nghiêm túc thì giảm đùa. Hài hước thể hiện bằng câu chữ, giữ giọng Leda.

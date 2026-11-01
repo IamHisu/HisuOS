@@ -184,6 +184,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         xSemaphoreGive(s_lock);
     }
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        hisu_clock_network_disconnected();
         const wifi_event_sta_disconnected_t *event = data;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         size_t expected = strlen(s_status.ssid);
@@ -201,8 +202,11 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         ESP_LOGW("NETWORK","STA disconnected: reason=%u",(unsigned)event->reason);
         xEventGroupSetBits(s_events, EVENT_DISCONNECTED);
     }
-    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP)
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        /* Time sync must not wait for NVS credential writes or Internet probing. */
+        hisu_clock_network_connected();
         xEventGroupSetBits(s_events, EVENT_IP);
+    }
 }
 
 static void failed(esp_err_t error)
@@ -258,13 +262,10 @@ static void setup_radio(bool enabled)
         err = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
         if (err != ESP_OK) { failed(err); return; }
         snprintf((char *)config.ap.ssid, sizeof(config.ap.ssid), "Hisu-Setting-%02X%02X%02X", mac[3], mac[4], mac[5]);
-        /* STA radio provides RF entropy, including when station Wi-Fi is disabled. */
+        /* Start the radio even when station Wi-Fi is disabled. */
         err = radio_start();
         if (err != ESP_OK) { failed(err); return; }
-        uint8_t random[8];
-        esp_fill_random(random, sizeof(random));
-        hisu_wifi_setup_password(random, (char *)config.ap.password);
-        memset(random, 0, sizeof(random));
+        hisu_wifi_setup_password((char *)config.ap.password);
         config.ap.ssid_len = strlen((char *)config.ap.ssid);
         config.ap.channel = 1; config.ap.max_connection = 1;
         config.ap.authmode = WIFI_AUTH_WPA2_PSK;

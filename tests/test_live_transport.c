@@ -21,6 +21,8 @@ esp_err_t hisu_ui_post_music_lyric(uint32_t ticket,const char *text,const char *
 hisu_music_lyrics_t *hisu_music_load_lyrics(const hisu_music_track_t *track) { return NULL; }
 
 static bool mock_memory_enabled = true;
+bool voice_slang_poll(bool (*idle)(void)) { return false; }
+char *voice_slang_context(void) { return NULL; }
 void hisu_memory_summary_request(void) {}
 void hisu_memory_summary_begin_turn(void) {}
 bool voice_memory_summary_poll(bool (*idle)(void)) { return false; }
@@ -257,7 +259,7 @@ static void event(live_event_t kind, uint32_t generation, const char *text) {
 static void reset(void) {
     receive_drain(); s_receive_paused=false;
     mock_decode_task_failure=false;
-    s_voice_buffer_epoch=0; s_voice_startup_ms=500; s_voice_rebuffers=0;
+    s_voice_buffer_epoch=0; s_voice_startup_ms=VOICE_STARTUP_MS; s_voice_rebuffers=0;
     mock_queue_messages=0;
     voice_lookup_free(mock_lookup_result); mock_lookup_result=NULL; mock_lookup_queued=false; mock_lookup_submits=0;
     mock_performance=false; mock_performance_off_calls=0;
@@ -332,16 +334,9 @@ static void device_tool_tests(void) {
     cJSON *setup=cJSON_Parse(setup_body); free(setup_body); assert(setup);
     cJSON *config=cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"generationConfig");
     cJSON *instruction=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"systemInstruction"),"parts"),0),"text");
-    assert(strstr(instruction->valuestring,"Do not add a second greeting"));
     assert(!strncmp(instruction->valuestring,"Luôn trò chuyện bằng tiếng Việt",strlen("Luôn trò chuyện bằng tiếng Việt")));
     assert(strstr(instruction->valuestring,"Bạn là Hi Su, một robot nhỏ chạy HisuOS"));
-    assert(strstr(instruction->valuestring,"người Bến Tre và vùng đồng bằng sông Cửu Long"));
-    assert(strstr(instruction->valuestring,"thanh hỏi và ngã có thể hòa làm một"));
-    assert(strstr(instruction->valuestring,"không cố biến mọi âm r thành gi"));
-    assert(strstr(instruction->valuestring,"Nói chắc tiếng, rõ chữ, dứt khoát"));
-    assert(strstr(instruction->valuestring,"Ưu tiên phát âm dễ hiểu hơn"));
     assert(strstr(instruction->valuestring,"không lạm dụng tiếng địa phương hay cố nhại giọng"));
-    assert(strstr(instruction->valuestring,"kể cả khi đọc tên riêng, số, thông tin kỹ thuật và kết quả công cụ"));
     assert(strstr(instruction->valuestring,"Không cần cố định đại từ nhân xưng"));
     assert(!strstr(instruction->valuestring,"Xưng 'mình', gọi 'bạn'"));
     assert(strstr(instruction->valuestring,"Không giới hạn cứng số câu"));
@@ -362,17 +357,13 @@ static void device_tool_tests(void) {
     assert(strstr(instruction->valuestring,"Với câu đùa/câu trích nghe rõ nhưng chưa hiểu ý thì hỏi lại ngữ cảnh"));
     assert(strstr(instruction->valuestring,"hiểu tiếng Việt, tiếng Anh và tiếng Nhật"));
     assert(strstr(instruction->valuestring,"không xin nhắc lại hay nhắc nói tiếng Việt"));
-    assert(strstr(instruction->valuestring,"Ưu tiên dùng từ 'dùm' thay cho 'giùm'"));
-    assert(strstr(instruction->valuestring,"Âm đầu gi và v phát âm như d miền Nam"));
-    assert(strstr(instruction->valuestring,"'gì' đọc 'dì', 'giọng' đọc 'dọng', 'vậy' đọc 'dậy'"));
-    assert(strstr(instruction->valuestring,"không đổi chính tả phụ đề hay âm r, Anh/Nhật"));
     assert(strstr(instruction->valuestring,"Không tiết lộ API key hay dữ liệu riêng tư"));
     assert(strstr(instruction->valuestring,"Use Hi Su, not provider/site/model names (Gemini, Google, NhacCuaTui)"));
     assert(strstr(instruction->valuestring,"in speech/errors. Disclose sources truthfully only if asked"));
     assert(!strstr(instruction->valuestring,"Nói nguồn, thời điểm, đơn vị"));
     assert(strstr(instruction->valuestring,"trừ khi người dùng yêu cầu rõ ràng ngôn ngữ khác hoặc bật phiên dịch"));
     assert(strstr(instruction->valuestring,"Không tự chuyển sang ngôn ngữ khác vì tên bài hát"));
-    assert(strstr(instruction->valuestring,"Không hát, không bắt chước bài hát, không bịa lời"));
+    assert(strstr(instruction->valuestring,"không hát hay bịa lời để giả rằng đã phát bản thu"));
     assert(!cJSON_GetObjectItem(cJSON_GetObjectItem(config,"speechConfig"),"languageCode"));
     assert(strstr(instruction->valuestring,"không nhận mình có cảm xúc người thật"));
     assert(strstr(instruction->valuestring,"not FIFO/keywords"));
@@ -472,7 +463,8 @@ static void memory_tool_tests(void)
 {
     reset();
     char *body = build_setup();
-    assert(body && !strstr(body,"@@HISU_MEMORY@@"));
+    assert(body && !strstr(body,"@@HISU_MEMORY@@") && !strstr(body,"@@HISU_CLOCK@@"));
+    assert(strstr(body,"DEVICE CLOCK") && strstr(body,"utc_offset_minutes="));
     cJSON *json = cJSON_Parse(body);
     assert(json);
     cJSON *setup = cJSON_GetObjectItem(json,"setup");
@@ -588,7 +580,8 @@ static void startup_feedback_tests(void)
     voice_live_feedback(false); assert(play_feedback() && mock_i2s_written_bytes==written && !s_speaker_enabled);
     mock_feedback_read_error=false;
     speaker_release(); free(s_speaker_mix); s_speaker_mix=previous;
-    reset(); mock_now=0; voice_live_open_at(80,0);
+    reset(); assert(s_resume_kind==0);
+    mock_now=0; voice_live_open_at(80,0); assert(s_resume_kind==9);
     voice_live_ui_queued(80); assert(voice_start_ms(&s_start,VOICE_START_UI)==0);
     mock_now=123000; voice_live_ui_queued(80);
     assert(voice_start_ms(&s_start,VOICE_START_UI)==0); /* First observation, including t=0, is retained. */
@@ -599,8 +592,8 @@ static void startup_feedback_tests(void)
     reset();
     unsigned calls=mock_memory_context_calls;
     /* The user-provided persona is longer; keep a bounded fixture-size budget. */
-    char *setup=build_setup(); assert(setup && mock_memory_context_calls==calls+1 && strlen(setup)<32500);
-    assert(strstr(setup,"topic=news") && strstr(setup,"last_24_hours"));
+    char *setup=build_setup(); assert(setup && mock_memory_context_calls==calls+1 && strlen(setup)<38000);
+    assert(strstr(setup,"topic=news") && strstr(setup,"topic=slang"));
     assert(strstr(setup,"merge_ids") && strstr(setup,"FIRST list_memory ALL facts"));
     assert(strstr(setup,"Tool planning is internal, not dialogue."));
     assert(strstr(setup,"Invoke tools only via structured functionCall"));
@@ -1582,48 +1575,31 @@ static void audio_buffer_tests(void) {
         s_reply_state.rx_last_us==2100000 && s_reply_state.max_rx_gap_us==1100000);
     assert(voice_live_interrupt(s_generation+1) && !s_reply_state.rx_bytes && !s_reply_state.max_rx_gap_us);
     reset(); live_turn_end(&s_turn); mock_now=0;
-    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==750000);
-    s_queued_audio_bytes=23899; mock_now=0;
-    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==750000);
-    s_queued_audio_bytes=23900; mock_now=0;
+    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==3400000);
+    s_queued_audio_bytes=VOICE_STARTUP_MS*48-100; mock_now=0;
     assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && !mock_now);
-    s_queued_audio_bytes=14299; mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==1550000);
-    s_voice_rebuffers=0; s_voice_startup_ms=500; s_queued_audio_bytes=38300; mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && !mock_now);
     s_queued_audio_bytes=0; mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==1950000);
+    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==7000000);
     mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==2750000);
+    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==13000000);
     mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==2750000);
-    mock_now=0;
-    s_queued_audio_bytes=0; s_turn.response_pending=false;
-    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && !mock_now);
+    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==25000000);
+    assert(s_voice_startup_ms==6000);
+    s_voice_rebuffers=0; voice_buffer_complete(); assert(s_voice_startup_ms==5750);
+    s_reply_state.rx_first_us=1000000; s_reply_state.rx_last_us=31730000;
+    s_reply_state.rx_bytes=21060*48; /* Captured log: 21 s audio arrives over 30.7 s. */
+    assert(voice_resume_buffer_ms()==VOICE_BUFFER_MAX_MS);
+    s_turn.response_pending=false; mock_now=0;
     assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && !mock_now);
     live_turn_end(&s_turn); mock_delay_hook=voice_live_close;
     assert(!wait_audio_buffer(false,true,s_epoch,s_generation,100,0));
-
-    reset(); live_turn_end(&s_turn); s_queued_audio_bytes=24000;
-    assert(wait_audio_buffer(false,true,s_epoch,s_generation,0,0) && s_voice_startup_ms==500);
-    s_reply_state.max_rx_gap_us=1150000;
-    assert(voice_resume_buffer_ms()==1350);
+    reset(); live_turn_end(&s_turn); s_bedtime.active=true; mock_now=0;
+    s_queued_audio_bytes=7999*48;
+    assert(wait_audio_buffer(false,true,s_epoch,s_generation,48,0) && !mock_now);
     s_queued_audio_bytes=0; mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==2100000);
-    assert(s_voice_startup_ms==1350);
-    s_turn.response_pending=false; mock_now=0;
-    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && !mock_now && s_voice_startup_ms==1350);
-    voice_buffer_complete(); assert(s_voice_startup_ms==1100);
-    voice_buffer_complete(); assert(s_voice_startup_ms==850);
-    voice_buffer_complete(); assert(s_voice_startup_ms==600);
-    voice_buffer_complete(); assert(s_voice_startup_ms==500);
-    s_reply_state.max_rx_gap_us=10000000;
-    assert(voice_resume_buffer_ms()==2000);
-    live_turn_end(&s_turn); mock_queue_messages=80;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && !mock_now);
-    assert(s_voice_startup_ms==1500); /* Remember only a bounded startup target. */
-    mock_queue_messages=0; voice_live_close(); voice_live_open(30); live_turn_end(&s_turn);
-    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==750000 && s_voice_startup_ms==500);
+    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==17000000);
+    mock_queue_messages=OUTPUT_QUEUE_SLOTS-16; mock_now=0;
+    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && !mock_now);
 
     reset(); hisu_music_track_t *track=queued_music();
     s_music_producer_done=false; mock_now=0; mock_delay_hook=fill_music_on_delay;

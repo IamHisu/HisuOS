@@ -220,6 +220,73 @@ if (typeof document !== 'undefined') {
     el('wifi-dialog').close();
     await wifiAction('/wifi/join',{ssid,password,...(hidden ? {hidden:true} : saved && !password ? {saved:true} : {})});
   };
+  function renderSlang(state) {
+    el('slang-enabled').checked = Boolean(state.enabled);
+    const rows = state.entries || [];
+    el('slang-status').textContent = state.updated_at_utc ?
+      `${rows.length} từ · Cập nhật ${new Date(state.updated_at_utc*1000).toLocaleString('vi-VN')}` : 'Chưa tải từ điển; sẽ cập nhật khi có Internet, đang rảnh và pin từ 30% hoặc đang sạc.';
+    el('slang-list').replaceChildren();
+    for (const row of rows) {
+      const li = document.createElement('li'), a = document.createElement('a');
+      li.append(document.createTextNode(`${row.term}: ${row.meaning} `));
+      if (Number.isInteger(row.pageid) && row.pageid>0 && row.pageid<=2147483647) {
+        a.href = `https://en.wiktionary.org/?curid=${row.pageid}`;
+        a.textContent = 'Wiktionary'; a.target = '_blank'; a.rel = 'noopener noreferrer'; li.append(a);
+      }
+      el('slang-list').append(li);
+    }
+    el('slang-license').replaceChildren();
+    if (rows.length) {
+      const license = document.createElement('a');
+      license.href = 'https://creativecommons.org/licenses/by-sa/4.0/';
+      license.textContent = 'CC BY-SA 4.0'; license.target = '_blank'; license.rel = 'noopener noreferrer';
+      el('slang-license').append(document.createTextNode('Wiktionary contributors · '),license,
+        document.createTextNode(' · Bỏ thẻ HTML từ nghĩa gốc. Xem trang nguồn và lịch sử đóng góp qua mỗi liên kết.'));
+    }
+  }
+  el('slang-enabled').onchange = async () => {
+    if (!token) return;
+    const input = el('slang-enabled'); input.disabled = true;
+    try { renderSlang(await request('/slang',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:input.checked})})); }
+    catch (error) { input.checked = !input.checked; el('slang-status').textContent = error.message; }
+    finally { input.disabled = false; }
+  };
+  el('research-refresh').onclick = async () => {
+    if (!token) return;
+    el('research-refresh').disabled = true;
+    el('research-result').hidden = true;
+    try {
+      const state = await request('/research');
+      if (!state.ok) { el('research-status').textContent = state.message || 'Chưa có bản tra cứu.'; return; }
+      el('research-status').textContent = `Tra lúc ${new Date(state.fetched_at_utc*1000).toLocaleString('vi-VN')}`;
+      el('research-text').textContent = state.speech;
+      el('research-sources').replaceChildren();
+      for (const source of state.sources || []) {
+        const url = new URL(source.url);
+        if (url.protocol !== 'https:') continue;
+        const li = document.createElement('li'), a = document.createElement('a');
+        a.href = url.href; a.textContent = source.title; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        li.append(a); el('research-sources').append(li);
+      }
+      const host = el('research-suggestions');
+      const root = host.shadowRoot || host.attachShadow({mode:'open'});
+      root.replaceChildren();
+      for (const html of state.search_suggestions || []) {
+        const template = document.createElement('template'); template.innerHTML = html;
+        // Provider HTML is isolated from the editor. Never execute active content.
+        if (template.content.querySelector('script,iframe,object,embed,form,base,link,meta')) throw new Error('Không hiển thị được gợi ý tìm kiếm.');
+        for (const node of template.content.querySelectorAll('*')) {
+          for (const attr of node.attributes) {
+            if (/^on/i.test(attr.name) || ['srcdoc','action','formaction'].includes(attr.name.toLowerCase())) throw new Error('Gợi ý tìm kiếm không hợp lệ.');
+            if (['href','src','xlink:href'].includes(attr.name.toLowerCase()) && !/^(https:\/\/|data:image\/|#)/i.test(attr.value)) throw new Error('Liên kết tìm kiếm không hợp lệ.');
+          }
+        }
+        root.append(template.content);
+      }
+      el('research-result').hidden = false;
+    } catch (error) { el('research-status').textContent = error.message; }
+    finally { el('research-refresh').disabled = false; }
+  };
   async function loadSettings() {
     const state = await request('/settings');
     for (const input of document.querySelectorAll('[data-setting]')) {
@@ -238,6 +305,7 @@ if (typeof document !== 'undefined') {
     }
     try { await loadMemory(); }
     catch (error) { el('memory-status').textContent = 'Trí nhớ chưa sẵn sàng.'; }
+    try { renderSlang(await request('/slang')); } catch { el('slang-status').textContent = 'Từ điển slang chưa sẵn sàng.'; }
     void loadBatteryAudio();
   }
   async function loadBatteryAudio() {
@@ -325,11 +393,14 @@ if (typeof document !== 'undefined') {
     };
     remove.onclick = () => void changeKey(true);
   }
+  async function syncTime() {
+    await request('/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utc:Math.floor(Date.now()/1000)})});
+  }
   el('time-sync').onclick = async () => {
     if (!token) return;
     el('time-sync').disabled = true;
     try {
-      await request('/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({utc:Math.floor(Date.now()/1000)})});
+      await syncTime();
       message('Đã đồng bộ giờ.');
     } catch (error) { message(error.message,true); }
     finally { el('time-sync').disabled = false; }
@@ -421,6 +492,7 @@ if (typeof document !== 'undefined') {
       el('login-section').hidden = true; el('editor').hidden = false;
       el('connection').textContent = 'Đã kết nối'; message('');
       const state = await request('/status'); baseline = state.revision;
+      try { await syncTime(); } catch (error) { message(error.message,true); }
       tab('wifi'); await loadSettings(); updateWifi(await request('/wifi'));
       await poll();
     } catch (error) { logout(); message(error.message,true); }

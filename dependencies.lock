@@ -6,7 +6,7 @@ dependencies:
       require: private
       version: '>=5.0'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.7.19~2
   espressif/dl_fft:
@@ -34,7 +34,7 @@ dependencies:
       require: private
       version: '*'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     targets:
     - esp32
@@ -117,7 +117,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.5
+    version: 6.1.0
   lvgl/lvgl:
     component_hash: 17e68bfd21f0edf4c3ee838e2273da840bf3930e5dbc3bfa6c1190c3aed41f9f
     dependencies: []
@@ -126,11 +126,13 @@ dependencies:
       type: service
     version: 9.4.0
 direct_dependencies:
+- espressif/cjson
+- espressif/esp-dl
 - espressif/esp-sr
 - espressif/esp_audio_codec
 - espressif/esp_websocket_client
 - idf
 - lvgl/lvgl
-manifest_hash: c92f9b6b22fb99a2309e1de7b0ab9d6e77b4d7baec1d2def50c4e1c0731f5b1c
+manifest_hash: 6026c8c4ae80adfa3f636e1f760b05f5957149723792940c6f9dd3af40f8f0cc
 target: esp32s3
-version: 2.0.0
+version: 3.0.0

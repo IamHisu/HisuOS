@@ -150,6 +150,11 @@ int main(void)
     assert(!voice_wake_accept(2, 0.90f));
     assert(!voice_wake_accept(1, -0.1f));
     assert(!voice_wake_accept(1, 1.1f));
+    assert(!voice_wake_accept_context(1, 0.22f, true));
+    assert(voice_wake_accept_context(1, 0.22f, false));
+    assert(!voice_wake_accept_context(1, 0.649f, true));
+    assert(voice_wake_accept_context(1, 0.65f, true));
+    assert(!voice_wake_accept_context(2, 0.9f, true));
     voice_session_t session = {0};
     voice_session_open(&session, 1000);
     uint32_t id = session.session_id;

@@ -85,6 +85,10 @@ static void fail_current(bool rejected) {
     failed(rejected ? ESP_ERR_INVALID_ARG : ESP_ERR_TIMEOUT);
 }
 int main(void) {
+    reset();
+    unsigned clock_requests=mock_clock_requests;
+    on_event(NULL,IP_EVENT,IP_EVENT_STA_GOT_IP,NULL);
+    assert(mock_clock_requests==clock_requests+1 && !s_status.connected); /* Before worker/NVS/probe. */
     reset(); hisu_network_performance_t perf;
     assert(hisu_network_set_performance(true)==ESP_OK);
     hisu_network_get_performance(&perf); assert(!perf.enabled && !perf.applied_us);

@@ -52,3 +52,16 @@ strongest AP with a usable backup, hidden SSID after reboot, password correction
 after scan, router off/on, station toggling during Setting and Internet loss
 when the only saved alternative is out of range. Host tests do not validate
 real radio events, DHCP, NVS persistence or AP+STA channel changes.
+
+
+## Đồng bộ giờ khi có IP
+
+SNTP bắt đầu từ sự kiện STA_GOT_IP, trước lưu credential và kiểm tra Internet.
+Clock init vẫn có kiểm tra trạng thái kết nối sau khởi tạo để không bỏ lỡ IP
+đến sớm. Cờ atomic ngăn worker/startup khởi động lại cùng lượt SNTP, và reset
+cờ khi disconnect để lần có IP tiếp theo thử ngay. Không xóa đồng hồ hệ thống.
+
+Tắt LWIP_SNTP_STARTUP_DELAY (trước đây chờ ngẫu nhiên tối đa 5 giây). Ba server:
+time.google.com, time.cloudflare.com, pool.ntp.org. Dự phòng được SDK thử nối
+tiếp; khi UDP/123 bị chặn vẫn có timeout 15 giây, không cam kết lấy được giờ
+ngay trên mọi mạng. Log CLOCK ghi thời điểm gửi yêu cầu và đồng bộ thành công.

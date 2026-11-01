@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* IDF 5.5.5's existing WPA crypto routine, also exercised by host known vectors.
+/* ESP-IDF's existing WPA crypto routine, also exercised by host known vectors.
  * Only the NCT API-provided lyric key is used; TLS crypto settings are unchanged. */
 extern int rc4_skip(const uint8_t *key,size_t keylen,size_t skip,uint8_t *data,size_t bytes);
 

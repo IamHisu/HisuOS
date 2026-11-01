@@ -386,6 +386,7 @@ static void detection_task(void *arg)
     int64_t next_timing_log_us = 0;
     int64_t max_fetch_gap_us = 0;
     int64_t max_detect_us = 0;
+    int64_t speaker_guard_until = 0;
     int16_t *capture = NULL;
     size_t captured = 0;
     size_t silence_samples = 0;
@@ -503,7 +504,9 @@ static void detection_task(void *arg)
             }
             continue;
         }
-        /* Keep wake detection active during processing and playback for interruption. */
+        if (snapshot.state == VOICE_SPEAKING) speaker_guard_until=now_ms()+500;
+        bool speaker_guard=now_ms()<speaker_guard_until || voice_live_feedback_busy();
+        /* Confident wake detection still allows interruption during playback. */
         int64_t detect_started_us = esp_timer_get_time();
         esp_mn_state_t state = s_multinet->detect(s_multinet_data, result->data);
         int64_t detect_us = esp_timer_get_time() - detect_started_us;
@@ -514,7 +517,7 @@ static void detection_task(void *arg)
                 ESP_LOGI(TAG, "MultiNet command=%d text=%s confidence=%.2f",
                          recognized->command_id[0], recognized->string, recognized->prob[0]);
             if (recognized && recognized->num > 0 &&
-                voice_wake_accept(recognized->command_id[0], recognized->prob[0])) {
+                voice_wake_accept_context(recognized->command_id[0], recognized->prob[0], speaker_guard)) {
                 int64_t wake_us=esp_timer_get_time();
                 ESP_LOGI(TAG, "Offline Hey Hisu detected (confidence %.2f)", recognized->prob[0]);
                 (void)wake_at(wake_us);
@@ -523,7 +526,7 @@ static void detection_task(void *arg)
             }
             if (recognized && recognized->num > 0 && recognized->command_id[0] == 1)
                 ESP_LOGI(TAG, "Wake rejected: confidence %.3f, minimum %.2f",
-                         recognized->prob[0], HISU_WAKE_MIN_CONFIDENCE);
+                         recognized->prob[0], speaker_guard ? HISU_WAKE_PLAYBACK_MIN_CONFIDENCE : HISU_WAKE_MIN_CONFIDENCE);
             s_multinet->clean(s_multinet_data);
         } else if (state == ESP_MN_STATE_TIMEOUT) {
             esp_mn_results_t *candidate = s_multinet->get_results(s_multinet_data);

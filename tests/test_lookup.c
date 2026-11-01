@@ -3,6 +3,9 @@
 #include <time.h>
 #include <stdarg.h>
 #include "alert_mock.h"
+#include "hisu_settings.h"
+#include "hisu_media.h"
+#include "hisu_power.h"
 static cJSON *(*normal_json_parse)(const char *)=cJSON_Parse;
 static void (*normal_json_delete)(cJSON *)=cJSON_Delete;
 #define MALLOC_CAP_INTERNAL 4
@@ -97,13 +100,45 @@ static time_t lookup_time(time_t *out) { if (out) *out=lookup_now; return lookup
 #define time lookup_time
 static unsigned lookup_http_started;
 static char *forecast_wire;
-static const char *news_wire;
-static bool news_missing;
+static bool web_key=true;
+static unsigned research_published;
+static bool slang_enabled=true,slang_cancel;
+static int slang_power=50;
+static unsigned slang_writes;
+static char *slang_stored;
+int hisu_settings_get(hisu_setting_t key) { assert(key==HISU_SETTING_SLANG_AUTO); return slang_enabled; }
+void hisu_power_get(hisu_power_status_t *out) { *out=(hisu_power_status_t){.valid=true,.percent=slang_power}; }
+esp_err_t hisu_settings_load_slang(char *out,size_t capacity) {
+    out[0]=0; if (!slang_stored) return ESP_ERR_NOT_FOUND;
+    assert(strlen(slang_stored)<capacity); strcpy(out,slang_stored); return ESP_OK;
+}
+esp_err_t hisu_settings_save_slang(const char *json) {
+    assert(mock_idle && lookup_valid && strlen(json)<=6144);
+    char *copy=malloc(strlen(json)+1); assert(copy); strcpy(copy,json); free(slang_stored); slang_stored=copy; ++slang_writes; return ESP_OK;
+}
+
+static const char *web_wire="{\"status\":\"completed\",\"steps\":[{\"type\":\"google_search_call\"},{\"type\":\"google_search_result\",\"result\":[{\"search_suggestions\":\"<div>Search suggestions</div>\"}]},{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"Detailed sourced news, beyond the headline.\",\"annotations\":[{\"type\":\"url_citation\",\"title\":\"Source\",\"url\":\"https://example.com/news\",\"start_index\":0,\"end_index\":8}]}]}]}";
+esp_err_t hisu_settings_get_gemini_profile(hisu_gemini_key_t profile,char out[128]) {
+    assert(profile==HISU_GEMINI_CHAT); strcpy(out,"fake-key"); return web_key ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+bool hisu_settings_has_gemini_profile(hisu_gemini_key_t profile) { assert(profile==HISU_GEMINI_CHAT); return web_key; }
+bool hisu_media_research_publish(const char *json) {
+    assert(strstr(json,"search_suggestions") && strstr(json,"https://example.com/news")); ++research_published; return true;
+}
+static esp_err_t lookup_http_post(esp_http_client_handle_t http,const char *body,int bytes) {
+    assert(http->config.method==HTTP_METHOD_POST && bytes==(int)strlen(body));
+    cJSON *request=cJSON_Parse(body); assert(request);
+    assert(cJSON_IsFalse(cJSON_GetObjectItem(request,"store")));
+    assert(!strcmp(cJSON_GetObjectItem(request,"model")->valuestring,"gemini-2.5-flash-lite"));
+    cJSON_Delete(request); return ESP_OK;
+}
+#define esp_http_client_set_post_field lookup_http_post
 static esp_http_client_handle_t lookup_http_init(const esp_http_client_config_t *config) {
     assert(config->crt_bundle_attach && config->is_async && config->timeout_ms==1000 && config->disable_auto_redirect);
-    assert(config->buffer_size==4096 && config->buffer_size_tx==4096);
-    assert(!strncmp(config->url,"https://www.vang.today/api/prices",31) ||
-        !strncmp(config->url,"https://news.google.com/rss/search?",sizeof("https://news.google.com/rss/search?")-1) ||
+    assert(config->buffer_size==(strstr(config->url,"en.wiktionary.org") ? 2048 : 4096) && config->buffer_size_tx==config->buffer_size);
+    assert(!strncmp(config->url,"https://en.wiktionary.org/",26) ||
+        !strncmp(config->url,"https://www.vang.today/api/prices",31) ||
+        !strcmp(config->url,"https://generativelanguage.googleapis.com/v1beta/interactions") ||
         !strncmp(config->url,"https://geocoding-api.open-meteo.com/v1/search?",44) ||
         !strncmp(config->url,"https://api.open-meteo.com/v1/forecast?",37));
     ++lookup_http_started; esp_http_client_handle_t http=calloc(1,sizeof(*http));
@@ -116,13 +151,16 @@ static esp_err_t lookup_http_perform(esp_http_client_handle_t http) {
     if (!http->calls++ || mock_mode==7) return ESP_ERR_HTTP_EAGAIN;
     if (mock_mode==8) lookup_valid=false;
     const char *wire=strstr(http->config.url,"/prices") ? gold_wire : strstr(http->config.url,"/search?") ? geo_wire : forecast_wire;
-    if (strstr(http->config.url,"news.google.com")) {
-        wire=news_wire;
-        if (news_missing && strstr(http->config.url,"AI")) wire="<rss><channel/></rss>";
+    if (strstr(http->config.url,"/interactions")) wire=web_wire;
+    if (strstr(http->config.url,"en.wiktionary.org")) {
+        if (slang_cancel) lookup_valid=false;
+        wire=strstr(http->config.url,"/w/api.php") ?
+            "{\"query\":{\"categorymembers\":[{\"pageid\":1,\"title\":\"test term\"},{\"pageid\":2,\"title\":\"second term\"}]}}" :
+            "{\"vi\":[{\"definitions\":[{\"definition\":\"<b>friend</b> &amp; peer\"}]}]}";
     }
     if (mock_mode==3) wire="<html>not JSON</html>";
     esp_http_client_event_t event={.event_id=HTTP_EVENT_ON_DATA,.user_data=http->config.user_data,
-        .data=(void *)wire,.data_len=mock_mode==5 ? (strstr(http->config.url,"news.google.com") ? 300000 : 20000) : (int)strlen(wire)};
+        .data=(void *)wire,.data_len=mock_mode==5 ? (strstr(http->config.url,"/interactions") ? 70000 : 20000) : (int)strlen(wire)};
     return http->config.event_handler(&event);
 }
 #define esp_http_client_init lookup_http_init
@@ -130,7 +168,9 @@ static esp_err_t lookup_http_perform(esp_http_client_handle_t http) {
 #include "../components/hisu_voice/src/hisu_voice_lookup_json.c"
 #include "../components/hisu_voice/src/hisu_voice_lookup_data.c"
 #include "../components/hisu_voice/src/hisu_voice_news.c"
+#include "../components/hisu_voice/src/hisu_voice_web.c"
 #include "../components/hisu_voice/src/hisu_voice_lookup.c"
+#include "../components/hisu_voice/src/hisu_voice_slang.c"
 void hisu_network_get_link(hisu_network_link_t *out) {
     *out=(hisu_network_link_t){.connected=lookup_online,.internet=lookup_online ? HISU_INTERNET_ONLINE : HISU_INTERNET_OFFLINE};
 }
@@ -159,9 +199,9 @@ static void reset_lookup(void) {
     assert(!voice_lookup_busy() && !mock_http_live);
     mock_now+=20000000; mock_mode=0; mock_http_status=200; lookup_valid=lookup_online=true;
     lookup_free_ram=32768; lookup_largest_ram=16384; mock_alloc_budget=-1; task_fail=false;
-    lookup_stack_free=3072;
+    lookup_stack_free=3072; web_key=true;
     lookup_fail_print=false;
-    for (unsigned i=0;i<3;++i) { free(lookup_cache[i].json); lookup_cache[i].json=NULL; }
+    for (unsigned i=0;i<2;++i) { free(lookup_cache[i].json); lookup_cache[i].json=NULL; }
 }
 static void make_forecast(void) {
     cJSON *o=cJSON_Parse("{\"utc_offset_seconds\":25200,\"current\":{\"time\":\"2026-10-20T15:00\",\"weather_code\":95,\"temperature_2m\":26.5},\"current_units\":{\"temperature_2m\":\"°C\"},\"hourly_units\":{\"temperature_2m\":\"°C\",\"precipitation\":\"mm\",\"precipitation_probability\":\"%\"}}");
@@ -315,27 +355,83 @@ static void news_tests(void)
     assert_error(lookup_news(news_fixture,sizeof(news_fixture)-1,0),"clock_unsynced");
     char nul[]="<rss>\0</rss>"; assert_error(lookup_news(nul,sizeof(nul)-1,lookup_now),"invalid_source_data");
     mock_alloc_budget=0; assert(!lookup_news(news_fixture,sizeof(news_fixture)-1,lookup_now)); mock_alloc_budget=-1;
-    reset_lookup(); news_wire=news_fixture; news_missing=false;
-    unsigned before=lookup_http_started;
-    o=run_lookup("{\"topic\":\"news\"}");
-    assert(cJSON_IsTrue(field(o,"ok")) && cJSON_GetArraySize(field(o,"items"))==3 && lookup_http_started==before+3);
-    assert(!strcmp(field(cJSON_GetArrayItem(field(o,"items"),0),"topic")->valuestring,"technology_robotics"));
-    assert(!strcmp(field(cJSON_GetArrayItem(field(o,"items"),1),"topic")->valuestring,"ai_models"));
-    assert(!strcmp(field(cJSON_GetArrayItem(field(o,"items"),2),"topic")->valuestring,"economy_finance"));
-    cJSON_Delete(o); before=lookup_http_started;
-    o=run_lookup("{\"topic\":\"news\"}"); assert(cJSON_IsTrue(field(o,"cached")) && lookup_http_started==before); cJSON_Delete(o);
-    mock_now+=901000000; o=run_lookup("{\"topic\":\"news\"}"); assert(lookup_http_started==before+3); cJSON_Delete(o);
-    before=lookup_http_started; mock_now+=3000000; lookup_now+=86400;
-    assert_error(run_lookup("{\"topic\":\"news\"}"),"news_unavailable");
-    assert(lookup_http_started==before+3); lookup_now-=86400;
-    reset_lookup(); news_missing=true;
-    o=run_lookup("{\"topic\":\"news\"}"); assert(cJSON_IsTrue(field(o,"partial")) && cJSON_GetArraySize(field(o,"items"))==2); cJSON_Delete(o);
-    reset_lookup(); news_missing=false; mock_mode=3;
-    assert_error(run_lookup("{\"topic\":\"news\"}"),"news_unavailable");
-    reset_lookup(); mock_mode=5; assert_error(run_lookup("{\"topic\":\"news\"}"),"news_unavailable");
-    reset_lookup(); mock_mode=7; assert_error(run_lookup("{\"topic\":\"news\"}"),"news_unavailable");
-    reset_lookup(); mock_mode=8; assert_error(run_lookup("{\"topic\":\"news\"}"),"news_unavailable");
     reset_lookup();
+    unsigned before=lookup_http_started,views=research_published;
+    o=run_lookup("{\"topic\":\"news\"}");
+    assert(cJSON_IsTrue(field(o,"ok")) && field(o,"speech") && lookup_http_started==before+1);
+    assert(!field(o,"search_suggestions") && !field(o,"parts") && research_published==views+1);
+    cJSON_Delete(o); before=lookup_http_started; mock_now+=11000000;
+    o=run_lookup("{\"topic\":\"news\"}");
+    assert(!field(o,"cached") && lookup_http_started==before+1); cJSON_Delete(o);
+    reset_lookup(); web_key=false; before=lookup_http_started;
+    assert_error(run_lookup("{\"topic\":\"news\"}"),"web_key_required"); assert(lookup_http_started==before);
+    reset_lookup(); mock_http_status=429;
+    assert_error(run_lookup("{\"topic\":\"news\"}"),"web_quota");
+    reset_lookup(); mock_mode=3;
+    assert_error(run_lookup("{\"topic\":\"news\"}"),"web_unverified");
+    reset_lookup(); mock_mode=5;
+    assert_error(run_lookup("{\"topic\":\"news\"}"),"source_unavailable");
+    reset_lookup(); mock_mode=7;
+    assert_error(run_lookup("{\"topic\":\"news\"}"),"source_unavailable");
+    reset_lookup(); mock_mode=8; views=research_published;
+    assert_error(run_lookup("{\"topic\":\"news\"}"),"source_unavailable"); assert(research_published==views);
+    reset_lookup();
+    o=run_lookup("{\"topic\":\"slang\",\"query\":\"test slang\"}");
+    assert(cJSON_IsTrue(field(o,"ok"))); cJSON_Delete(o);
+    const char *invalid_web[]={"{\"topic\":\"slang\"}","{\"topic\":\"news\",\"mode\":\"detail\"}",
+        "{\"topic\":\"news\",\"mode\":\"unknown\"}","{\"topic\":\"slang\",\"query\":\"a\\nb\"}",
+        "{\"topic\":\"news\",\"query\":\"a\",\"query\":\"b\"}"};
+    lookup_query_t web_query;
+    for (unsigned i=0;i<sizeof(invalid_web)/sizeof(invalid_web[0]);++i) {
+        cJSON *input=cJSON_Parse(invalid_web[i]); assert(!lookup_query_parse(input,&web_query)); cJSON_Delete(input);
+    }
+    cJSON *input=cJSON_Parse("{\"topic\":\"news\",\"mode\":\"detail\",\"query\":\"AI launch\"}");
+    assert(lookup_query_parse(input,&web_query)); cJSON_Delete(input);
+    char *request=lookup_web_request(&web_query,lookup_now); assert(request);
+    input=cJSON_Parse(request); assert(input && strstr(field(input,"input")->valuestring,"AI launch"));
+    cJSON_Delete(input); free(request);
+    cJSON *raw=cJSON_Parse(web_wire); assert(raw);
+    cJSON *steps=cJSON_GetObjectItem(raw,"steps");
+    cJSON_DeleteItemFromArray(steps,0);
+    assert_error(lookup_web_result(raw,lookup_now),"web_unverified"); cJSON_Delete(raw);
+    raw=cJSON_Parse("{\"status\":\"completed\",\"steps\":[{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"unsupported answer\"}]}]}");
+    assert_error(lookup_web_result(raw,lookup_now),"web_unverified"); cJSON_Delete(raw);
+    reset_lookup();
+}
+static bool slang_idle(void) { return mock_idle && lookup_valid; }
+static void slang_tests(void)
+{
+    reset_lookup(); mock_idle=true; slang_enabled=false; slang_power=50; slang_writes=0;
+    s_next_attempt=0; s_loaded=false; free(s_dictionary); s_dictionary=NULL;
+    unsigned before=lookup_http_started;
+    assert(!voice_slang_poll(slang_idle) && lookup_http_started==before);
+    slang_enabled=true; slang_power=29;
+    assert(!voice_slang_poll(slang_idle) && !slang_writes);
+    slang_power=50; lookup_online=false;
+    assert(!voice_slang_poll(slang_idle)); lookup_online=true; mock_idle=false;
+    assert(!voice_slang_poll(slang_idle)); mock_idle=true;
+    assert(voice_slang_poll(slang_idle) && slang_writes==1 && lookup_http_started==before+3);
+    char *context=voice_slang_context(); assert(context && strstr(context,"friend & peer") && strstr(context,"CC-BY-SA"));
+    cJSON *root=cJSON_Parse(context); assert(voice_slang_snapshot_valid(root,lookup_now)); cJSON_Delete(root); free(context);
+    before=lookup_http_started;
+    assert(!voice_slang_poll(slang_idle) && lookup_http_started==before);
+    /* Reboot still respects the persisted successful refresh time. */
+    free(s_dictionary); s_dictionary=NULL; s_loaded=false; s_next_attempt=0;
+    assert(!voice_slang_poll(slang_idle) && lookup_http_started==before);
+    lookup_now+=86401; mock_now+=86401000000LL; slang_cancel=true;
+    assert(voice_slang_poll(slang_idle) && slang_writes==1);
+    slang_cancel=false; lookup_valid=true; s_next_attempt=0; mock_mode=3;
+    assert(voice_slang_poll(slang_idle) && slang_writes==1); mock_mode=0;
+    s_next_attempt=0;
+    assert(voice_slang_poll(slang_idle) && slang_writes==2);
+    char meaning[321]; root=cJSON_Parse("{\"vi\":[{\"definitions\":[{\"definition\":\"<b>friend</b> &amp; peer\"}]}]}");
+    assert(voice_slang_definition(root,meaning) && !strcmp(meaning,"friend & peer")); cJSON_Delete(root);
+    root=cJSON_Parse("{\"en\":[{\"definitions\":[{\"definition\":\"wrong language\"}]}]}");
+    assert(!voice_slang_definition(root,meaning)); cJSON_Delete(root);
+    root=cJSON_Parse("{\"vi\":[{\"definitions\":[{\"definition\":\"broken <tag\"}]}]}");
+    assert(!voice_slang_definition(root,meaning)); cJSON_Delete(root);
+    free(s_dictionary); s_dictionary=NULL; free(slang_stored); slang_stored=NULL; s_loaded=false;
+    lookup_now-=86401;
 }
 int main(int argc,char **argv) {
     if (argc==4 && (!strcmp(argv[1],"--news") || !strcmp(argv[1],"--gold") || !strcmp(argv[1],"--weather"))) {
@@ -416,6 +512,7 @@ int main(int argc,char **argv) {
     reset_lookup(); lookup_now+=200000;
     assert_error(run_lookup("{\"topic\":\"gold\",\"gold_type\":\"SJL1L10\"}"),"stale_data"); lookup_now-=200000;
     cJSON_Delete(args); reset_lookup(); free(forecast_wire);
+    slang_tests();
     assert(!lookup_live_bytes && !lookup_allocation_count);
     puts("Lookup tests passed: bounded HTTP, TLS host allowlist, cache, gold units, hourly weather, clarification, cancellation, timeout, memory guard.");
     return 0;

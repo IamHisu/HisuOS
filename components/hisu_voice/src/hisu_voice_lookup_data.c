@@ -18,7 +18,10 @@ static bool text(const cJSON *n,size_t max) {
 cJSON *lookup_error(const char *code) {
     cJSON *o=cJSON_CreateObject();
     const char *message="Hi Su chưa lấy được thông tin lúc này.";
-    if (!strcmp(code,"place_required")) message="Bạn muốn xem thời tiết ở khu vực nào?";
+    if (!strcmp(code,"web_unverified")) message="Hi Su chưa lấy được bản tra cứu có nguồn đáng tin lúc này.";
+    else if (!strcmp(code,"web_key_required")) message="Bạn cần lưu key Gemini Chat chính để Hi Su tra web.";
+    else if (!strcmp(code,"web_quota")) message="Tra web đang hết hạn mức hoặc key chưa được phép dùng. Bạn kiểm tra Google AI Studio nha.";
+    else if (!strcmp(code,"place_required")) message="Bạn muốn xem thời tiết ở khu vực nào?";
     else if (!strcmp(code,"place_not_found")) message="Hi Su chưa tìm được địa điểm đó. Bạn cho thêm tên thành phố hoặc tỉnh nha.";
     else if (!strcmp(code,"place_ambiguous")) message="Có nhiều nơi trùng tên. Bạn chọn giúp Hi Su địa điểm trong danh sách nha.";
     else if (!strcmp(code,"clock_unsynced")) message="Đồng hồ chưa cập nhật nên Hi Su chưa kiểm tra được thông tin đúng ngày.";
@@ -38,7 +41,18 @@ bool lookup_query_parse(const cJSON *args,lookup_query_t *q) {
     if (!cJSON_IsObject(args) || !text(topic,7)) return false;
     q->weather=!strcmp(topic->valuestring,"weather");
     q->news=!strcmp(topic->valuestring,"news");
-    if (q->news) return cJSON_GetArraySize(args)==1;
+    q->slang=!strcmp(topic->valuestring,"slang");
+    if (q->news || q->slang) {
+        const cJSON *query=field(args,"query"),*mode=field(args,"mode"),*item;
+        cJSON_ArrayForEach(item,args)
+            if (!item->string || (strcmp(item->string,"topic") && strcmp(item->string,"query") && strcmp(item->string,"mode"))) return false;
+        if (cJSON_GetArraySize(args)!=1+(query!=NULL)+(mode!=NULL)) return false;
+        if ((query && !text(query,256)) || (q->slang && !query) || (mode && !text(mode,8))) return false;
+        if (query) strcpy(q->query,query->valuestring);
+        strcpy(q->mode,mode ? mode->valuestring : "read");
+        if (!strcmp(q->mode,"detail") && !query) return false;
+        return !strcmp(q->mode,"brief") || !strcmp(q->mode,"read") || !strcmp(q->mode,"detail");
+    }
     if (!q->weather && strcmp(topic->valuestring,"gold")) return false;
     const cJSON *item;
     cJSON_ArrayForEach(item,args) {

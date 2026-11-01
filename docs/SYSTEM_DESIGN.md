@@ -6,7 +6,7 @@
 
 **Trạng thái:** Thiết kế cho bản xây dựng lại; chưa phải mô tả firmware đã triển khai  
 **Hardware đầu tiên:** ZHENGCHEN 1.54 TFT WiFi — ESP32-S3 N16R8  
-**Framework:** ESP-IDF 5.5.5  
+**Framework:** ESP-IDF 6.1
 **Ngôn ngữ:** C/C++  
 **UI:** LVGL  
 **AI provider đầu tiên:** Gemini
@@ -271,7 +271,7 @@ Triển khai ảnh tĩnh local trước cloud media: service `hisu_media` phục
 ### 13.2 Setting qua hotspot
 
 Mục Hình nền đổi thành **Setting**. Network worker sở hữu vòng đời WPA2 SoftAP,
-mật khẩu ngẫu nhiên 16 ký tự mỗi phiên và AP+STA mode; HTTP handler chỉ gửi queue command.
+mật khẩu cố định `11121112` và AP+STA mode; HTTP handler chỉ gửi queue command.
 `hisu_media` tái sử dụng phiên bảo mật cho trang nhúng và `hisu_setup_api` tách
 API settings/Wi-Fi/time khỏi storage ảnh. Tab Wi-Fi quét/join/bật-tắt station;
 Hình nền preview trên trình duyệt rồi tự lưu khi gửi; Thiết bị dùng chung settings service và gửi UTC
@@ -347,7 +347,7 @@ TLS phải validate certificate và hostname. Development credential không comm
 
 Không phụ thuộc bắt buộc backend của Muse hoặc Xiaozhi. Không copy toàn bộ resource manager từ project khác vào cạnh service HisuOS.
 
-Mỗi phần tái sử dụng phải ghi nguồn, commit/version, license, modification và dependency. Giữ copyright/license/NOTICE theo yêu cầu. Chỉ chọn component sau khi xác minh tương thích ESP-IDF 5.5.5; tài liệu `latest` không phải bằng chứng tương thích.
+Mỗi phần tái sử dụng phải ghi nguồn, commit/version, license, modification và dependency. Giữ copyright/license/NOTICE theo yêu cầu. Chỉ chọn component sau khi xác minh tương thích ESP-IDF 6.1; tài liệu `latest` không phải bằng chứng tương thích.
 
 Đánh giá XiaoClaw và các giới hạn về LLM qua API, flash, pin và BLE nằm trong [Tài liệu tham khảo](REFERENCES.md). Học cách tách voice/agent qua message bus; application HisuOS vẫn sở hữu điều phối và vòng đời phiên. Không thêm một resource manager hoặc tầng bridge tổng quát chỉ vì project nguồn có nó. Ưu tiên text AI, voice theo lượt và bounded tools; Lua, tự tạo skills, memory dài hạn và scheduler không trở thành yêu cầu MVP.
 
@@ -355,7 +355,7 @@ Mỗi phần tái sử dụng phải ghi nguồn, commit/version, license, modif
 
 | Giai đoạn | Deliverable | Điều kiện qua |
 |---|---|---|
-| 1. Foundation | Board drivers, build, partition draft | Build 5.5.5; từng peripheral được test thật |
+| 1. Foundation | Board drivers, build, partition draft | Build 6.1; từng peripheral được test thật |
 | 2. Setup | Menu, Wi-Fi/hotspot, settings | Offline setup; reconnect; persistence qua reboot |
 | 3. Text AI | Gemini, streaming subtitles, cancel | Tiếng Việt; timeout/lỗi; không block UI |
 | 4. Voice | Push-to-talk, STT/TTS, playback | Nghe/nói thực tế; hủy; buffer bounded |
@@ -367,7 +367,7 @@ MVP hoàn thành khi giai đoạn 1–6 đạt điều kiện, không yêu cầu
 
 ## 19. Verification strategy
 
-- Build firmware với ESP-IDF 5.5.5; kiểm tra app/partition size.
+- Build firmware với ESP-IDF 6.1; kiểm tra app/partition size.
 - Unit/host tests: settings validation, context bounds, tool schema, stream parser và session cancellation.
 - Provider fixtures: response chia chunk, Unicode, tool call partial, lỗi và response quá lớn.
 - Hardware tests: display, buttons, mic, speaker, battery, pairing, reconnect và reboot persistence.
@@ -388,7 +388,7 @@ Những mục chưa chốt không được biến thành lời khẳng định �
 
 ## 21. Nguồn tham khảo
 
-- [ESP-IDF v5.5.5 documentation](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/)
+- [ESP-IDF v6.1 documentation](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/)
 - [ESP-IoT-Solution MCP](https://docs.espressif.com/projects/esp-iot-solution/en/latest/ai/mcp.html)
 - [Gemini Live API capabilities](https://ai.google.dev/gemini-api/docs/live-api/capabilities)
 - [MimiClaw repository](https://github.com/memovai/mimiclaw)

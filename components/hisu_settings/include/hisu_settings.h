@@ -3,6 +3,7 @@
 #include "esp_err.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 typedef enum {
     HISU_SETTING_BRIGHTNESS,
@@ -12,6 +13,7 @@ typedef enum {
     HISU_SETTING_THEME, /* 0: dark, 1: light */
     HISU_SETTING_WIFI_ENABLED,
     HISU_SETTING_TIMEZONE, /* Minutes east of UTC; default UTC+7. */
+    HISU_SETTING_SLANG_AUTO, /* Daily open-dictionary update while idle. */
     HISU_SETTING_COUNT,
 } hisu_setting_t;
 
@@ -21,6 +23,9 @@ esp_err_t hisu_settings_set(hisu_setting_t key, int value);
 /* Immediate RAM-only button adjustment; idle audio worker persists the final value. */
 int hisu_settings_adjust_volume(int delta);
 esp_err_t hisu_settings_flush_volume(void);
+/* Bounded, non-personal dictionary snapshot; independent of personal memory. */
+esp_err_t hisu_settings_load_slang(char *out, size_t capacity);
+esp_err_t hisu_settings_save_slang(const char *json);
 /* API key remains in NVS and is never returned by the setup web API. */
 esp_err_t hisu_settings_get_asr_key(char out[128]);
 esp_err_t hisu_settings_set_asr_key(const char *key);

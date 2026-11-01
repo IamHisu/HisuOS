@@ -14,7 +14,7 @@ for (const [route,file,type] of [['/','index.html','text/html'],['/app.js','app.
   assets.set(route,{body:await readFile(new URL(file,root)),type});
 let state, uploaded, uploadType, wifi, device, wifiRequests, sessionRequests, leaveRequests = 0;
 let gifAssetRequests = 0;
-let memory, batteryAudio;
+let memory, batteryAudio, slangState;
 let keyStates, keyRequests;
 let holdImageSave = false;
 const token = 'a'.repeat(64);
@@ -66,6 +66,19 @@ const server = createServer(async(req,res)=>{
       else { const data=JSON.parse(body); assert.deepEqual(Object.keys(data),['key']); keyStates[req.url]=!!data.key; keyRequests.push(req.url); send(200,{saved:true}); }
       return;
     }
+    if (req.url==='/slang') {
+      if (req.method==='POST') {
+        const data=JSON.parse(body); assert.deepEqual(Object.keys(data),['enabled']);
+        assert.equal(typeof data.enabled,'boolean'); slangState.enabled=data.enabled;
+      }
+      send(200,slangState); return;
+    }
+    if (req.url==='/research') {
+      send(200,{ok:true,fetched_at_utc:1792483200,speech:'Bản tin có nội dung. <img src=x onerror=alert(1)>',
+        sources:[{title:'Nguồn thử',url:'https://example.com/news'}],
+        search_suggestions:['<style>a{color:blue}</style><a href="https://www.google.com/search?q=robot" target="_blank">Tìm robot</a>']});
+      return;
+    }
     if (req.url==='/time') {assert.ok(Number.isInteger(JSON.parse(body).utc));send(200,{saved:true});return;}
     if (req.url.startsWith('/wifi/')) {
       const data=body.length ? JSON.parse(body) : null; wifiRequests.push({path:req.url,data});
@@ -93,6 +106,7 @@ try {
     state={pending:false,saving:false,revision:1,error:0,seconds:299,expired:false};uploaded=null;sessionRequests=0;gifAssetRequests=0;
     device={brightness:75,volume:55,speaker:1,timeout:0,theme:0,timezone:420};wifiRequests=[];
     keyStates={}; keyRequests=[];
+    slangState={enabled:true,updated_at_utc:1792483200,entries:[{term:'từ thử',meaning:'<img src=x onerror=alert(1)>',pageid:123}]};
     memory={enabled:true,pending:false,capacity:24,facts:[{id:1,fact:'Thích nghe nhạc nhẹ vào buổi tối.'},{id:2,fact:'<img src=x onerror=alert(1)>'}]};
     batteryAudio={ready:0,count:5,current:0,requested:false,busy:false,error:0,http_status:0,charging:true,connected:true,configured:true};
     wifi={enabled:true,scanning:false,joining:false,connected:false,internet:'unknown',error:0,ssid:'',ip:'',aps:[
@@ -337,6 +351,22 @@ try {
       assert.equal(keyStates[`/${name}-key`],false);
       assert.equal(keyRequests.length,before+1);
     }
+    await page.waitForFunction(()=>document.getElementById('slang-status').textContent.includes('1 từ'));
+    assert.equal(await page.locator('#slang-enabled').isChecked(),true);
+    assert.equal(await page.locator('#slang-list img').count(),0);
+    assert.equal(await page.locator('#slang-list a').getAttribute('href'),'https://en.wiktionary.org/?curid=123');
+    await page.locator('#slang-enabled').uncheck();
+    await page.waitForFunction(()=>!document.getElementById('slang-enabled').disabled);
+    assert.equal(slangState.enabled,false);
+    await page.locator('#slang-enabled').check();
+    await page.waitForFunction(()=>!document.getElementById('slang-enabled').disabled);
+    assert.equal(slangState.enabled,true);
+    await page.locator('#research-refresh').click();
+    await page.locator('#research-result').waitFor({state:'visible'});
+    assert.equal(await page.locator('#research-text img').count(),0);
+    assert.match(await page.locator('#research-text').textContent(),/Bản tin có nội dung/);
+    assert.equal(await page.locator('#research-sources a').getAttribute('href'),'https://example.com/news');
+    assert.equal(await page.locator('#research-suggestions a').textContent(),'Tìm robot');
     await page.locator('#time-sync').click();
     await page.waitForFunction(()=>document.getElementById('message').textContent.includes('Đã đồng bộ giờ'));
     await page.screenshot({path:fileURLToPath(new URL(`${name}-device.png`,output)),fullPage:true});

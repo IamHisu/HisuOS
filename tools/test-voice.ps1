@@ -45,7 +45,7 @@ New-Item -ItemType Directory -Force -Path $cryptoStubs | Out-Null
 foreach ($header in @('includes.h','common.h','crypto.h')) {
     Set-Content -LiteralPath (Join-Path $cryptoStubs $header) -Encoding ascii -Value "#pragma once`n#define CRYPTO_H`n#include <stdint.h>`n#include <stddef.h>`ntypedef uint8_t u8;`ntypedef uint32_t u32;"
 }
-$idf = if ($env:IDF_PATH) { $env:IDF_PATH } else { 'C:\esp\v5.5.5\esp-idf' }
+$idf = if ($env:IDF_PATH) { $env:IDF_PATH } else { 'C:\esp\v6.1\esp-idf' }
 & $compiler.FullName /nologo /c /std:c11 /MT /GS- /W3 "/I$msvc\include" "/I$($sdk.FullName)\ucrt" "/I$cryptoStubs" "/Fo$out\rc4.obj" (Join-Path $idf 'components\wpa_supplicant\src\crypto\rc4.c')
 if ($LASTEXITCODE -ne 0) { throw 'SDK lyric crypto dependency compilation failed.' }
 foreach ($directory in @('', 'driver', 'freertos', 'mbedtls', 'lwip')) {

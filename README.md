@@ -32,17 +32,17 @@ Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên edito
 - Lịch: lịch tháng dương, ngày âm Việt Nam UTC+7 và tháng nhuận (2024–2099). Vol− ngày trước, Vol+ ngày sau; giữ 1 giây lặp mỗi 180ms, tự chuyển tháng/năm. BOOT về hôm nay, giữ BOOT trở lại menu. Cần giờ đồng bộ qua Wi-Fi hoặc trang Setting; sau đó xem offline được khi thiết bị vẫn có giờ.
 - Đèn pin: giữ BOOT 1,5 giây ở màn hình chờ để mở màn trắng, backlight 100%; Vol− bật/tắt, BOOT chuyển Sáng → Chớp → SOS → Sáng, Vol+ hoặc giữ BOOT về màn hình chờ và khôi phục độ sáng đã lưu. Chớp 500ms sáng/500ms tắt; SOS `... --- ...` với đơn vị 200ms, lặp lại. Không ghi lại setting độ sáng, không tự sleep khi đang ở Đèn pin.
 - Phụ đề: API queue nối output audio transcription từ Gemini Live.
-- Setting: QR hotspot WPA2 với mật khẩu ngẫu nhiên 16 ký tự mỗi phiên, SSID ổn định theo MAC. QR địa chỉ HTTP tự hiện khi điện thoại kết nối. Web dùng list Wi-Fi/icon sóng; chạm mạng đã lưu kết nối ngay, mạng mới mở dialog mật khẩu. Không giới hạn 5 phút: thoát màn HISU vẫn chạy; mục Dừng Setting riêng hoặc Dừng trên web đóng ngay. Ngắt hotspot 10 giây hoặc đóng web 8 giây sẽ đóng phiên; mất liveness 90 giây đóng dự phòng. Không cần router/BLE/Internet/PIN/BOOT duyệt ảnh. HTTP không có bảo vệ TLS. Hướng dẫn: [Setting](docs/WALLPAPER_SETUP.md).
+- Setting: QR hotspot WPA2 với mật khẩu cố định `11121112`, SSID ổn định theo MAC. QR địa chỉ HTTP tự hiện khi điện thoại kết nối. Web dùng list Wi-Fi/icon sóng; chạm mạng đã lưu kết nối ngay, mạng mới mở dialog mật khẩu. Không giới hạn 5 phút: thoát màn HISU vẫn chạy; mục Dừng Setting riêng hoặc Dừng trên web đóng ngay. Ngắt hotspot 10 giây hoặc đóng web 8 giây sẽ đóng phiên; mất liveness 90 giây đóng dự phòng. Không cần router/BLE/Internet/PIN/BOOT duyệt ảnh. HTTP không có bảo vệ TLS. Hướng dẫn: [Setting](docs/WALLPAPER_SETUP.md).
 
 ## Build
 
-Yêu cầu EIM đã cài ESP-IDF **5.5.5**. Chạy từ thư mục HisuOS:
+Yêu cầu EIM đã cài ESP-IDF **6.1.x**. Hướng dẫn chuyển phiên bản: [ESP-IDF 6.1](docs/IDF_6_1.md). Chạy từ thư mục HisuOS:
 
 ```powershell
 .\tools\build.ps1
 ```
 
-Nếu vừa pull thay đổi `sdkconfig.defaults` nhưng máy còn `sdkconfig` cũ, refresh cấu hình một lần:
+Lần đầu chuyển từ IDF 5.5.5 sang 6.1, hoặc nếu vừa pull thay đổi `sdkconfig.defaults` nhưng máy còn `sdkconfig` cũ, refresh cấu hình một lần:
 
 ```powershell
 .\tools\build.ps1 -RefreshConfig
@@ -62,11 +62,11 @@ Chạy host tests từ PowerShell thường:
 
 Helper tự tìm headers/libraries của MSVC x64 và Windows SDK đã cài, chạy bộ UI/Wi-Fi/pin và test lịch 2024–2099. Không cần mở Developer PowerShell.
 
-Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và flash 16MB theo profile N16R8. Partition dành hai app slots 4MB cho OTA tương lai; storage bắt đầu bằng hai slot ảnh/GIF, tiếp theo là hai slot trí nhớ 8 KiB. Chưa mount filesystem.
+Helper mặc định build vào `build-idf61/` để không dùng lại cache IDF 5.5.5. Firmware là `build-idf61/HisuOS.bin`; có thể đổi thư mục bằng `-BuildDirectory`. Khi tự dùng `idf.py`, luôn thêm `-B build-idf61`, kể cả reconfigure, size và flash. Helper chỉ build, không flash. `sdkconfig.defaults` bật octal PSRAM và flash 16MB theo profile N16R8. Partition dành hai app slots 4MB cho OTA tương lai; storage bắt đầu bằng hai slot ảnh/GIF, tiếp theo là hai slot trí nhớ 8 KiB. Chưa mount filesystem.
 
 ## Báo Pin Offline
 
-Tạo sẵn bốn câu Leda báo pin và một câu nhắc lịch trên máy tính bằng `python tools/prepare-battery-audio.py`, dùng biến môi trường `GEMINI_DEV_API_KEY` hoặc `GEMINI_API_KEY`. Sau đó chạy `idf.py reconfigure build` và `idf.py flash` để nạp kèm vùng âm thanh riêng, không đụng ảnh nền hay trí nhớ. Setting chỉ hiển thị số câu sẵn sàng, không còn nút chuẩn bị. Board phát cảnh báo hoàn toàn offline ở mốc 15% và 5%, mỗi mốc một lần trong chu kỳ sạc; hai câu mỗi mức để đỡ lặp. Tôn trọng tắt loa/âm lượng 0, không chen ngang hội thoại/nhạc và không bật loa ở mức pin ≤2%. Chi tiết, giới hạn và cách thử: [Offline Battery Audio](docs/OFFLINE_BATTERY_AUDIO.md).
+Tạo sẵn bốn câu Leda báo pin và một câu nhắc lịch trên máy tính bằng `python tools/prepare-battery-audio.py`, dùng biến môi trường `GEMINI_DEV_API_KEY` hoặc `GEMINI_API_KEY`. Sau đó chạy `idf.py -B build-idf61 reconfigure build` và `idf.py -B build-idf61 flash` để nạp kèm vùng âm thanh riêng, không đụng ảnh nền hay trí nhớ. Setting chỉ hiển thị số câu sẵn sàng, không còn nút chuẩn bị. Board phát cảnh báo hoàn toàn offline ở mốc 15% và 5%, mỗi mốc một lần trong chu kỳ sạc; hai câu mỗi mức để đỡ lặp. Tôn trọng tắt loa/âm lượng 0, không chen ngang hội thoại/nhạc và không bật loa ở mức pin ≤2%. Chi tiết, giới hạn và cách thử: [Offline Battery Audio](docs/OFFLINE_BATTERY_AUDIO.md).
 
 ## Lịch và Nhắc Hẹn
 

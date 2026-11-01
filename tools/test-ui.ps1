@@ -3,8 +3,8 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $env:INCLUDE = "$root\components\hisu_memory\include;$env:INCLUDE"
 $config = Get-Content -LiteralPath $EimConfig -Raw | ConvertFrom-Json
-$idf = $config.idfInstalled | Where-Object name -eq 'v5.5.5' | Select-Object -First 1
-if (!$idf) { throw 'ESP-IDF v5.5.5 EIM installation required.' }
+$idf = $config.idfInstalled | Where-Object name -Match '^v6\.1(?:\.\d+)?$' | Select-Object -First 1
+if (!$idf) { throw 'ESP-IDF v6.1 EIM installation required.' }
 & $idf.python (Join-Path $root 'tests\test_wallpaper_policy.py')
 if ($LASTEXITCODE -ne 0) { throw 'Wallpaper policy checks failed.' }
 & $idf.python (Join-Path $root 'tests\test_ram_diagnostics.py')

@@ -9,15 +9,37 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on", "tz_minutes"};
-static const int s_min[] = {10, 0, 0, 0, 0, 0, -720};
-static const int s_max[] = {100, 100, 1, 600, 1, 1, 840};
-static int s_values[] = {75, 55, 1, 0, 0, 1, 420};
+static const char *const s_keys[] = {"brightness", "volume", "speaker", "timeout", "theme", "wifi_on", "tz_minutes", "slang_auto"};
+static const int s_min[] = {10, 0, 0, 0, 0, 0, -720, 0};
+static const int s_max[] = {100, 100, 1, 600, 1, 1, 840, 1};
+static int s_values[] = {75, 55, 1, 0, 0, 1, 420, 1};
 static portMUX_TYPE s_values_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
 static bool s_volume_dirty;
 static uint32_t s_volume_revision;
+
+esp_err_t hisu_settings_load_slang(char *out,size_t capacity)
+{
+    if (!s_lock || !out || !capacity || capacity>6145) return ESP_ERR_INVALID_ARG;
+    out[0]=0;
+    xSemaphoreTake(s_lock,portMAX_DELAY);
+    size_t bytes=capacity;
+    esp_err_t err=nvs_get_str(s_nvs,"slang_dict",out,&bytes);
+    xSemaphoreGive(s_lock);
+    if (err!=ESP_OK) out[0]=0;
+    return err;
+}
+
+esp_err_t hisu_settings_save_slang(const char *json)
+{
+    if (!s_lock || !json || !json[0] || strnlen(json,6145)>6144) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock,portMAX_DELAY);
+    esp_err_t err=nvs_set_str(s_nvs,"slang_dict",json);
+    if (err==ESP_OK) err=nvs_commit(s_nvs);
+    xSemaphoreGive(s_lock);
+    return err;
+}
 
 esp_err_t hisu_settings_init(void)
 {

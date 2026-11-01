@@ -60,7 +60,7 @@ kết nối trước. Không gửi newline đơn có thể vô tình thực thi 
 
 ## Môi Trường Và Kiểm Thử
 
-`chat.ps1` tìm Python ESP-IDF v5.5.5 qua EIM hoặc môi trường đang kích hoạt; cần
+`chat.ps1` tìm Python ESP-IDF v6.1 qua EIM hoặc môi trường đang kích hoạt; cần
 `tkinter` và `pyserial` (đã có trong Python ESP-IDF trên máy hiện tại). Không cài
 thêm gói qua mạng. Có thể chọn Python khác bằng tham số `-Python <đường dẫn>`.
 Lỗi khởi động cửa sổ được ghi vào `launcher-*-error.log` trong cùng thư mục cache.

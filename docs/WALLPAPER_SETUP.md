@@ -2,8 +2,8 @@
 
 **Cập nhật:** 2026-10-06
 
-Setting dùng hotspot WPA2 tạm thời, mật khẩu ngẫu nhiên 16 ký tự mỗi phiên.
-Không dùng mật khẩu cố định cũ, mã truy cập riêng hoặc BOOT duyệt ảnh.
+Setting dùng hotspot WPA2 tạm thời, mật khẩu cố định `11121112`.
+Không dùng mã truy cập riêng hoặc BOOT duyệt ảnh.
 Bluetooth đã gỡ khỏi firmware và code. Không cần router, Internet hay GitHub Pages.
 Không cần từng lưu hoặc kết nối Wi-Fi nhà để mở Setting; mục Wi-Fi trên board chỉ là lựa chọn nhập trực tiếp.
 
@@ -39,15 +39,17 @@ Nút **Căn lại ảnh** trên web chỉ đặt lại thu phóng/vị trí bả
   Mạng mới có bảo mật mở dialog mật khẩu; mạng mở kết nối ngay. Thêm mạng dùng cho SSID ẩn.
   Nếu mạng đã lưu báo lỗi, chọn lại để nhập mật khẩu mới. Chỉ cập nhật dòng thay đổi, không dựng lại danh sách mỗi lần poll.
 - Mạng mới chỉ lưu sau khi kết nối thành công. Không trả credential trong API trạng thái.
-- Tab Thiết bị lưu qua settings service; đồng bộ giờ lấy UTC điện thoại.
+- Trang Setting tự lấy giờ UTC điện thoại khi kết nối; nút đồng bộ giờ cho phép lấy lại thủ công.
+  Khi có Internet, board cũng tự lấy giờ NTP. Sau khi đã có giờ, đồng hồ hệ thống
+  tiếp tục chạy khi mất mạng; sau khi khởi động lại có thể cần lấy giờ lại.
+- Tab Thiết bị lưu qua settings service.
   Âm lượng/loa hiện lưu cấu hình, chưa tích hợp audio service.
 - AP+STA chia sẻ radio; quét/join và chuyển kênh có thể làm điện thoại ngắt ngắn.
   Chưa có NAT/bridge. Không mở service qua địa chỉ station hay ra Internet.
 
 ## Bảo Mật Và Đánh Đổi
 
-- Mật khẩu WPA2 là 8 byte ngẫu nhiên biểu diễn thành 16 ký tự hex, 64 bit entropy;
-  lấy ngẫu nhiên khi radio hoạt động. SSID ổn định theo MAC, không phụ thuộc mật khẩu.
+- Mật khẩu WPA2 cố định là `11121112`. SSID ổn định theo MAC.
 - Tối đa một điện thoại kết nối AP. Chỉ thao tác vật lý mở phiên; không còn thời hạn cố định.
   Trước khi điện thoại/web kết nối lần đầu, hotspot tiếp tục chờ cho tới khi đóng trên Hisu.
   Sau khi dùng web, request xác thực giữ lease liveness 90 giây; không được hồi sinh phiên đã đóng.

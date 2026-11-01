@@ -154,4 +154,6 @@ static esp_err_t esp_event_handler_instance_register(esp_event_base_t base, int 
 static esp_err_t esp_event_handler_instance_unregister(esp_event_base_t base, int id, esp_event_handler_instance_t instance) { return ESP_OK; }
 static esp_err_t esp_read_mac(uint8_t *mac, int type) { memset(mac, 0, 6); return ESP_OK; }
 static void esp_fill_random(void *data, size_t size) { memset(data, 1, size); }
-static void hisu_clock_network_connected(void) {}
+static unsigned mock_clock_requests, mock_clock_disconnects;
+static void hisu_clock_network_connected(void) { ++mock_clock_requests; }
+static void hisu_clock_network_disconnected(void) { ++mock_clock_disconnects; }

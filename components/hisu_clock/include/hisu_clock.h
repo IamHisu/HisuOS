@@ -9,3 +9,5 @@ bool hisu_clock_read(char text[6]);
 bool hisu_clock_vietnam_date(int *day, int *month, int *year);
 bool hisu_clock_local_date(int *day, int *month, int *year);
 void hisu_clock_network_connected(void);
+/* Retry promptly on the next IP; do not reset the running system clock. */
+void hisu_clock_network_disconnected(void);

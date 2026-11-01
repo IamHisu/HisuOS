@@ -284,3 +284,17 @@ bounded to 32 KiB text plus 256 entries in PSRAM; its optional 64 KiB download
 buffer is freed before MP3 streaming. The current/next lyric viewport adds
 three small LVGL objects (viewport, outgoing and next labels); next-line queue
 payloads use owned PSRAM strings, not a second large inline SRAM event array.
+
+
+## Web news/slang update (2026-10-30)
+
+News now uses Gemini 2.5 Flash-Lite Interactions with Google Search, not the
+three RSS downloads described in historical measurements above. Slang uses the
+same on-demand path and the primary Chat key. Worker stack remains 8192 bytes;
+web body is bounded to 64 KiB in PSRAM, deadline 45 seconds, serialized tool
+result at most 32 KiB. Gold/weather caches remain; web answers are not cached
+for reuse. Media holds only the latest displayed web result in RAM, including
+original citations/search suggestions, for the user's source view in Setting.
+No background slang harvesting or learned glossary is implemented with Search.
+Firmware builds; Setting browser tests pass on three viewports with mocked HTTP.
+Live grounding quota, response formats and audio reading still need board tests.

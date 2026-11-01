@@ -22,5 +22,8 @@ esp_err_t hisu_media_start(void);
 esp_err_t hisu_media_open(void);
 void hisu_media_close(void);
 void hisu_media_get(hisu_media_status_t *out);
+/* Latest user-requested web answer, RAM display history only; never a lookup cache. */
+bool hisu_media_research_publish(const char *json);
+char *hisu_media_research_snapshot(void);
 /* Copy into caller-owned storage: no LVGL objects or shared pixel pointers. */
 bool hisu_media_copy_image(void *pixels, size_t size, hisu_media_status_t *status);
