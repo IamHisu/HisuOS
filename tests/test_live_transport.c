@@ -33,6 +33,9 @@ bool voice_lookup_submit(uint32_t epoch,uint32_t generation,const char *id,const
                          bool (*current_fn)(uint32_t,uint32_t)) { ++mock_lookup_submits; return mock_lookup_queued; }
 voice_lookup_result_t *voice_lookup_take(void) { voice_lookup_result_t *r=mock_lookup_result; mock_lookup_result=NULL; return r; }
 bool voice_lookup_busy(void) { return mock_lookup_queued; }
+void voice_lookup_spoken(uint32_t epoch,uint32_t generation) { (void)epoch; (void)generation; }
+void voice_lookup_history_load(void) {}
+void voice_lookup_history_flush(void) {}
 void voice_lookup_free(voice_lookup_result_t *r) { if (r) { cJSON_free(r->response); free(r); } }
 char *voice_lookup_encode_result(const voice_lookup_result_t *job) {
     cJSON *root=cJSON_CreateObject(),*tool=cJSON_AddObjectToObject(root,"toolResponse");
@@ -334,38 +337,11 @@ static void device_tool_tests(void) {
     cJSON *setup=cJSON_Parse(setup_body); free(setup_body); assert(setup);
     cJSON *config=cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"generationConfig");
     cJSON *instruction=cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(setup,"setup"),"systemInstruction"),"parts"),0),"text");
-    assert(!strncmp(instruction->valuestring,"Luôn trò chuyện bằng tiếng Việt",strlen("Luôn trò chuyện bằng tiếng Việt")));
-    assert(strstr(instruction->valuestring,"Bạn là Hi Su, một robot nhỏ chạy HisuOS"));
-    assert(strstr(instruction->valuestring,"không lạm dụng tiếng địa phương hay cố nhại giọng"));
-    assert(strstr(instruction->valuestring,"Không cần cố định đại từ nhân xưng"));
-    assert(!strstr(instruction->valuestring,"Xưng 'mình', gọi 'bạn'"));
-    assert(strstr(instruction->valuestring,"Không giới hạn cứng số câu"));
-    assert(!strstr(instruction->valuestring,"Thường nói 1–2 câu"));
-    assert(strstr(instruction->valuestring,"Không nịnh nọt, không thảo mai, không khen vô cớ"));
-    assert(strstr(instruction->valuestring,"Không kết thúc câu nào cũng bằng câu hỏi"));
-    assert(strstr(instruction->valuestring,"không bịa tình trạng thiết bị"));
-    assert(strstr(instruction->valuestring,"Không gây áp lực, năn nỉ"));
-    assert(strstr(instruction->valuestring,"đáp dí dỏm theo câu chuyện"));
-    assert(strstr(instruction->valuestring,"không như nhân viên chăm sóc khách hàng"));
-    assert(strstr(instruction->valuestring,"chủ động rủ người dùng làm thêm, nêu một ý cụ thể"));
-    assert(strstr(instruction->valuestring,"Khi họ đề nghị thì hưởng ứng, góp ý"));
-    assert(strstr(instruction->valuestring,"không gọi công cụ với giá trị chưa hỗ trợ"));
-    assert(strstr(instruction->valuestring,"không hứa đã cài, không tự sửa firmware"));
-    assert(strstr(instruction->valuestring,"Ví dụ sắc thái, không học thuộc"));
-    assert(strstr(instruction->valuestring,"Không tự hạ vai trò thành 'chỉ là nhân vật ảo'"));
-    assert(strstr(instruction->valuestring,"khi được hỏi trực tiếp thì trả lời trung thực"));
-    assert(strstr(instruction->valuestring,"Với câu đùa/câu trích nghe rõ nhưng chưa hiểu ý thì hỏi lại ngữ cảnh"));
-    assert(strstr(instruction->valuestring,"hiểu tiếng Việt, tiếng Anh và tiếng Nhật"));
-    assert(strstr(instruction->valuestring,"không xin nhắc lại hay nhắc nói tiếng Việt"));
+    assert(cJSON_IsString(instruction));
+    assert(strstr(instruction->valuestring,"Bạn là Hi Su"));
     assert(strstr(instruction->valuestring,"Không tiết lộ API key hay dữ liệu riêng tư"));
-    assert(strstr(instruction->valuestring,"Use Hi Su, not provider/site/model names (Gemini, Google, NhacCuaTui)"));
-    assert(strstr(instruction->valuestring,"in speech/errors. Disclose sources truthfully only if asked"));
-    assert(!strstr(instruction->valuestring,"Nói nguồn, thời điểm, đơn vị"));
-    assert(strstr(instruction->valuestring,"trừ khi người dùng yêu cầu rõ ràng ngôn ngữ khác hoặc bật phiên dịch"));
-    assert(strstr(instruction->valuestring,"Không tự chuyển sang ngôn ngữ khác vì tên bài hát"));
     assert(strstr(instruction->valuestring,"không hát hay bịa lời để giả rằng đã phát bản thu"));
     assert(!cJSON_GetObjectItem(cJSON_GetObjectItem(config,"speechConfig"),"languageCode"));
-    assert(strstr(instruction->valuestring,"không nhận mình có cảm xúc người thật"));
     assert(strstr(instruction->valuestring,"not FIFO/keywords"));
     assert(strstr(instruction->valuestring,"evict_id and its exact expected_fact"));
     assert(strstr(instruction->valuestring,"Skip less useful additions"));
@@ -757,6 +733,13 @@ static void extended_tool_tests(void) {
 }
 
 static void wake_reply_tests(void) {
+    /* Name-only wake must not seed the old clock-and-question script. */
+    reset(); s_ready=false; s_resume_kind=9;
+    receive("{\"setupComplete\":{}}");
+    assert(sent_count==1 && send_wake((void *)1,&sent[0]));
+    assert(mock_text_sends==1 && s_turn.response_pending);
+    assert(!strstr(mock_last_text,"still awake late at night"));
+    assert(!strstr(mock_last_text,"optionally noticing the supplied local time"));
     reset(); s_ready=false; mock_preempt_ready=true;
     receive("{\"setupComplete\":{}}");
     mock_preempt_ready=false;

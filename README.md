@@ -16,7 +16,7 @@ Nguồn và đánh giá tái sử dụng: [Tài liệu tham khảo](docs/REFEREN
 
 Bước đầu là UI LVGL 9.4.0: GIF mèo 240×240 ở màn hình chờ, menu Hisu, editor cấu hình và API phụ đề tiếng Việt.
 
-Màn hình chờ có icon Wi-Fi theo mức sóng và pin nằm ngang chia 5 vạch ở góc trên bên phải, không hiện số phần trăm. Khi GPIO9 báo nguồn ngoài, pin hiện tia sét thay các vạch; đây không phải tín hiệu xác nhận sạc đầy. Pin còn 20% trở xuống chuyển đỏ khi không cắm sạc. Tắt Wi-Fi sẽ ẩn icon; bật nhưng chưa kết nối hiển thị icon mờ. Danh sách mạng dùng cùng icon, với các vòng ngoài mờ theo tín hiệu. Cụm trạng thái cập nhật mỗi giây mà không khởi động lại GIF.
+Màn hình chờ có icon Wi-Fi theo mức sóng và pin nằm ngang chia 5 vạch ở góc trên bên phải, không hiện số phần trăm. Khi GPIO9 báo nguồn ngoài, pin vẫn hiển thị các vạch và không có ký hiệu tia sét; đây không phải tín hiệu xác nhận sạc đầy. Pin còn 20% trở xuống chuyển đỏ khi không cắm sạc. Tắt Wi-Fi sẽ ẩn icon; bật nhưng chưa kết nối hiển thị icon mờ. Danh sách mạng dùng cùng icon, với các vòng ngoài mờ theo tín hiệu. Cụm trạng thái cập nhật mỗi giây mà không khởi động lại GIF.
 
 Màn hình chờ chỉ dùng ảnh/GIF tải lên từ Setting, không nhúng hình nền mặc định. Chưa có ảnh hoặc ảnh lỗi thì dùng nền đen/trắng theo theme, vẫn giữ đồng hồ và biểu tượng trạng thái. GIF đã tải lên lặp khi idle và tạm dừng khi backlight tắt. Menu và phụ đề thay thế GIF. LVGL dùng heap ESP-IDF (có PSRAM) để chứa framebuffer GIF thay cho pool 96 KiB. Lựa chọn hình nền mặc định từ firmware cũ được bỏ qua, không xóa ảnh người dùng. Setting không còn mục khôi phục nền hoặc lệnh xóa ảnh; nút Căn lại ảnh trên web chỉ đặt lại bản xem trước.
 

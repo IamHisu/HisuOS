@@ -1298,7 +1298,7 @@ static bool send_wake(esp_websocket_client_handle_t client, const input_t *frame
         announce_rekey(frame->epoch); return true;
     }
     if (resume) {
-        const char *instruction=resume==9 ? "The user just called Hi Su by name. The offline sound already acknowledged them; do not repeat a generic greeting. Make ONE short natural Vietnamese opening, optionally noticing the supplied local time (for example, gently ask why they are still awake late at night). Do not assume insomnia, mood, work, location or habits. Do not lecture, mention the time mechanically, call tools or change settings. If clock is unavailable, make a brief neutral opening. Then wait for the user." :
+        const char *instruction=resume==9 ? "The user just called Hi Su by name. Acknowledge naturally in Vietnamese, using relevant conversation context if any, then let the user continue. There is no required opening phrase, follow-up question or time-of-day comment. Do not invent a reason for the call, use tools or change settings." :
         resume==7 ? "The previous song finished. The user explicitly enabled automatic next with the physical button. Choose a DIFFERENT known song and call play_next_music now; search_music once only if needed. Do not ask for confirmation or wait for speech. If unavailable, explain briefly in Vietnamese and return to ordinary chat; no retry loop. Never repeat the last id or operate settings." :
             resume==8 ? "The story has finished. Briefly tell the user in Vietnamese, then listen for ordinary conversation. Do not start another story, repeat it, reset a timer or call tools." :
         resume==6 ? "The song has now finished playing successfully. Briefly tell the user in natural Southern Vietnamese that it has ended, then ask whether they want another song or to chat. Use the same natural Leda voice as ordinary chat. Do not greet again or call any tools. Do not choose, search or play another song until a NEW actual user request arrives. Speak once, then wait for their answer." :
@@ -2268,6 +2268,7 @@ static void prepare_reminder(void)
 static void transport_task(void *arg)
 {
     (void)arg;
+    voice_lookup_history_load();
     input_t *frame = &s_send_workspace->frame;
     char *key = s_send_workspace->key, *headers = s_send_workspace->headers;
     int16_t *pcm = (int16_t *)s_send_storage;
@@ -2298,6 +2299,8 @@ static void transport_task(void *arg)
         if (!active || music_playing) {
             if (memory_idle && esp_timer_get_time()>=next_volume_save) {
                 (void)hisu_settings_flush_volume();
+                voice_lookup_history_load();
+                voice_lookup_history_flush();
                 next_volume_save=esp_timer_get_time()+5000000;
             }
             if (memory_idle && !voice_lookup_busy()) prepare_reminder();
@@ -2970,6 +2973,7 @@ static void finish_spoken_reply(uint32_t epoch, uint32_t generation)
         return;
     }
     bool story_done=live && s_bedtime.active && s_bedtime.completed;
+    bool heard_news=live && s_reply_state.audio;
     bool return_chat=story_done && s_story_mode==HISU_PLAYBACK_OFF;
     if (return_chat) { memset(&s_bedtime,0,sizeof(s_bedtime)); request_profile(HISU_GEMINI_CHAT,8); }
     bool ending=live && s_reply_state.end_after_reply;
@@ -2986,6 +2990,7 @@ static void finish_spoken_reply(uint32_t epoch, uint32_t generation)
     }
     portEXIT_CRITICAL(&s_mux);
     if (return_chat) { announce_rekey(epoch); return; }
+    if (heard_news) voice_lookup_spoken(epoch,generation);
     if (reconnect) { announce_rekey(epoch); return; }
     if (waiting) return;
     if (story) {

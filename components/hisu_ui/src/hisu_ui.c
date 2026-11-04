@@ -116,8 +116,8 @@ static int64_t s_volume_until_ms;
 static int s_volume_display=-1;
 static hisu_network_status_t s_network;
 static hisu_power_status_t s_power;
-static lv_obj_t *s_battery_body, *s_battery_bars[HISU_UI_BATTERY_BARS], *s_battery_tip, *s_battery_charge;
-static lv_obj_t *s_battery_outline, *s_battery_tip_outline, *s_charge_outline;
+static lv_obj_t *s_battery_body, *s_battery_bars[HISU_UI_BATTERY_BARS], *s_battery_tip;
+static lv_obj_t *s_battery_outline, *s_battery_tip_outline;
 static lv_timer_t *s_battery_timer;
 
 static void animate_battery(lv_timer_t *timer)
@@ -428,15 +428,6 @@ static void update_idle_status(void)
         if (i < bars) lv_obj_remove_flag(s_battery_bars[i], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(s_battery_bars[i], LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_set_style_line_color(s_battery_charge, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_line_color(s_charge_outline, lv_color_hex(0x101010), 0);
-    if (charging) {
-        lv_obj_remove_flag(s_battery_charge, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(s_charge_outline, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(s_battery_charge, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_charge_outline, LV_OBJ_FLAG_HIDDEN);
-    }
     update_wifi_icon(&s_idle_wifi, s_network.connected ? wifi_signal_bars(s_network.rssi) : 0,
                      s_network.enabled, hisu_network_has_internet_warning(&s_network), overlay_color(1, 176, 10, 22, 18));
 }
@@ -494,19 +485,6 @@ static void render_idle_status(lv_obj_t *root)
     lv_obj_set_pos(s_battery_tip, 70, 10);
     lv_obj_set_size(s_battery_tip, 2, 4);
     lv_obj_set_style_bg_opa(s_battery_tip, LV_OPA_COVER, 0);
-    static const lv_point_precise_t bolt[] = {{3, 0}, {1, 4}, {5, 4}, {3, 8}};
-    s_charge_outline = lv_line_create(panel);
-    lv_obj_remove_style_all(s_charge_outline);
-    lv_line_set_points(s_charge_outline, bolt, 4);
-    lv_obj_set_pos(s_charge_outline, 54, 8);
-    lv_obj_set_style_line_width(s_charge_outline, 4, 0);
-    lv_obj_set_style_line_rounded(s_charge_outline, true, 0);
-    s_battery_charge = lv_line_create(panel);
-    lv_obj_remove_style_all(s_battery_charge);
-    lv_line_set_points(s_battery_charge, bolt, 4);
-    lv_obj_set_pos(s_battery_charge, 54, 8);
-    lv_obj_set_style_line_width(s_battery_charge, 2, 0);
-    lv_obj_set_style_line_rounded(s_battery_charge, true, 0);
     update_idle_status();
 }
 
@@ -1342,7 +1320,7 @@ static void render(void)
     s_idle_gif = NULL;
     s_idle_clock = NULL;
     s_subtitle_body = NULL;
-    s_battery_body = s_battery_tip = s_battery_charge = NULL;
+    s_battery_body = s_battery_tip = NULL;
     lv_obj_remove_style_all(root);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(root, lv_color_hex(theme_color(0x000000)), 0);

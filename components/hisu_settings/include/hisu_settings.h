@@ -53,3 +53,5 @@ typedef struct {
 } hisu_power_usage_record_t;
 esp_err_t hisu_settings_load_power_usage(hisu_power_usage_record_t *out);
 esp_err_t hisu_settings_save_power_usage(const hisu_power_usage_record_t *record);
+esp_err_t hisu_settings_load_news_history(void *out,size_t *bytes);
+esp_err_t hisu_settings_save_news_history(const void *data,size_t bytes);

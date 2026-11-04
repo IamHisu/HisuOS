@@ -12,51 +12,30 @@ Chat chinh va Chat du phong deu dung duoc; Reader/Interpreter van bi chan.
 - "Gia nhan SJC va vang the gioi thi sao?"
 - "Hom nay co tin gi moi khong?"
 
-## Tin tức và slang qua Gemini Search
+## Tin công nghệ nhiều nguồn trong 7 ngày
 
-Dùng key Gemini Chat chính đã lưu trên board. Không cần key dịch vụ tin tức
-khác. Một request POST tới
-`https://generativelanguage.googleapis.com/v1beta/interactions`, model
-`gemini-2.5-flash-lite`, tool `google_search`, `store=false` và giới hạn 4096
-output token. Model có tìm kiếm web; quyền truy cập và quota phụ thuộc key.
-Không tự chuyển model/key, bật thanh toán hay lặp lại request lỗi.
-Chọn 2.5 Flash-Lite vì Google hiện công bố Search Grounding trên free tier
-(tối đa 500 request/ngày, dùng chung với 2.5 Flash); 3.5 Flash-Lite không có
-Search Grounding API ở free tier. Quota thực tế cần xem trong AI Studio.
-[Bảng giá](https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-lite).
+Tin tức dùng GenK, QbitAI/量子位, IT之家 và TechCrunch, rồi Gemini 3.5 Flash-Lite dịch/tóm tắt
+bằng generateContent **không có Google Search**. Ưu tiên AI, robot, chip, phần
+cứng nhúng, mã nguồn mở và công nghệ mới Việt Nam/Trung Quốc. Chỉ nhận bài trong
+7 ngày; ghi nhớ tối đa 128 bài đã trả lời trong RAM qua các phiên Live, lọc
+URL/tiêu đề và đưa lịch sử gần nhất cho model tránh trùng sự kiện giữa nguồn.
+`repeat:true` chỉ khi người dùng yêu cầu đọc lại. Dấu lịch sử được lưu NVS riêng
+sau khi đóng chat và hệ thống rảnh, khôi phục khi khởi động lại; không chiếm
+24 ô trí nhớ cá nhân. Không tắt nguồn ngay trước khi lượt mới kịp lưu.
 
-- `lookup_info({topic:"news"})`: mặc định `mode:"read"`, bản tin 300–450 từ.
-- `mode:"brief"`: điểm tin nhanh 100–150 từ.
-- `mode:"detail", query:"chủ đề hoặc tiêu đề vừa nghe"`: 400–550 từ về tin đó.
-- `topic:"slang", query:"cụm từ và ngữ cảnh ngắn"`: tra nghĩa, sắc thái, ví dụ
-  và trường hợp nên tránh. Không có query thì từ chối; tối đa 256 byte UTF-8.
+Điểm tin dùng tiêu đề và mô tả. Hỏi “tin đó nói gì”, “chi tiết hơn” hoặc “tóm tắt
+tin DeepSeek đó” thì model dùng `article_id` trong kết quả trước, mode `detail`
+(hoặc `brief` kèm ID) để tải nội dung bài gốc và diễn đạt lại bằng tiếng Việt.
+Giữ 12 bài gần đây riêng với lịch sử đã nghe; cache body 10 phút trong RAM.
+Không rõ bài nào thì hỏi chọn. Không tải được hoặc bài không nêu thông tin
+được hỏi thì nói rõ, không bịa nội dung hay nguyên nhân lỗi. Đã bỏ Tinh tế.
+Nguồn/date/URL giữ từ dữ liệu gốc. Bản gần nhất xem
+ở Setting → Nguồn tra cứu. Không đủ tin chưa nghe thì báo rõ, không lặp để đủ số.
+Chi tiết endpoint, fallback, giới hạn, kết quả test: [Tech News](TECH_NEWS.md).
 
-Tin tổng quát ưu tiên ba nhóm công nghệ/robot Việt Nam, AI và kinh tế quốc tế
-trong 24 giờ gần đây. Đây là bản tổng hợp có nguồn, không phải đọc nguyên văn
-bài báo. Model phải nêu ngày/nguồn, phân biệt ngày đăng và ngày xảy ra, không
-bịa chi tiết. Thời gian mới và nội dung bài vẫn cần kiểm chứng trên board;
-firmware xác minh cấu trúc grounding, không xác minh độc lập mọi sự kiện.
-
-Chỉ nhận response `completed` có bước tìm kiếm, nội dung, URL citation và
-Search Suggestions. Thiếu grounding hoặc body lỗi/cắt cụt thì báo chưa tra
-được, không giả làm tin mới từ kiến thức mô hình. HTTP 403/429 báo key/quota.
-Deadline 45 giây; response tối đa 64 KiB, JSON sâu tối đa 16. Nội dung nói tối
-đa 12 KiB, tối đa 12 nguồn và 5 gợi ý tìm kiếm (tổng HTML 8 KiB). Không fetch
-URL do mô hình trả về, không theo redirect. Kết quả web không được cache để
-trả lời yêu cầu tiếp theo. Chỉ giữ bản tra cứu gần nhất trong RAM làm lịch sử
-hiển thị, không ghi flash hay dùng làm từ điển slang tự học.
-
-Setting > Thiết bị > Nguồn tra cứu hiển thị nội dung cùng liên kết nguồn và
-Search Suggestions gốc; giao diện chặn HTML chủ động/script và URL khác HTTPS.
-Nội dung web là dữ liệu không đáng tin, không có quyền đổi cấu hình hay gọi tool.
-Không chạy bộ gom slang nền bằng Search Grounding.
-
-Tài liệu đã kiểm tra:
-- [Google Search Grounding](https://ai.google.dev/gemini-api/docs/google-search)
-- [Interactions API](https://ai.google.dev/api/interactions-api)
-- [Điều khoản Grounding](https://ai.google.dev/gemini-api/terms#grounding-with-google-search)
-- [GNews](https://docs.gnews.io/): có full content ở gói trả phí, nhưng cần key
-  riêng nên không chọn cho cấu hình dùng key Gemini hiện có.
+Slang qua Google Search vẫn là đường riêng cũ (2.5 Flash-Lite); với project đã
+không còn quyền model này hoặc quota Search=0 thì đường slang đó không dùng
+được. Bản thay đổi tin tức không tuyên bố đã sửa quota/slang hoặc tự bật billing.
 
 ## Thoi Tiet Va Gia Vang
 

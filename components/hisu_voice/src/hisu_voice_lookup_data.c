@@ -19,6 +19,8 @@ cJSON *lookup_error(const char *code) {
     cJSON *o=cJSON_CreateObject();
     const char *message="Hi Su chưa lấy được thông tin lúc này.";
     if (!strcmp(code,"web_unverified")) message="Hi Su chưa lấy được bản tra cứu có nguồn đáng tin lúc này.";
+    else if (!strcmp(code,"no_matching_news")) message="Các nguồn công nghệ hiện có chưa có tin phù hợp chủ đề bạn hỏi.";
+    else if (!strcmp(code,"news_unavailable")) message="Hi Su chưa lấy được tin công nghệ mới từ các nguồn hiện có.";
     else if (!strcmp(code,"web_key_required")) message="Bạn cần lưu key Gemini Chat chính để Hi Su tra web.";
     else if (!strcmp(code,"web_quota")) message="Tra web đang hết hạn mức hoặc key chưa được phép dùng. Bạn kiểm tra Google AI Studio nha.";
     else if (!strcmp(code,"place_required")) message="Bạn muốn xem thời tiết ở khu vực nào?";
@@ -27,6 +29,11 @@ cJSON *lookup_error(const char *code) {
     else if (!strcmp(code,"clock_unsynced")) message="Đồng hồ chưa cập nhật nên Hi Su chưa kiểm tra được thông tin đúng ngày.";
     else if (!strcmp(code,"stale_data")) message="Dữ liệu đang có đã cũ, Hi Su chưa có số liệu mới để trả lời chính xác.";
     else if (!strcmp(code,"rate_limited")) message="Hi Su vừa tra cứu xong, chờ một chút rồi thử lại nha.";
+    if (!strcmp(code,"no_unheard_news")) message="Chưa có tin công nghệ khác bạn chưa nghe trong 7 ngày qua ở các nguồn hiện có. Bạn có thể yêu cầu đọc lại tin cũ.";
+    if (!strcmp(code,"news_scan_incomplete")) message="Lần tra này chưa lấy thêm được tin phù hợp. Đây không có nghĩa là đã hết tin trong tuần; Hi Su có thể tra tiếp nguồn hoặc trang khác.";
+    if (!strcmp(code,"article_not_found")) message="Hi Su chưa xác định được bài bạn muốn nghe. Bạn nói tên tin hoặc chọn một tin vừa giới thiệu nhé.";
+    if (!strcmp(code,"article_unavailable")) message="Hi Su chưa tải được nội dung bài gốc lúc này. Chưa có đủ nội dung để trả lời sâu hơn; không có thông tin xác định nguyên nhân.";
+    if (!strcmp(code,"article_unverified")) message="Hi Su chưa tách được phần nội dung chính đáng tin cậy của bài gốc. Hiện chỉ có tiêu đề và mô tả ngắn, chưa đủ để nói thêm chi tiết.";
     if (!o || !cJSON_AddBoolToObject(o,"ok",false) || !cJSON_AddStringToObject(o,"error",code) ||
         !cJSON_AddStringToObject(o,"message",message) ||
         !cJSON_AddStringToObject(o,"speech_hint","Chỉ diễn đạt message bằng tiếng Việt tự nhiên. Không đọc JSON, tên trường, mã lỗi hoặc nguồn. Không gọi lại cùng yêu cầu đang lỗi trong lượt này. Không bịa kết quả.")) {
@@ -43,14 +50,25 @@ bool lookup_query_parse(const cJSON *args,lookup_query_t *q) {
     q->news=!strcmp(topic->valuestring,"news");
     q->slang=!strcmp(topic->valuestring,"slang");
     if (q->news || q->slang) {
-        const cJSON *query=field(args,"query"),*mode=field(args,"mode"),*item;
+        const cJSON *query=field(args,"query"),*mode=field(args,"mode"),*repeat=field(args,"repeat"),*source=field(args,"source"),*article=field(args,"article_id"),*item;
         cJSON_ArrayForEach(item,args)
-            if (!item->string || (strcmp(item->string,"topic") && strcmp(item->string,"query") && strcmp(item->string,"mode"))) return false;
-        if (cJSON_GetArraySize(args)!=1+(query!=NULL)+(mode!=NULL)) return false;
+            if (!item->string || (strcmp(item->string,"topic") && strcmp(item->string,"query") && strcmp(item->string,"mode") && strcmp(item->string,"repeat") && strcmp(item->string,"source") && strcmp(item->string,"article_id"))) return false;
+        if (cJSON_GetArraySize(args)!=1+(query!=NULL)+(mode!=NULL)+(repeat!=NULL)+(source!=NULL)+(article!=NULL)) return false;
+        if (article) {
+            if (!q->news || !text(article,8) || strlen(article->valuestring)!=8 || strspn(article->valuestring,"0123456789abcdef")!=8) return false;
+            strcpy(q->article_id,article->valuestring);
+        }
+        if (source) {
+            if (!q->news || !text(source,10) || (strcmp(source->valuestring,"auto") && strcmp(source->valuestring,"genk") &&
+                strcmp(source->valuestring,"techcrunch") && strcmp(source->valuestring,"ithome") && strcmp(source->valuestring,"qbitai"))) return false;
+            strcpy(q->source,source->valuestring);
+        }
+        if (repeat && (!q->news || !cJSON_IsBool(repeat))) return false;
+        q->repeat=cJSON_IsTrue(repeat);
         if ((query && !text(query,256)) || (q->slang && !query) || (mode && !text(mode,8))) return false;
         if (query) strcpy(q->query,query->valuestring);
         strcpy(q->mode,mode ? mode->valuestring : "read");
-        if (!strcmp(q->mode,"detail") && !query) return false;
+        if (!strcmp(q->mode,"detail") && !query && !article) return false;
         return !strcmp(q->mode,"brief") || !strcmp(q->mode,"read") || !strcmp(q->mode,"detail");
     }
     if (!q->weather && strcmp(topic->valuestring,"gold")) return false;

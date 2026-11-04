@@ -41,6 +41,25 @@ esp_err_t hisu_settings_save_slang(const char *json)
     return err;
 }
 
+esp_err_t hisu_settings_load_news_history(void *out,size_t *bytes)
+{
+    if (!s_lock || !out || !bytes || !*bytes || *bytes>2048) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock,portMAX_DELAY);
+    esp_err_t err=nvs_get_blob(s_nvs,"news_history",out,bytes);
+    xSemaphoreGive(s_lock);
+    return err==ESP_ERR_NVS_NOT_FOUND ? ESP_ERR_NOT_FOUND : err;
+}
+
+esp_err_t hisu_settings_save_news_history(const void *data,size_t bytes)
+{
+    if (!s_lock || !data || !bytes || bytes>2048) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_lock,portMAX_DELAY);
+    esp_err_t err=nvs_set_blob(s_nvs,"news_history",data,bytes);
+    if (err==ESP_OK) err=nvs_commit(s_nvs);
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
 esp_err_t hisu_settings_init(void)
 {
     if (s_lock) return ESP_ERR_INVALID_STATE;
