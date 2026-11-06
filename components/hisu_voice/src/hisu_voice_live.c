@@ -642,7 +642,6 @@ bool voice_live_begin(uint32_t generation)
 }
 bool voice_live_feed(uint32_t generation, const int16_t *pcm, size_t samples)
 {
-    hisu_ui_mic_level(hisu_music_pcm_level(pcm,samples,100));
     while (samples) {
         size_t count = samples > INPUT_SAMPLES ? INPUT_SAMPLES : samples;
         if (!enqueue(generation, 0, pcm, count)) return false;

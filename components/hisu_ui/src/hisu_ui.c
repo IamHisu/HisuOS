@@ -98,8 +98,6 @@ static int s_applied_brightness = -1;
 static int64_t s_activity_ms;
 static const char *s_error;
 static lv_obj_t *s_subtitle_body;
-static lv_obj_t *s_mic_ring;
-static atomic_uint s_mic_meter;
 static lv_obj_t *s_face_eyes[2], *s_face_cuts[2], *s_face_caption;
 static lv_timer_t *s_face_timer;
 static hisu_face_t s_expression;
@@ -914,12 +912,6 @@ static bool face_status(int state)
 static void animate_face(lv_timer_t *timer)
 {
     (void)timer;
-    if (s_mic_ring) {
-        unsigned meter = atomic_load(&s_mic_meter);
-        unsigned age = ((tick_ms()/20U) - (meter>>8)) & 0xffffffU;
-        unsigned level = age < 8 ? meter & 255U : 0;
-        lv_obj_set_style_border_opa(s_mic_ring, 28 + level * 3 / 4, 0);
-    }
     hisu_face_t face = s_expression;
     if (s_face_state == HISU_UI_ERROR) face = HISU_FACE_SAD;
     else if (face == HISU_FACE_AUTO)
@@ -950,12 +942,6 @@ void hisu_ui_music_level(unsigned level)
     if (level>255) level=255;
     uint32_t stamp=(uint32_t)(esp_timer_get_time()/20000)&0xffffffU;
     atomic_store(&s_music_meter,(stamp<<8)|level);
-}
-
-void hisu_ui_mic_level(unsigned level)
-{
-    uint32_t stamp = (uint32_t)(esp_timer_get_time()/20000) & 0xffffffU;
-    atomic_store(&s_mic_meter, (stamp<<8) | (level > 255 ? 255 : level));
 }
 
 static void music_rect(lv_layer_t *layer, const lv_area_t *origin, int x, int y, int w, int h,
@@ -1177,16 +1163,6 @@ static void render_subtitle(int state, const char *text)
         lv_obj_t *title = label(root, s_states[state], 12, 16, 216, 0x8c9690);
         lv_obj_set_style_text_color(title, lv_color_hex(0x8c9690), 0);
         lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-        if (state == HISU_UI_LISTENING) {
-            s_mic_ring = lv_obj_create(root);
-            lv_obj_remove_style_all(s_mic_ring);
-            lv_obj_remove_flag(s_mic_ring, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_set_pos(s_mic_ring, 61, 44);
-            lv_obj_set_size(s_mic_ring, 118, 118);
-            lv_obj_set_style_radius(s_mic_ring, LV_RADIUS_CIRCLE, 0);
-            lv_obj_set_style_border_width(s_mic_ring, 2, 0);
-            lv_obj_set_style_border_color(s_mic_ring, lv_color_hex(0x20e5e2), 0);
-        }
         for (int i = 0; i < 2; ++i) {
             s_face_eyes[i] = lv_obj_create(root);
             lv_obj_remove_style_all(s_face_eyes[i]);
@@ -1424,7 +1400,6 @@ static void render(void)
     s_idle_gif = NULL;
     s_idle_clock = NULL;
     s_subtitle_body = NULL;
-    s_mic_ring = NULL;
     s_battery_body = s_battery_tip = NULL;
     lv_obj_remove_style_all(root);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);

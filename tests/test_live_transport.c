@@ -71,7 +71,6 @@ static esp_err_t mock_schedule_flush_result;
 static unsigned mock_reminder_screens;
 static unsigned mock_music_level;
 void hisu_ui_music_level(unsigned level) { assert(level<=255); mock_music_level=level; }
-void hisu_ui_mic_level(unsigned level) { assert(level<=255); }
 esp_err_t hisu_ui_post_status(hisu_ui_status_t status,const char *text) {
     assert(status==HISU_UI_REMINDER && text && text[0]); ++mock_reminder_screens; return ESP_OK;
 }
