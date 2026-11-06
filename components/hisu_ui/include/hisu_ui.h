@@ -35,3 +35,4 @@ esp_err_t hisu_ui_post_flashlight(bool enabled);
 esp_err_t hisu_ui_post_expression(hisu_face_t face);
 /* Lock-free audio meter; no LVGL calls or status-queue traffic from the audio worker. */
 void hisu_ui_music_level(unsigned level);
+void hisu_ui_mic_level(unsigned level);

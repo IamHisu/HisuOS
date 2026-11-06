@@ -504,6 +504,13 @@ static cJSON *lookup_run(lookup_job_t *j) {
         strcpy(j->url,"https://www.vang.today/api/prices");
         cJSON *root=lookup_fetch(j);
         result=root ? lookup_gold(root,&j->query,time(NULL)) : lookup_error("source_unavailable"); cJSON_Delete(root);
+        if (j->query.gold_history && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"ok")) &&
+            !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result,"stale"))) {
+            snprintf(j->url,sizeof(j->url),"https://www.vang.today/api/prices?type=%s&days=7",j->query.type);
+            root=lookup_fetch(j);
+            lookup_gold_history(result,root,&j->query);
+            cJSON_Delete(root);
+        }
     } else {
         char encoded[289]; lookup_encode(encoded,j->query.place);
         snprintf(j->url,sizeof(j->url),"https://geocoding-api.open-meteo.com/v1/search?name=%s&count=3&language=vi&format=json&countryCode=VN",encoded);
@@ -539,6 +546,41 @@ static cJSON *lookup_run(lookup_job_t *j) {
     }
     return result;
 }
+static void lookup_gold_preview(lookup_job_t *j, const cJSON *data)
+{
+    const cJSON *price = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(data,"prices"),0);
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(price,"name"), *stamp = cJSON_GetObjectItemCaseSensitive(data,"updated_at_utc");
+    if (!cJSON_IsString(name) || !cJSON_IsNumber(stamp) || cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data,"stale"))) return;
+
+    time_t local = (time_t)stamp->valuedouble + 25200;
+    struct tm date;
+    char clock[6];
+    if (!gmtime_r(&local,&date) || !strftime(clock,sizeof(clock),"%H:%M",&date)) return;
+    const char *key = cJSON_GetObjectItemCaseSensitive(price,"spot_reference") ? "spot_reference" : "sell";
+    const cJSON *latest = cJSON_GetObjectItemCaseSensitive(price,key);
+    if (!cJSON_IsNumber(latest)) return;
+    bool world = !strcmp(key,"spot_reference");
+    double scale = world ? 1.0 : 1000000.0;
+    const char *unit = world ? "USD/oz" : "trđ/lượng";
+    const cJSON *entry, *previous = NULL, *previous_date = NULL;
+    cJSON_ArrayForEach(entry,cJSON_GetObjectItemCaseSensitive(data,"history")) {
+        const cJSON *day = cJSON_GetObjectItemCaseSensitive(entry,"date"), *value = cJSON_GetObjectItemCaseSensitive(entry,key);
+        if (cJSON_IsString(day) && cJSON_IsNumber(value) &&
+            (!previous_date || strcmp(day->valuestring,previous_date->valuestring)>0)) {
+            previous_date = day;
+            previous = value;
+        }
+    }
+    if (previous) {
+        double change = (latest->valuedouble - previous->valuedouble)/scale;
+        snprintf(j->result.gold_preview,sizeof(j->result.gold_preview),"%s  ·  %s\n%s %+.2f %s",
+                 name->valuestring,clock,change > 0 ? "Tăng" : change < 0 ? "Giảm" : "Ngang",change,unit);
+    } else {
+        snprintf(j->result.gold_preview,sizeof(j->result.gold_preview),"%s  ·  %s\n%.2f %s",
+                 name->valuestring,clock,latest->valuedouble/scale,unit);
+    }
+}
+
 static void lookup_worker(void *arg) {
     lookup_job_t *j=arg;
     lookup_log_memory(j,"worker_start");
@@ -547,6 +589,7 @@ static void lookup_worker(void *arg) {
     const cJSON *error=cJSON_GetObjectItemCaseSensitive(data,"error");
     if (cJSON_IsString(error)) ESP_LOGI("LOOKUP","Result error=%s",error->valuestring);
     j->result.response=lookup_print(data);
+    if (!j->query.news && !j->query.weather && !j->query.slang) lookup_gold_preview(j,data);
     if (j->query.news && j->result.response && lookup_current(j)) tech_news_stage(data,j->result.epoch,j->result.generation);
     cJSON_Delete(data);
     free(j->body); j->body=NULL;

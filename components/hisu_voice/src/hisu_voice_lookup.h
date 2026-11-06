@@ -7,6 +7,7 @@ typedef struct {
     uint32_t epoch, generation;
     char id[128];
     char *response;
+    char gold_preview[144];
 } voice_lookup_result_t;
 
 /* One bounded job. Only live_send submits/takes; HTTP never writes to WSS. */

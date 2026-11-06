@@ -36,6 +36,10 @@ Mục Theme chuyển Sáng/Tối bằng Vol+/Vol− và preview ngay trên edito
 
 ## Build
 
+Gemini Live PCM có ringbuffer độc lập, prebuffer/rebuffer 180 ms và counters
+starvation/RX gap. Thiết kế, giới hạn kiểm chứng và quy trình A/B trên N16R8:
+[Audio Jitter Buffer](docs/AUDIO_JITTER_BUFFER.md).
+
 Yêu cầu EIM đã cài ESP-IDF **6.1.x**. Hướng dẫn chuyển phiên bản: [ESP-IDF 6.1](docs/IDF_6_1.md). Chạy từ thư mục HisuOS:
 
 ```powershell

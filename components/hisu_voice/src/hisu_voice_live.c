@@ -1,4 +1,5 @@
 #include "hisu_voice_live.h"
+#include "hisu_audio_jitter.h"
 #include "hisu_voice_live_message.h"
 #include "hisu_voice_live_turn.h"
 #include "hisu_voice_console.h"
@@ -64,7 +65,7 @@ typedef struct {
     uint32_t epoch, generation;
     int16_t *pcm;
     size_t bytes;
-    bool done, music;
+    bool done, music, jitter;
     unsigned cue;
     int rate, channels;
 } output_t;
@@ -167,11 +168,12 @@ static bool s_playback_idle = true;
 static bool s_offline_playing, s_idle_maintenance;
 static int64_t s_end_us;
 static size_t s_queued_audio_bytes;
-static uint32_t s_audio_progress;
 #define REPLY_AUDIO_LIMIT (1536*1024)
+static hisu_audio_jitter_t s_jitter;
+static uint8_t *s_jitter_storage, *s_decode_pcm;
+static uint32_t s_jitter_epoch, s_jitter_generation;
+#define DECODE_PCM_BYTES (MESSAGE_MAX * 3 / 4 + 4)
 #define OUTPUT_QUEUE_SLOTS 256
-#define VOICE_STARTUP_MS 1200
-#define VOICE_BUFFER_MAX_MS 12000
 /* Prepared by the transport worker; handed to the playback worker only after WSS teardown. */
 static hisu_music_track_t *s_pending_music;
 static bool s_music_playing;
@@ -416,33 +418,61 @@ static bool current(uint32_t epoch, uint32_t generation)
     portEXIT_CRITICAL(&s_mux);
     return ok;
 }
-/* Bound stalls, not an otherwise healthy consumer's total drain time. */
 static int queue_reply_audio(const output_t *audio)
 {
     const size_t limit=REPLY_AUDIO_LIMIT;
     if (audio->bytes>limit) return -1;
-    int64_t deadline=esp_timer_get_time()+3000000;
-    portENTER_CRITICAL(&s_mux); uint32_t progress=s_audio_progress; portEXIT_CRITICAL(&s_mux);
-    for (;;) {
-        if (!current(audio->epoch,audio->generation)) return 0;
-        portENTER_CRITICAL(&s_mux);
-        if ((s_reply_state.ignore_input || s_reply_state.tool_loop_stopped) && !audio->done) { portEXIT_CRITICAL(&s_mux); return 0; }
-        bool room=s_queued_audio_bytes<=limit-audio->bytes;
-        if (progress!=s_audio_progress) {
-            progress=s_audio_progress; deadline=esp_timer_get_time()+3000000;
-        }
-        if (room) s_queued_audio_bytes+=audio->bytes;
-        portEXIT_CRITICAL(&s_mux);
-        if (room) {
-            if (xQueueSend(s_output,audio,0)==pdTRUE) return 1;
-            portENTER_CRITICAL(&s_mux); s_queued_audio_bytes-=audio->bytes; portEXIT_CRITICAL(&s_mux);
-        }
-        if (esp_timer_get_time()>=deadline) {
-            ESP_LOGW(TAG,"Reply audio consumer stalled for 3 seconds; bytes=%u",(unsigned)audio->bytes);
-            return -1;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
+    if (!current(audio->epoch,audio->generation)) return 0;
+    portENTER_CRITICAL(&s_mux);
+    if ((s_reply_state.ignore_input || s_reply_state.tool_loop_stopped) && !audio->done) { portEXIT_CRITICAL(&s_mux); return 0; }
+    bool room=s_queued_audio_bytes<=limit-audio->bytes;
+    if (room) s_queued_audio_bytes+=audio->bytes;
+    portEXIT_CRITICAL(&s_mux);
+    if (room) {
+        if (xQueueSend(s_output,audio,0)==pdTRUE) return 1;
+        portENTER_CRITICAL(&s_mux); s_queued_audio_bytes-=audio->bytes; portEXIT_CRITICAL(&s_mux);
     }
+    return -1;
+}
+
+static int queue_jitter_audio(uint32_t epoch, uint32_t generation, size_t bytes)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool room = bytes <= s_jitter.capacity - s_jitter.used;
+    if (!room) ++s_jitter.overflows;
+    portEXIT_CRITICAL(&s_mux);
+    if (!room) return -1;
+    for (size_t offset = 0; offset < bytes;) {
+        size_t count = bytes - offset;
+        if (count > 512) count = 512;
+        portENTER_CRITICAL(&s_mux);
+        (void)hisu_jitter_write(&s_jitter, s_decode_pcm + offset, count);
+        portEXIT_CRITICAL(&s_mux);
+        offset += count;
+    }
+    output_t audio = {.epoch=epoch, .generation=generation, .bytes=bytes, .jitter=true};
+    int result = queue_reply_audio(&audio);
+    portENTER_CRITICAL(&s_mux);
+    if (result != 1) {
+        hisu_jitter_unwrite(&s_jitter, bytes);
+        if (result < 0) ++s_jitter.overflows;
+    }
+    else {
+        if (s_jitter_epoch!=epoch || s_jitter_generation!=generation) s_jitter.received=false;
+        s_jitter_epoch=epoch; s_jitter_generation=generation;
+        hisu_jitter_rx(&s_jitter, bytes, esp_timer_get_time());
+    }
+    portEXIT_CRITICAL(&s_mux);
+    return result;
+}
+
+static void release_output(output_t *audio, size_t consumed)
+{
+    if (audio->jitter) {
+        portENTER_CRITICAL(&s_mux);
+        (void)hisu_jitter_read(&s_jitter, NULL, audio->bytes - consumed);
+        portEXIT_CRITICAL(&s_mux);
+    } else free(audio->pcm);
 }
 static void fail_with_message(uint32_t epoch, uint32_t generation, const char *message, bool exact_turn)
 {
@@ -612,6 +642,7 @@ bool voice_live_begin(uint32_t generation)
 }
 bool voice_live_feed(uint32_t generation, const int16_t *pcm, size_t samples)
 {
+    hisu_ui_mic_level(hisu_music_pcm_level(pcm,samples,100));
     while (samples) {
         size_t count = samples > INPUT_SAMPLES ? INPUT_SAMPLES : samples;
         if (!enqueue(generation, 0, pcm, count)) return false;
@@ -1023,8 +1054,11 @@ static void parse_message(connection_t *connection)
         bool accept_input = live_turn_accept_input(&s_turn) && !s_reply_state.typed_input;
         bool accept_output = live_turn_accept_output(&s_turn) && !s_reply_state.ignore_input && !s_reply_state.tool_loop_stopped;
         bool interrupted = cJSON_IsTrue(cJSON_GetObjectItem(content, "interrupted"));
+        bool cancel_output=interrupted && !s_turn.obsolete_turns && s_turn.response_pending;
+        if (cancel_output) s_reply_state.ignore_input=true;
         if (interrupted) accept_input = accept_output = false;
         portEXIT_CRITICAL(&s_mux);
+        if (cancel_output) complete_reply(connection->epoch,generation);
         cJSON *input = cJSON_GetObjectItem(cJSON_GetObjectItem(content, "inputTranscription"), "text");
         if (accept_input && cJSON_IsString(input)) {
             portENTER_CRITICAL(&s_mux);
@@ -1061,14 +1095,11 @@ static void parse_message(connection_t *connection)
                 fail(connection->epoch, generation); break;
             }
             size_t n = strlen(encoded->valuestring), bytes = 0;
-            int16_t *pcm = heap_caps_malloc(n * 3 / 4 + 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!pcm) { fail(connection->epoch, generation); break; }
-            int err = mbedtls_base64_decode((unsigned char *)pcm, n * 3 / 4 + 4, &bytes,
+            if (n > MESSAGE_MAX) { fail(connection->epoch, generation); break; }
+            int err = mbedtls_base64_decode(s_decode_pcm, DECODE_PCM_BYTES, &bytes,
                                             (unsigned char *)encoded->valuestring, n);
-            output_t audio = {.epoch = connection->epoch, .generation = generation, .pcm = pcm, .bytes = bytes};
-            int queued=err || bytes%2 ? -1 : queue_reply_audio(&audio);
+            int queued=err || bytes%2 ? -1 : queue_jitter_audio(connection->epoch, generation, bytes);
             if (queued!=1) {
-                free(pcm);
                 if (queued<0) fail_with_message(connection->epoch,generation,
                     "Âm thanh quá tải, gọi Hi Su để thử lại",true);
                 break;
@@ -1981,6 +2012,12 @@ static bool run_tool(esp_websocket_client_handle_t client, const input_t *frame)
         !strcmp(lookup_name->valuestring,"lookup_info") && cJSON_IsString(lookup_id) &&
         voice_lookup_submit(frame->epoch,frame->generation,lookup_id->valuestring,
             cJSON_GetObjectItemCaseSensitive(lookup_call,"args"),current);
+    if (queued && current(frame->epoch,frame->generation)) {
+        const cJSON *args=cJSON_GetObjectItemCaseSensitive(lookup_call,"args");
+        const cJSON *topic=cJSON_GetObjectItemCaseSensitive(args,"topic");
+        if (cJSON_IsString(topic) && !strcmp(topic->valuestring,"gold"))
+            s_callback(LIVE_THINKING,frame->generation,"Đang lấy giá vàng…");
+    }
     cJSON_Delete(lookup_call);
     if (queued) return true; /* pending_tools stays held until the HTTP result is sent. */
     log_transport_stack("Device tool start");
@@ -2055,6 +2092,7 @@ static bool send_lookup_result(esp_websocket_client_handle_t client)
     char *body=voice_lookup_encode_result(job);
     bool ok=true;
     if (current(job->epoch,job->generation)) {
+        if (job->gold_preview[0]) s_callback(LIVE_THINKING,job->generation,job->gold_preview);
         portENTER_CRITICAL(&s_mux);
         if (job->epoch==s_epoch && job->generation==s_generation) {
             if (s_reply_state.pending_tools) --s_reply_state.pending_tools;
@@ -2744,9 +2782,7 @@ static void produce_music(hisu_music_track_t *track)
     portEXIT_CRITICAL(&s_mux);
 }
 
-static unsigned s_voice_rebuffers, s_music_rebuffers;
-static uint32_t s_voice_buffer_epoch;
-static unsigned s_voice_startup_ms=VOICE_STARTUP_MS;
+static unsigned s_music_rebuffers;
 
 static unsigned resume_buffer_ms(unsigned underruns)
 {
@@ -2755,61 +2791,33 @@ static unsigned resume_buffer_ms(unsigned underruns)
 
 static unsigned voice_resume_buffer_ms(void)
 {
-    unsigned target=s_voice_rebuffers==0 ? 3000 : s_voice_rebuffers==1 ? 6000 : VOICE_BUFFER_MAX_MS;
-    portENTER_CRITICAL(&s_mux);
-    int64_t gap_ms=s_reply_state.max_rx_gap_us/1000;
-    /* Persistent sub-realtime delivery needs more than a jitter-sized reserve. */
-    int64_t deficit_ms=(s_reply_state.rx_last_us-s_reply_state.rx_first_us)/1000-
-        (int64_t)(s_reply_state.rx_bytes/48);
-    portEXIT_CRITICAL(&s_mux);
-    unsigned jitter=gap_ms>=VOICE_BUFFER_MAX_MS-500 ? VOICE_BUFFER_MAX_MS : (unsigned)gap_ms+500;
-    if (deficit_ms>0) {
-        unsigned reserve=deficit_ms>=VOICE_BUFFER_MAX_MS/2 ? VOICE_BUFFER_MAX_MS : (unsigned)deficit_ms*2;
-        if (target<reserve) target=reserve;
-    }
-    if (target<jitter) target=jitter;
-    if (target<s_voice_startup_ms+300) target=s_voice_startup_ms+300;
-    return target>VOICE_BUFFER_MAX_MS ? VOICE_BUFFER_MAX_MS : target;
-}
-
-static void voice_buffer_complete(void)
-{
-    /* Retain jitter history across replies, then gently recover after clean ones. */
-    if (!s_voice_rebuffers && s_voice_startup_ms>VOICE_STARTUP_MS)
-        s_voice_startup_ms=s_voice_startup_ms>VOICE_STARTUP_MS+250 ? s_voice_startup_ms-250 : VOICE_STARTUP_MS;
+    return HISU_JITTER_PREBUFFER_MS;
 }
 
 static bool wait_audio_buffer(bool music, bool startup, uint32_t epoch, uint32_t generation,
     size_t current_bytes, uint64_t current_us)
 {
     int64_t started=esp_timer_get_time();
-    unsigned *rebuffers=music ? &s_music_rebuffers : &s_voice_rebuffers;
-    if (!music && s_voice_buffer_epoch!=epoch) {
-        s_voice_buffer_epoch=epoch; s_voice_startup_ms=VOICE_STARTUP_MS;
-    }
-    if (startup) *rebuffers=0;
-    portENTER_CRITICAL(&s_mux); bool story=s_bedtime.active; portEXIT_CRITICAL(&s_mux);
-    unsigned target_ms=music ? (startup ? 500 : resume_buffer_ms(*rebuffers)) :
-        (startup ? s_voice_startup_ms : voice_resume_buffer_ms());
-    if (!music && story && target_ms<8000) target_ms=8000;
-    if (!startup && *rebuffers<3) ++*rebuffers;
-    if (!music && !startup && s_voice_startup_ms<target_ms)
-        s_voice_startup_ms=target_ms>6000 ? 6000 : target_ms;
+    if (music && startup) s_music_rebuffers=0;
+    unsigned target_ms=music ? (startup ? 500 : resume_buffer_ms(s_music_rebuffers)) : voice_resume_buffer_ms();
+    if (music && !startup && s_music_rebuffers<3) ++s_music_rebuffers;
     uint64_t target_us=(uint64_t)target_ms*1000;
     /* Allow slower-than-realtime production to actually fill the reserve. */
     int64_t wait_us=music ? target_us+250000 : target_us*2+1000000;
     while (music ? hisu_music_current(generation) : current(epoch,generation)) {
         portENTER_CRITICAL(&s_mux);
         bool ready=music ? s_music_queued_us+current_us>=target_us :
-            s_queued_audio_bytes+current_bytes>=target_us*48/1000; /* 24 kHz mono, 16-bit. */
+            hisu_jitter_ready(s_queued_audio_bytes+current_bytes,false);
         bool done=music ? s_music_producer_done : !s_turn.response_pending;
+        size_t occupancy=s_jitter.used;
         portEXIT_CRITICAL(&s_mux);
+        (void)occupancy;
         /* Tiny PCM/caption items may fill the slot budget before a large target. */
         bool slots_high=uxQueueMessagesWaiting(s_output)>=OUTPUT_QUEUE_SLOTS-16;
         if (ready || done || slots_high || esp_timer_get_time()-started>=wait_us) {
             if (!music)
-                ESP_LOGI(TAG,"Voice buffer ready: target=%u ms held=%lld ms complete=%d slot_limited=%d",
-                    target_ms,(long long)((esp_timer_get_time()-started)/1000),done,slots_high);
+                ESP_LOGI(TAG,"Voice buffer ready: target=%u ms occupancy=%u ms held=%lld ms complete=%d slot_limited=%d",
+                    target_ms,(unsigned)(occupancy/48),(long long)((esp_timer_get_time()-started)/1000),done,slots_high);
             return true;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -3050,6 +3058,10 @@ static void playback_task(void *arg)
             }
             else if (!first && !needs_buffer) {
                 needs_buffer=true;
+                speaker_close();
+                portENTER_CRITICAL(&s_mux);
+                if (s_turn.response_pending) ++s_jitter.underruns;
+                portEXIT_CRITICAL(&s_mux);
                 int64_t now=esp_timer_get_time();
                 portENTER_CRITICAL(&s_mux);
                 size_t received=s_reply_state.rx_bytes;
@@ -3067,16 +3079,23 @@ static void playback_task(void *arg)
             consume_music(&audio); first=needs_buffer=true; continue;
         }
         if (audio.bytes) { portENTER_CRITICAL(&s_mux); s_queued_audio_bytes -= audio.bytes; portEXIT_CRITICAL(&s_mux); }
-        if (!current(audio.epoch, audio.generation)) { free(audio.pcm); speaker_close(); first = needs_buffer = true; continue; }
+        if (!current(audio.epoch, audio.generation)) { release_output(&audio,0); speaker_close(); first = needs_buffer = true; continue; }
         portENTER_CRITICAL(&s_mux); bool ignored=s_reply_state.ignore_input || s_reply_state.tool_loop_stopped; portEXIT_CRITICAL(&s_mux);
-        if (ignored && !audio.done) { free(audio.pcm); continue; }
+        if (ignored && !audio.done) { release_output(&audio,0); continue; }
         if (audio.cue) {
             if (audio.cue == 1) hold_caption(&caption, &audio);
             else play_cue(&audio);
             free(audio.pcm); continue;
         }
         if (audio.done) {
-            if (!first && !ignored) voice_buffer_complete();
+            portENTER_CRITICAL(&s_mux);
+            hisu_audio_jitter_t stats=s_jitter;
+            portEXIT_CRITICAL(&s_mux);
+            (void)stats;
+            ESP_LOGI(TAG,"Jitter: occupancy=%u ms peak=%u ms underruns=%u overflows=%u rx_gaps=%u max_gap=%lld ms discarded=%llu bytes",
+                (unsigned)(stats.used/48),(unsigned)(stats.peak/48),(unsigned)stats.underruns,
+                (unsigned)stats.overflows,(unsigned)stats.rx_gaps,(long long)(stats.max_rx_gap_us/1000),
+                (unsigned long long)stats.discarded_bytes);
             if (!first && !ignored) flush_caption(&caption, audio.epoch, audio.generation);
             else caption.text[0] = 0;
             if (s_speaker_enabled) vTaskDelay(pdMS_TO_TICKS(100));
@@ -3085,7 +3104,13 @@ static void playback_task(void *arg)
             continue;
         }
         if (needs_buffer && !wait_audio_buffer(false,first,audio.epoch,audio.generation,audio.bytes,0)) {
-            free(audio.pcm); continue;
+            release_output(&audio,0); continue;
+        }
+        portENTER_CRITICAL(&s_mux);
+        bool canceled=s_reply_state.ignore_input || s_reply_state.tool_loop_stopped;
+        portEXIT_CRITICAL(&s_mux);
+        if (canceled || !current(audio.epoch,audio.generation)) {
+            release_output(&audio,0); speaker_close(); first=needs_buffer=true; continue;
         }
         needs_buffer=false;
         if (first) {
@@ -3094,6 +3119,7 @@ static void playback_task(void *arg)
             s_callback(LIVE_AUDIO, audio.generation, ""); first = false;
         }
         flush_caption(&caption, audio.epoch, audio.generation);
+        size_t consumed=0;
         if (hisu_settings_get(HISU_SETTING_SPEAKER) == 1) {
             esp_err_t speaker_err = speaker_open();
             if (speaker_err != ESP_OK) {
@@ -3102,26 +3128,40 @@ static void playback_task(void *arg)
             }
             size_t offset = 0;
             while (offset < audio.bytes / 2 && current(audio.epoch, audio.generation)) {
+                portENTER_CRITICAL(&s_mux);
+                canceled=s_reply_state.ignore_input || s_reply_state.tool_loop_stopped;
+                portEXIT_CRITICAL(&s_mux);
+                if (canceled) { speaker_close(); break; }
                 if (poll_bedtime()) break;
                 size_t count = audio.bytes / 2 - offset; if (count > 256) count = 256;
                 int volume = hisu_settings_get(HISU_SETTING_VOLUME);
-                for (size_t i = 0; i < count; ++i) stereo[2*i] = stereo[2*i+1] = (int32_t)audio.pcm[offset+i] * volume / 100;
+                int16_t mono[256];
+                if (audio.jitter) {
+                    portENTER_CRITICAL(&s_mux);
+                    (void)hisu_jitter_read(&s_jitter,mono,count*2);
+                    portEXIT_CRITICAL(&s_mux);
+                    consumed+=count*2;
+                } else memcpy(mono,audio.pcm+offset,count*2);
+                for (size_t sample = 0; sample < count; ++sample) stereo[2*sample] = stereo[2*sample+1] = (int32_t)mono[sample] * volume / 100;
                 if (!speaker_write(stereo, count * 4)) {
                     fail(audio.epoch, audio.generation); break;
                 }
                 start_mark(audio.epoch,VOICE_START_PLAY);
                 offset += count;
-                portENTER_CRITICAL(&s_mux); ++s_audio_progress; portEXIT_CRITICAL(&s_mux);
             }
         }
-        else { portENTER_CRITICAL(&s_mux); ++s_audio_progress; portEXIT_CRITICAL(&s_mux); }
-        free(audio.pcm);
+        release_output(&audio,consumed);
     }
 }
 esp_err_t voice_live_init(live_event_fn callback)
 {
     hisu_feedback_init();
     s_callback = callback;
+    s_jitter_storage=heap_caps_malloc(REPLY_AUDIO_LIMIT,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    s_decode_pcm=heap_caps_malloc(DECODE_PCM_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!hisu_jitter_init(&s_jitter,s_jitter_storage,REPLY_AUDIO_LIMIT) || !s_decode_pcm) {
+        voice_live_deinit(); return ESP_ERR_NO_MEM;
+    }
     s_send_storage = heap_caps_malloc(SEND_SAMPLES * sizeof(int16_t) + ENCODED_CAPACITY + SEND_BODY_CAPACITY,
                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_send_workspace = heap_caps_calloc(1, sizeof(*s_send_workspace), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -3169,6 +3209,9 @@ void voice_live_deinit(void)
     free(s_send_storage); s_send_storage = NULL;
     free(s_send_workspace); s_send_workspace = NULL;
     free(s_speaker_mix); s_speaker_mix=NULL;
+    free(s_jitter_storage); s_jitter_storage=NULL;
+    free(s_decode_pcm); s_decode_pcm=NULL;
+    memset(&s_jitter,0,sizeof(s_jitter));
     free(s_session_handle); s_session_handle=NULL;
     if (s_reminder) { free(s_reminder->pcm); free(s_reminder); s_reminder=NULL; }
     free(s_music_choices); s_music_choices=NULL; s_music_choice_count=0; s_music_choices_epoch=0;

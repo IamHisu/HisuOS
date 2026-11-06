@@ -71,6 +71,7 @@ static esp_err_t mock_schedule_flush_result;
 static unsigned mock_reminder_screens;
 static unsigned mock_music_level;
 void hisu_ui_music_level(unsigned level) { assert(level<=255); mock_music_level=level; }
+void hisu_ui_mic_level(unsigned level) { assert(level<=255); }
 esp_err_t hisu_ui_post_status(hisu_ui_status_t status,const char *text) {
     assert(status==HISU_UI_REMINDER && text && text[0]); ++mock_reminder_screens; return ESP_OK;
 }
@@ -260,9 +261,11 @@ static void event(live_event_t kind, uint32_t generation, const char *text) {
     }
 }
 static void reset(void) {
+    if (!s_jitter_storage) s_jitter_storage=malloc(REPLY_AUDIO_LIMIT);
+    if (!s_decode_pcm) s_decode_pcm=malloc(DECODE_PCM_BYTES);
+    assert(hisu_jitter_init(&s_jitter,s_jitter_storage,REPLY_AUDIO_LIMIT));
     receive_drain(); s_receive_paused=false;
     mock_decode_task_failure=false;
-    s_voice_buffer_epoch=0; s_voice_startup_ms=VOICE_STARTUP_MS; s_voice_rebuffers=0;
     mock_queue_messages=0;
     voice_lookup_free(mock_lookup_result); mock_lookup_result=NULL; mock_lookup_queued=false; mock_lookup_submits=0;
     mock_performance=false; mock_performance_off_calls=0;
@@ -1558,20 +1561,18 @@ static void audio_buffer_tests(void) {
         s_reply_state.rx_last_us==2100000 && s_reply_state.max_rx_gap_us==1100000);
     assert(voice_live_interrupt(s_generation+1) && !s_reply_state.rx_bytes && !s_reply_state.max_rx_gap_us);
     reset(); live_turn_end(&s_turn); mock_now=0;
-    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==3400000);
-    s_queued_audio_bytes=VOICE_STARTUP_MS*48-100; mock_now=0;
+    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==1360000);
+    s_queued_audio_bytes=HISU_JITTER_PREBUFFER_MS*48-100; mock_now=0;
     assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && !mock_now);
     s_queued_audio_bytes=0; mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==7000000);
+    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==1360000);
     mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==13000000);
+    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==1360000);
     mock_now=0;
-    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==25000000);
-    assert(s_voice_startup_ms==6000);
-    s_voice_rebuffers=0; voice_buffer_complete(); assert(s_voice_startup_ms==5750);
+    assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && mock_now==1360000);
     s_reply_state.rx_first_us=1000000; s_reply_state.rx_last_us=31730000;
     s_reply_state.rx_bytes=21060*48; /* Captured log: 21 s audio arrives over 30.7 s. */
-    assert(voice_resume_buffer_ms()==VOICE_BUFFER_MAX_MS);
+    assert(voice_resume_buffer_ms()==180);
     s_turn.response_pending=false; mock_now=0;
     assert(wait_audio_buffer(false,false,s_epoch,s_generation,100,0) && !mock_now);
     live_turn_end(&s_turn); mock_delay_hook=voice_live_close;
@@ -1580,7 +1581,7 @@ static void audio_buffer_tests(void) {
     s_queued_audio_bytes=7999*48;
     assert(wait_audio_buffer(false,true,s_epoch,s_generation,48,0) && !mock_now);
     s_queued_audio_bytes=0; mock_now=0;
-    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==17000000);
+    assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && mock_now==1360000);
     mock_queue_messages=OUTPUT_QUEUE_SLOTS-16; mock_now=0;
     assert(wait_audio_buffer(false,true,s_epoch,s_generation,100,0) && !mock_now);
 
@@ -1862,36 +1863,28 @@ static void story_playback_mode_tests(void) {
     puts("Story playback modes passed: whole-story completion, repeat/new story/Chat, no timer extension and timer-first expiry.");
     reset();
 }
-static void release_output_on_delay(void) { full_output=false; s_queued_audio_bytes=0; }
-static void advance_audio_on_delay(void) {
-    ++s_audio_progress;
-    if (mock_now>=4000000) release_output_on_delay();
-    else mock_delay_hook=advance_audio_on_delay;
-}
-static void cancel_audio_wait(void) { (void)voice_live_interrupt(s_generation+1); }
 static void reply_backpressure_tests(void) {
-    for (unsigned mode=0; mode<5; ++mode) {
+    for (unsigned mode=0; mode<2; ++mode) {
         reset();
         output_t audio={.epoch=s_epoch,.generation=s_generation,.bytes=4,.pcm=calloc(1,4)};
         int64_t started=mock_now;
-        if (mode==0 || mode==2 || mode==4) full_output=true;
+        if (mode==0) full_output=true;
         else s_queued_audio_bytes=REPLY_AUDIO_LIMIT;
-        if (mode<2) mock_delay_hook=release_output_on_delay;
-        if (mode==4) mock_delay_hook=cancel_audio_wait;
         int result=queue_reply_audio(&audio);
-        assert(result==(mode<2 ? 1 : mode==4 ? 0 : -1));
+        assert(result==-1);
         assert(!s_failed && !events[LIVE_ERROR]);
-        if (mode<2) assert(output_count==1 && s_queued_audio_bytes==4 && mock_now-started==10000);
-        else {
-            free(audio.pcm);
-            assert(!output_count && s_queued_audio_bytes==(mode==3 ? REPLY_AUDIO_LIMIT : 0));
-            assert(mock_now-started==(mode==4 ? 10000 : 3000000));
-        }
+        free(audio.pcm);
+        assert(!output_count && s_queued_audio_bytes==(mode==1 ? REPLY_AUDIO_LIMIT : 0));
+        assert(mock_now==started);
     }
-    reset(); full_output=true; mock_now=0;
+    reset(); mock_now=0;
     output_t audio={.epoch=s_epoch,.generation=s_generation,.bytes=4,.pcm=calloc(1,4)};
-    mock_delay_hook=advance_audio_on_delay;
-    assert(queue_reply_audio(&audio)==1 && mock_now>=4000000); /* Healthy playback may wait longer than 3s. */
+    assert(queue_reply_audio(&audio)==1 && mock_now==0 && s_queued_audio_bytes==4);
+    reset(); audio.epoch=s_epoch; audio.generation=s_generation;
+    assert(voice_live_interrupt(s_generation+1));
+    audio.pcm=calloc(1,4);
+    assert(queue_reply_audio(&audio)==0 && mock_now==0);
+    free(audio.pcm);
     reset();
 }
 static void story_resumption_tests(void) {
@@ -2280,7 +2273,55 @@ static void music_retry_loop_tests(void)
     music_retry_loop_case(false);
     music_retry_loop_case(true);
 }
+static void jitter_integration_tests(void)
+{
+    reset(); live_turn_end(&s_turn);
+    const char *chunk="{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"audio/pcm;rate=24000\",\"data\":\"AQACAAMA\"}}]}}}";
+    mock_live_alloc_left=0;
+    receive(chunk);
+    assert(!s_failed && output_count==1 && output[0].jitter && !output[0].pcm);
+    assert(s_jitter.used==4 && s_queued_audio_bytes==4);
+    int16_t samples[3]={0};
+    assert(hisu_jitter_read(&s_jitter,samples,2)==2 && samples[0]==0);
+    assert(voice_live_interrupt(s_generation+1));
+    release_output(&output[0],2);
+    assert(s_jitter.used==0 && s_jitter.discarded_bytes==2);
+    mock_live_alloc_left=-1;
+
+    reset(); live_turn_end(&s_turn); receive(chunk);
+    receive("{\"serverContent\":{\"interrupted\":true}}");
+    assert(s_reply_state.ignore_input && !s_turn.response_pending);
+    assert(output_count==2 && output[1].done);
+    release_output(&output[0],0);
+    assert(s_jitter.used==0);
+
+    reset(); live_turn_end(&s_turn);
+    assert(voice_live_interrupt(s_generation+1));
+    receive("{\"serverContent\":{\"interrupted\":true,\"turnComplete\":true}}");
+    assert(!s_reply_state.ignore_input && !s_turn.obsolete_turns);
+
+    reset(); live_turn_end(&s_turn); full_output=true;
+    size_t head=s_jitter.head;
+    receive(chunk);
+    assert(s_failed && !s_jitter.used && s_jitter.head==head && !output_count && s_jitter.overflows==1);
+
+    reset(); live_turn_end(&s_turn);
+    s_jitter.used=s_jitter.capacity;
+    receive(chunk);
+    assert(s_failed && s_jitter.overflows==1 && !output_count);
+    reset(); live_turn_end(&s_turn);
+    receive(chunk); release_output(&output[0],0);
+    memset(s_decode_pcm,0,6);
+    s_decode_pcm[0]=9;
+    assert(queue_jitter_audio(s_epoch,s_generation,6)==1);
+    assert(hisu_jitter_read(&s_jitter,samples,6)==6 && samples[0]==9 && samples[1]==0);
+    release_output(&output[1],6);
+    reset();
+    puts("Jitter integration passed: allocation-free PCM, partial cancel, server interruption, old fences, full queue rollback, overflow and fresh audio.");
+}
+
 int main(void) {
+    jitter_integration_tests();
     playback_mode_tests();
     music_lyric_clock_tests();
     speech_marker_tests();

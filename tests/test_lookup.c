@@ -201,7 +201,11 @@ static esp_err_t lookup_http_perform(esp_http_client_handle_t http) {
     if (tech_qbit_timeout && strstr(http->config.url,"qbitai.com")) return ESP_ERR_HTTP_EAGAIN;
     if (!http->calls++ || mock_mode==7) return ESP_ERR_HTTP_EAGAIN;
     if (mock_mode==8) lookup_valid=false;
-    const char *wire=strstr(http->config.url,"/prices") ? gold_wire : strstr(http->config.url,"/search?") ? geo_wire : forecast_wire;
+    const char *history_wire="{\"success\":true,\"type\":\"SJL1L10\",\"history\":["
+        "{\"date\":\"2026-10-20\",\"prices\":{\"SJL1L10\":{\"buy\":139600000,\"sell\":142600000}}},"
+        "{\"date\":\"2026-10-19\",\"prices\":{\"SJL1L10\":{\"buy\":139000000,\"sell\":142000000}}}]}";
+    const char *wire=strstr(http->config.url,"?type=SJL1L10&days=7") ? history_wire :
+        strstr(http->config.url,"/prices") ? gold_wire : strstr(http->config.url,"/search?") ? geo_wire : forecast_wire;
     if (strstr(http->config.url,"/interactions")) wire=web_wire;
     if (strstr(http->config.url,"genk.vn")) wire=tech_genk_wire;
     if (strstr(http->config.url,"qbitai.com")) wire=tech_qbit_wire;
@@ -839,6 +843,13 @@ int main(int argc,char **argv) {
     assert(!strcmp(field(price,"unit")->valuestring,"VND/lượng")); cJSON_Delete(o);
     unsigned calls=lookup_http_started; o=run_lookup("{\"topic\":\"gold\",\"gold_type\":\"SJL1L10\"}");
     assert(lookup_http_started==calls && cJSON_IsTrue(field(o,"cached"))); cJSON_Delete(o);
+    reset_lookup(); calls=lookup_http_started;
+    o=run_lookup("{\"topic\":\"gold\",\"gold_history\":true}");
+    assert(lookup_http_started==calls+2 && cJSON_GetArraySize(field(o,"history"))==1);
+    assert(!strcmp(field(o,"updated_date_vn")->valuestring,"2026-10-20"));
+    price=cJSON_GetArrayItem(field(o,"history"),0);
+    assert(field(price,"sell")->valuedouble==142000000);
+    cJSON_Delete(o);
     reset_lookup(); o=run_lookup("{\"topic\":\"gold\",\"gold_type\":\"XAUUSD\"}");
     price=cJSON_GetArrayItem(field(o,"prices"),0); assert(!field(price,"sell") && field(price,"spot_reference")); cJSON_Delete(o);
     reset_lookup(); assert_error(run_lookup("{\"topic\":\"weather\"}"),"place_required");

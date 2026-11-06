@@ -44,7 +44,7 @@ cJSON *lookup_error(const char *code) {
 bool lookup_query_parse(const cJSON *args,lookup_query_t *q) {
     memset(q,0,sizeof(*q));
     const cJSON *topic=field(args,"topic"),*place=field(args,"place"),*day=field(args,"day_offset"),
-        *id=field(args,"location_id"),*type=field(args,"gold_type");
+        *id=field(args,"location_id"),*type=field(args,"gold_type"),*history=field(args,"gold_history");
     if (!cJSON_IsObject(args) || !text(topic,7)) return false;
     q->weather=!strcmp(topic->valuestring,"weather");
     q->news=!strcmp(topic->valuestring,"news");
@@ -75,16 +75,20 @@ bool lookup_query_parse(const cJSON *args,lookup_query_t *q) {
     const cJSON *item;
     cJSON_ArrayForEach(item,args) {
         if (!item->string || (strcmp(item->string,"topic") && strcmp(item->string,"place") &&
-            strcmp(item->string,"day_offset") && strcmp(item->string,"location_id") && strcmp(item->string,"gold_type"))) return false;
+            strcmp(item->string,"day_offset") && strcmp(item->string,"location_id") &&
+            strcmp(item->string,"gold_type") && strcmp(item->string,"gold_history"))) return false;
     }
     if (q->weather) {
-        if (type || (place && !text(place,96)) || (day && (!number(day,0,2) || day->valuedouble!=day->valueint)) ||
+        if (type || history || (place && !text(place,96)) || (day && (!number(day,0,2) || day->valuedouble!=day->valueint)) ||
             (id && (!number(id,1,2147483647) || id->valuedouble!=id->valueint))) return false;
         if (place) strcpy(q->place,place->valuestring);
         q->day=day ? day->valueint : 0; q->location_id=id ? id->valueint : 0;
     } else {
-        if (place || day || id || (type && !text(type,16))) return false;
-        strcpy(q->type,type ? type->valuestring : "summary");
+        if (place || day || id || (type && !text(type,16)) || (history && !cJSON_IsBool(history))) return false;
+        q->gold_history=cJSON_IsTrue(history);
+        strcpy(q->type,type ? type->valuestring : q->gold_history ? "SJL1L10" : "summary");
+        if (q->gold_history && !strcmp(q->type,"summary")) strcpy(q->type,"SJL1L10");
+        if (q->gold_history && !strcmp(q->type,"all")) return false;
         static const char *types[]={"summary","all","SJL1L10","SJ9999","DOHNL","DOHCML","DOJINHTV",
             "BTSJC","BT9999NTT","PQHNVM","PQHN24NTT","VNGSJC","VIETTINMSJC","XAUUSD"};
         bool found=false;
@@ -111,7 +115,7 @@ cJSON *lookup_gold(const cJSON *root,const lookup_query_t *q,int64_t now) {
     cJSON *o=data_result("https://www.vang.today/vi/",now),*list=cJSON_AddArrayToObject(o,"prices");
     cJSON_AddNumberToObject(o,"updated_at_utc",stamp->valuedouble);
     cJSON_AddBoolToObject(o,"stale",now-stamp->valuedouble>21600);
-    cJSON_AddStringToObject(o,"speech_hint","Giá tham khảo, không phải báo giá giao dịch. Nói rõ thời điểm cập nhật, mua vào/bán ra và đơn vị; stale=true thì nói là dữ liệu cũ, không gọi là giá hiện tại. Không dự đoán giá. Không nhắc tên nguồn trừ khi được hỏi.");
+    cJSON_AddStringToObject(o,"speech_hint","Nói rõ giờ cập nhật và đơn vị. stale=true thì nói dữ liệu cũ. Chỉ nhận định xu hướng khi có dữ liệu lịch sử đủ mới. Không nhắc tên nguồn trừ khi được hỏi.");
     for (unsigned i=0;i<sizeof(types)/sizeof(types[0]);++i) {
         bool summary=!strcmp(q->type,"summary");
         if (summary ? (i!=0 && i!=1 && i!=7) : (strcmp(q->type,"all") && strcmp(q->type,types[i].code))) continue;
@@ -133,6 +137,48 @@ cJSON *lookup_gold(const cJSON *root,const lookup_query_t *q,int64_t now) {
     int expected=!strcmp(q->type,"all") ? 12 : !strcmp(q->type,"summary") ? 3 : 1;
     if (cJSON_GetArraySize(o)!=7 || cJSON_GetArraySize(list)!=expected) { cJSON_Delete(o); return NULL; }
     return o;
+}
+void lookup_gold_history(cJSON *result,const cJSON *root,const lookup_query_t *q) {
+    const cJSON *history=field(root,"history"),*type=field(root,"type");
+    if (!cJSON_IsTrue(field(root,"success")) || !text(type,16) ||
+        strcmp(type->valuestring,q->type) || !cJSON_IsArray(history) ||
+        cJSON_GetArraySize(history)>7) return;
+
+    const cJSON *stamp=field(result,"updated_at_utc");
+    if (!cJSON_IsNumber(stamp)) return;
+    time_t local_update=(time_t)stamp->valuedouble+25200;
+    struct tm local_date;
+    char update_date[11];
+    if (!gmtime_r(&local_update,&local_date) ||
+        !strftime(update_date,sizeof(update_date),"%Y-%m-%d",&local_date)) return;
+    bool world=!strcmp(q->type,"XAUUSD");
+    cJSON *series=cJSON_CreateArray();
+    if (!series) return;
+    const cJSON *entry;
+    cJSON_ArrayForEach(entry,history) {
+        const cJSON *date=field(entry,"date"),*price=field(field(entry,"prices"),q->type);
+        const cJSON *buy=field(price,"buy"),*sell=field(price,"sell");
+        if (!text(date,10) || strlen(date->valuestring)!=10 ||
+            strspn(date->valuestring,"0123456789-")!=10 ||
+            date->valuestring[4]!='-' || date->valuestring[7]!='-' ||
+            strcmp(date->valuestring,update_date)>=0 ||
+            !number(buy,world ? 1 : 1000000,world ? 1000000 : 10000000000.0) ||
+            (!world && !number(sell,buy->valuedouble,10000000000.0))) continue;
+        cJSON *row=cJSON_CreateObject();
+        if (!row || !cJSON_AddStringToObject(row,"date",date->valuestring) ||
+            !cJSON_AddNumberToObject(row,world ? "spot_reference" : "buy",buy->valuedouble) ||
+            (!world && !cJSON_AddNumberToObject(row,"sell",sell->valuedouble)) ||
+            !cJSON_AddItemToArray(series,row)) {
+            cJSON_Delete(row);
+            cJSON_Delete(series);
+            return;
+        }
+    }
+    if (!cJSON_GetArraySize(series) || !cJSON_AddItemToObject(result,"history",series)) {
+        cJSON_Delete(series);
+        return;
+    }
+    cJSON_AddStringToObject(result,"updated_date_vn",update_date);
 }
 const cJSON *lookup_location(const cJSON *root,const lookup_query_t *q,cJSON **error) {
     const cJSON *results=field(root,"results"),*selected=NULL;

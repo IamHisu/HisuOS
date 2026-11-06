@@ -15,6 +15,7 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <time.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -97,6 +98,8 @@ static int s_applied_brightness = -1;
 static int64_t s_activity_ms;
 static const char *s_error;
 static lv_obj_t *s_subtitle_body;
+static lv_obj_t *s_mic_ring;
+static atomic_uint s_mic_meter;
 static lv_obj_t *s_face_eyes[2], *s_face_cuts[2], *s_face_caption;
 static lv_timer_t *s_face_timer;
 static hisu_face_t s_expression;
@@ -335,46 +338,6 @@ static wifi_icon_t create_wifi_icon(lv_obj_t *parent, int x, int y, int bars, bo
     return icon;
 }
 
-static void create_theme_icon(lv_obj_t *parent, bool light, bool selected)
-{
-    lv_obj_t *icon = lv_obj_create(parent);
-    lv_obj_remove_style_all(icon);
-    lv_obj_set_pos(icon, 196, 4);
-    lv_obj_set_size(icon, 20, 20);
-    lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
-    lv_color_t color = lv_color_hex(theme_color(0x86dbaf));
-    lv_obj_t *disc = lv_obj_create(icon);
-    lv_obj_remove_style_all(disc);
-    lv_obj_set_pos(disc, light ? 6 : 1, light ? 6 : 1);
-    lv_obj_set_size(disc, light ? 8 : 18, light ? 8 : 18);
-    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(disc, color, 0);
-    lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
-    if (light) {
-        static const lv_point_precise_t rays[8][2] = {
-            {{10, 1}, {10, 3}}, {{10, 17}, {10, 19}},
-            {{1, 10}, {3, 10}}, {{17, 10}, {19, 10}},
-            {{3, 3}, {5, 5}}, {{15, 15}, {17, 17}},
-            {{3, 17}, {5, 15}}, {{15, 5}, {17, 3}},
-        };
-        for (int i = 0; i < 8; ++i) {
-            lv_obj_t *ray = lv_line_create(icon);
-            lv_obj_remove_style_all(ray);
-            lv_line_set_points(ray, rays[i], 2);
-            lv_obj_set_style_line_color(ray, color, 0);
-            lv_obj_set_style_line_width(ray, 1, 0);
-        }
-    } else {
-        lv_obj_t *cutout = lv_obj_create(icon);
-        lv_obj_remove_style_all(cutout);
-        lv_obj_set_pos(cutout, 7, -3);
-        lv_obj_set_size(cutout, 18, 18);
-        lv_obj_set_style_radius(cutout, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(cutout, lv_color_hex(theme_color(selected ? 0x224b3d : 0x000000)), 0);
-        lv_obj_set_style_bg_opa(cutout, LV_OPA_COVER, 0);
-    }
-}
-
 static lv_color_t overlay_color(unsigned index, int x, int y, int w, int h)
 {
     const lv_image_dsc_t *image = s_wallpaper_available ? &s_wallpaper_image : NULL;
@@ -580,30 +543,81 @@ static void footer(const char *left, const char *middle, const char *right)
     }
 }
 
+static void style_dashboard_panel(lv_obj_t *panel, bool selected)
+{
+    lv_obj_set_style_radius(panel, 9, 0);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(s_light_theme ?
+        (selected ? 0xdce4ff : 0xf1f4ff) : (selected ? 0x202951 : 0x0e1430)), 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_border_color(panel, lv_color_hex(s_light_theme ?
+        (selected ? 0x6550bd : 0xd0d8ef) : (selected ? 0x4de3ff : 0x29345f)), 0);
+}
+
 static void render_menu(void)
 {
-    header("Hisu");
-    int start = s_model.first_visible;
-    for (int row = 0; row < 5; ++row) {
-        int item = start + row;
-        lv_obj_t *obj = lv_obj_create(lv_screen_active());
-        lv_obj_remove_style_all(obj);
-        lv_obj_set_pos(obj, 8, 47 + row * 31);
-        lv_obj_set_size(obj, 224, 30);
-        lv_obj_set_style_radius(obj, 4, 0);
-        if (item == s_model.selected) {
-            lv_obj_set_style_bg_color(obj, lv_color_hex(theme_color(0x224b3d)), 0);
-            lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    static const char *const names[UI_ITEM_COUNT] = {
+        "Độ sáng", "Âm lượng", "Loa", "Chờ", "Theme", "Wi-Fi",
+        "Pin", "Lịch", "Setting", "Tắt LCD", "Đóng",
+    };
+    static const char *const symbols[UI_ITEM_COUNT] = {
+        LV_SYMBOL_EYE_OPEN, LV_SYMBOL_VOLUME_MAX, LV_SYMBOL_AUDIO,
+        LV_SYMBOL_REFRESH, NULL, NULL, LV_SYMBOL_BATTERY_FULL,
+        LV_SYMBOL_LIST, LV_SYMBOL_SETTINGS, LV_SYMBOL_POWER, LV_SYMBOL_CLOSE,
+    };
+    enum { COLUMNS = 2, TILE_WIDTH = 104, ROW_HEIGHT = 74, VISIBLE_ROWS = 2 };
+    static int top_row;
+    static const uint32_t icon_colors[UI_ITEM_COUNT] = {
+        0x8152cb, 0x2674bb, 0xc54c76, 0xa85b24, 0x493d78, 0x175b70,
+        0x287752, 0x3464a8, 0x515d76, 0xa13c68, 0x575c70,
+    };
+    int selected_row = s_model.selected / COLUMNS;
+    if (selected_row < top_row) top_row = selected_row;
+    if (selected_row >= top_row + VISIBLE_ROWS) top_row = selected_row - VISIBLE_ROWS + 1;
+    lv_obj_t *root = lv_screen_active();
+    if (!s_light_theme) lv_obj_set_style_bg_color(root, lv_color_hex(0x060914), 0);
+    header("Menu");
+    lv_obj_t *grid = lv_obj_create(root);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_pos(grid, 0, 40);
+    lv_obj_set_size(grid, 240, ROW_HEIGHT * VISIBLE_ROWS - 6);
+    lv_obj_add_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(grid, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
+
+    for (int item = 0; item < UI_ITEM_COUNT; ++item) {
+        bool selected = item == s_model.selected;
+        lv_obj_t *tile = lv_obj_create(grid);
+        lv_obj_remove_style_all(tile);
+        lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_pos(tile, 12 + item % COLUMNS * 112, item / COLUMNS * ROW_HEIGHT);
+        lv_obj_set_size(tile, TILE_WIDTH, 68);
+        if (selected) {
+            lv_obj_set_style_radius(tile, 12, 0);
+            lv_obj_set_style_bg_color(tile, lv_color_hex(s_light_theme ? 0xe6eeff : 0x141d30), 0);
+            lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+            lv_obj_set_style_outline_width(tile, 1, 0);
+            lv_obj_set_style_outline_color(tile, lv_color_hex(s_light_theme ? 0x4771c8 : 0x7cb4ff), 0);
         }
-        uint32_t item_color = item == UI_SCREEN_OFF ? 0xffd000 : 0xeeeeee;
-        label(obj, s_items[item], 7, 3, item == UI_TIMEOUT ? 130 : 158,
-              item_color);
+
+        lv_obj_t *badge = lv_obj_create(tile);
+        lv_obj_remove_style_all(badge);
+        lv_obj_remove_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_pos(badge, 31, 2);
+        lv_obj_set_size(badge, 42, 42);
+        lv_obj_set_style_radius(badge, 10, 0);
+        lv_obj_set_style_bg_color(badge, lv_color_hex(icon_colors[item]), 0);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+
         if (item == UI_THEME) {
-            create_theme_icon(obj, hisu_settings_get(HISU_SETTING_THEME) == 1, item == s_model.selected);
-            continue;
-        }
-        if (item == UI_WIFI) {
-            wifi_icon_t icon = create_wifi_icon(obj, 196, 8,
+            bool light = hisu_settings_get(HISU_SETTING_THEME) == 1;
+            lv_obj_t *glyph = label(badge, light ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE,
+                                    0, 9, 42, 0xffffff);
+            lv_obj_set_style_text_font(glyph, &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_color(glyph, lv_color_hex(0xffffff), 0);
+            lv_obj_set_style_text_align(glyph, LV_TEXT_ALIGN_CENTER, 0);
+        } else if (item == UI_WIFI) {
+            wifi_icon_t icon = create_wifi_icon(badge, 11, 13,
                 s_network.enabled && s_network.connected ? wifi_signal_bars(s_network.rssi) : 0, false,
                 hisu_network_has_internet_warning(&s_network));
             if (!s_network.enabled) {
@@ -615,25 +629,89 @@ static void render_menu(void)
                 lv_obj_set_style_line_width(line, 1, 0);
                 lv_obj_set_style_line_color(line, lv_color_hex(theme_color(0x8c9690)), 0);
             }
-            continue;
+        } else {
+            lv_obj_t *glyph = label(badge, symbols[item], 0, 9, 42, 0xffffff);
+            lv_obj_set_style_text_font(glyph, &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_color(glyph, lv_color_hex(0xffffff), 0);
+            lv_obj_set_style_text_align(glyph, LV_TEXT_ALIGN_CENTER, 0);
         }
-        char value[16] = "";
-        if (item <= UI_THEME) value_text(item, hisu_settings_get((hisu_setting_t)item), value, sizeof(value));
-        else if (item == UI_BATTERY && s_power.valid) snprintf(value, sizeof(value), "~%d%%", s_power.percent);
-        else if (item <= UI_BATTERY) snprintf(value, sizeof(value), "--");
-        else snprintf(value, sizeof(value), "%s", LV_SYMBOL_RIGHT);
-        uint32_t value_color = item == UI_SCREEN_OFF ? 0xffd000 : 0x86dbaf;
-        lv_obj_t *v = label(obj, value, item == UI_TIMEOUT ? 142 : 164, 3,
-                            item == UI_TIMEOUT ? 76 : 54, value_color);
-        if (item > UI_BATTERY) lv_obj_set_style_text_font(v, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_t *caption = label(tile, names[item], 0, 45, TILE_WIDTH - 2, 0xeeeeee);
+        lv_label_set_long_mode(caption, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
     }
-    char position[24];
-    snprintf(position, sizeof(position), "%d / %d", s_model.selected + 1, UI_ITEM_COUNT);
-    lv_obj_t *count = label(lv_screen_active(), position, 158, 10, 70, 0x8c9690);
-    lv_obj_set_style_text_align(count, LV_TEXT_ALIGN_RIGHT, 0);
-    footer("v", "Chọn", "^");
-    if (s_error) label(lv_screen_active(), s_error, 12, 195, 216, 0xf0a0a0);
+
+    lv_obj_update_layout(grid);
+    lv_obj_scroll_to_y(grid, top_row * ROW_HEIGHT, LV_ANIM_OFF);
+
+    char status[24] = "";
+    int selected = s_model.selected;
+    bool adjusting = s_model.page == UI_EDIT;
+    if (selected < UI_THEME) {
+        value_text(selected, adjusting ? s_model.value : hisu_settings_get((hisu_setting_t)selected),
+                   status, sizeof(status));
+    } else if (selected == UI_BATTERY) {
+        if (s_power.valid) snprintf(status, sizeof(status), "~%d%%", s_power.percent);
+        else snprintf(status, sizeof(status), "--");
+    }
+    lv_obj_t *detail = label(root, status, 120, 10, 108, 0x86dbaf);
+    lv_obj_set_style_text_align(detail, LV_TEXT_ALIGN_RIGHT, 0);
+    if (adjusting) {
+        lv_obj_t *slider = lv_slider_create(root);
+        lv_obj_set_pos(slider, 167, 198);
+        lv_obj_set_size(slider, 61, 5);
+        lv_obj_remove_flag(slider, LV_OBJ_FLAG_CLICKABLE);
+        lv_slider_set_range(slider, selected == UI_BRIGHTNESS ? 10 : 0, 100);
+        lv_slider_set_value(slider, s_model.value, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(slider, lv_color_hex(s_light_theme ? 0x6550bd : 0x4de3ff), LV_PART_INDICATOR);
+    }
+    if (s_error) label(root, s_error, 12, 215, 216, 0xf0a0a0);
+    else if (adjusting) footer("-", "Lưu", "+");
+    else footer("v", "Chọn", "^");
+}
+
+static void render_glance(void)
+{
+    lv_obj_t *root = lv_screen_active();
+    if (!s_light_theme) lv_obj_set_style_bg_color(root, lv_color_hex(0x060914), 0);
+    header("Xem nhanh");
+    lv_obj_t *panel = lv_obj_create(root);
+    lv_obj_remove_style_all(panel);
+    lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(panel, 8, 47);
+    lv_obj_set_size(panel, 224, 160);
+    style_dashboard_panel(panel, false);
+
+    char clock[6], text[64];
+    bool clock_valid = hisu_clock_read(clock);
+    lv_obj_t *time_label = label(panel, clock, 10, 6, 200, 0xeeeeee);
+    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_20, 0);
+    if (s_power.valid) snprintf(text, sizeof(text), "Pin %d%%", s_power.percent);
+    else snprintf(text, sizeof(text), "Pin --");
+    label(panel, text, 10, 39, 85, 0xeeeeee);
+    const char *wifi = !s_network.enabled ? "Wi-Fi tắt" : !s_network.connected ?
+        "Chưa kết nối" : hisu_network_has_internet_warning(&s_network) ? "Mất Internet" : "Wi-Fi đã nối";
+    label(panel, wifi, 97, 39, 114, 0xeeeeee);
+    label(panel, "Lịch sắp tới", 10, 73, 200, 0xeeeeee);
+
+    hisu_schedule_event_t event, next = {0};
+    time_t now = time(NULL);
+    if (clock_valid) {
+        for (unsigned i = 0; hisu_schedule_at(i, &event); ++i) {
+            if (!event.delivered && event.utc >= now && (!next.utc || event.utc < next.utc)) next = event;
+        }
+    }
+    if (next.utc) {
+        time_t local = next.utc + hisu_settings_get(HISU_SETTING_TIMEZONE) * 60;
+        struct tm date;
+        if (gmtime_r(&local, &date) && strftime(text, sizeof(text), "%H:%M  %d/%m", &date))
+            label(panel, text, 10, 98, 200, 0xeeeeee);
+        lv_obj_t *summary = label(panel, next.text, 10, 122, 200, 0xeeeeee);
+        lv_obj_set_height(summary, 22);
+        lv_label_set_long_mode(summary, LV_LABEL_LONG_MODE_DOTS);
+    } else {
+        label(panel, clock_valid ? "Chưa có lịch" : "Chưa đồng bộ giờ", 10, 100, 200, 0xeeeeee);
+    }
+    footer("", "Menu", "back");
 }
 
 static void setup_line(lv_obj_t *root, const char *text, int y, uint32_t color)
@@ -796,6 +874,10 @@ static void render_calendar(void)
 
 static void render_edit(void)
 {
+    if (s_model.selected == UI_BRIGHTNESS || s_model.selected == UI_VOLUME) {
+        render_menu();
+        return;
+    }
     header(s_items[s_model.selected]);
     char value[16];
     value_text(s_model.selected, s_model.value, value, sizeof(value));
@@ -832,6 +914,12 @@ static bool face_status(int state)
 static void animate_face(lv_timer_t *timer)
 {
     (void)timer;
+    if (s_mic_ring) {
+        unsigned meter = atomic_load(&s_mic_meter);
+        unsigned age = ((tick_ms()/20U) - (meter>>8)) & 0xffffffU;
+        unsigned level = age < 8 ? meter & 255U : 0;
+        lv_obj_set_style_border_opa(s_mic_ring, 28 + level * 3 / 4, 0);
+    }
     hisu_face_t face = s_expression;
     if (s_face_state == HISU_UI_ERROR) face = HISU_FACE_SAD;
     else if (face == HISU_FACE_AUTO)
@@ -862,6 +950,12 @@ void hisu_ui_music_level(unsigned level)
     if (level>255) level=255;
     uint32_t stamp=(uint32_t)(esp_timer_get_time()/20000)&0xffffffU;
     atomic_store(&s_music_meter,(stamp<<8)|level);
+}
+
+void hisu_ui_mic_level(unsigned level)
+{
+    uint32_t stamp = (uint32_t)(esp_timer_get_time()/20000) & 0xffffffU;
+    atomic_store(&s_mic_meter, (stamp<<8) | (level > 255 ? 255 : level));
 }
 
 static void music_rect(lv_layer_t *layer, const lv_area_t *origin, int x, int y, int w, int h,
@@ -1083,6 +1177,16 @@ static void render_subtitle(int state, const char *text)
         lv_obj_t *title = label(root, s_states[state], 12, 16, 216, 0x8c9690);
         lv_obj_set_style_text_color(title, lv_color_hex(0x8c9690), 0);
         lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+        if (state == HISU_UI_LISTENING) {
+            s_mic_ring = lv_obj_create(root);
+            lv_obj_remove_style_all(s_mic_ring);
+            lv_obj_remove_flag(s_mic_ring, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_pos(s_mic_ring, 61, 44);
+            lv_obj_set_size(s_mic_ring, 118, 118);
+            lv_obj_set_style_radius(s_mic_ring, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_border_width(s_mic_ring, 2, 0);
+            lv_obj_set_style_border_color(s_mic_ring, lv_color_hex(0x20e5e2), 0);
+        }
         for (int i = 0; i < 2; ++i) {
             s_face_eyes[i] = lv_obj_create(root);
             lv_obj_remove_style_all(s_face_eyes[i]);
@@ -1320,6 +1424,7 @@ static void render(void)
     s_idle_gif = NULL;
     s_idle_clock = NULL;
     s_subtitle_body = NULL;
+    s_mic_ring = NULL;
     s_battery_body = s_battery_tip = NULL;
     lv_obj_remove_style_all(root);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
@@ -1328,6 +1433,7 @@ static void render(void)
     switch (s_model.page) {
     case UI_MENU: render_menu(); break;
     case UI_EDIT: render_edit(); break;
+    case UI_GLANCE: render_glance(); break;
     case UI_CALENDAR_PAGE: render_calendar(); break;
     case UI_SETUP_PAGE: render_setup(); break;
     case UI_FLASHLIGHT_PAGE:
@@ -1463,6 +1569,18 @@ static void handle_key(hisu_key_t key)
     }
     if (key == HISU_KEY_BOOT && s_voice_boot && s_voice_boot()) return;
     if (key == HISU_KEY_BACK && s_voice_control && s_voice_control(true)) return;
+    if (s_model.page == UI_GLANCE) {
+        if (key == HISU_KEY_BOOT || key == HISU_KEY_UP || key == HISU_KEY_BACK) {
+            s_model.page = key == HISU_KEY_BOOT ? UI_MENU : UI_IDLE;
+            render();
+        }
+        return;
+    }
+    if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && key == HISU_KEY_UP) {
+        s_model.page = UI_GLANCE;
+        render();
+        return;
+    }
     if (s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && key == HISU_KEY_FLASHLIGHT) {
         s_model.page = UI_FLASHLIGHT_PAGE;
         s_flashlight_enabled = true; s_flashlight_mode = 0;
@@ -1797,6 +1915,7 @@ static void ui_task(void *arg)
         if (changed) {
             s_asleep = false;
             s_activity_ms = esp_timer_get_time() / 1000;
+            if (s_model.page == UI_GLANCE && s_status.status != HISU_UI_IDLE) s_model.page = UI_IDLE;
             if (s_model.page == UI_IDLE && s_face_caption && s_face_state == s_status.status)
                 update_face_subtitle(s_status.status, s_status.text);
             else if (s_model.page == UI_IDLE || s_model.page == UI_FLASHLIGHT_PAGE) render();
@@ -1828,7 +1947,7 @@ static void ui_task(void *arg)
                 s_asleep = false;
                 s_activity_ms = now;
                 render();
-            } else if (s_model.page == UI_MENU || s_model.page == UI_WIFI_PAGE ||
+            } else if (s_model.page == UI_MENU || s_model.page == UI_GLANCE || s_model.page == UI_WIFI_PAGE ||
                 (s_model.page == UI_CALENDAR_PAGE && (!s_calendar_details || s_calendar_revision!=hisu_schedule_revision())) ||
                 s_model.page == UI_SETUP_PAGE ||
                 (s_model.page == UI_INFO && s_model.selected == UI_BATTERY)) render();
@@ -1840,7 +1959,9 @@ static void ui_task(void *arg)
         }
         // Never turn the screen off during settings or active conversation.
         timeout = hisu_ui_power_timeout(s_power.power_saving, timeout);
-        if (timeout && s_model.page == UI_IDLE && s_status.status == HISU_UI_IDLE && now - s_activity_ms >= timeout * 1000LL) {
+        if (timeout && (s_model.page == UI_IDLE || s_model.page == UI_GLANCE) &&
+            s_status.status == HISU_UI_IDLE && now - s_activity_ms >= timeout * 1000LL) {
+            s_model.page = UI_IDLE;
             s_asleep = true;
         }
         int brightness = s_model.page == UI_FLASHLIGHT_PAGE ? flashlight_brightness(now) :
